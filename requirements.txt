@@ -1,0 +1,3 @@
+requests>=2.31
+selenium>=4.20
+pyinstaller>=6.0
