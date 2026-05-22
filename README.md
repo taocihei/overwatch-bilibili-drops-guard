@@ -1,6 +1,6 @@
-# 守望先锋 B 站直播挂宝 / Overwatch Bilibili Live Drops Guard
+﻿# 守望先锋 B 站直播挂宝 / Overwatch Bilibili Live Drops Guard
 
-当前版本：`v0.3.0`
+当前版本：`v0.3.1`
 
 开源地址：<https://github.com/taocihei/overwatch-bilibili-drops-guard>
 
@@ -155,7 +155,6 @@ powershell -ExecutionPolicy Bypass -File .\build.ps1
 ```text
 dist\OverwatchBiliDrops.exe
 ```
-
 ## 赞助
 
 如果这个工具帮到了你，可以扫码赞助。
@@ -172,7 +171,7 @@ dist\OverwatchBiliDrops.exe
 
 Project name: **守望先锋 B 站直播挂宝 / Overwatch Bilibili Live Drops Guard**
 
-Version: `v0.3.0`
+Version: `v0.3.1`
 
 Repository: <https://github.com/taocihei/overwatch-bilibili-drops-guard>
 

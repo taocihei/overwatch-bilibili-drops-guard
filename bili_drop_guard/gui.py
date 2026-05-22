@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import queue
 import re
+import sys
 import threading
 import traceback
 import tkinter as tk
 import webbrowser
 from datetime import datetime
+from pathlib import Path
 from tkinter import messagebox, ttk
 from typing import Callable
 
@@ -18,6 +20,23 @@ from .watcher import LiveWatcher, WatchOptions
 
 
 SOURCE_URL = "https://github.com/taocihei/overwatch-bilibili-drops-guard"
+APP_BG = "#f5f7fb"
+SURFACE = "#ffffff"
+SOFT_SURFACE = "#f8fafc"
+BORDER = "#e5e7eb"
+TEXT = "#111827"
+MUTED = "#64748b"
+ACCENT = "#2563eb"
+ACCENT_ACTIVE = "#1d4ed8"
+SUCCESS = "#16a34a"
+SUCCESS_ACTIVE = "#15803d"
+DANGER = "#dc2626"
+DANGER_BG = "#fff1f2"
+
+
+def _resource_path(relative_path: str) -> Path:
+    base = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[1]))
+    return base / relative_path
 
 
 class RoundedPanel(tk.Canvas):
@@ -25,12 +44,12 @@ class RoundedPanel(tk.Canvas):
         self,
         parent: tk.Misc,
         *,
-        fill: str = "#fffaf4",
-        background: str = "#f7f2ea",
-        radius: int = 22,
+        fill: str = SURFACE,
+        background: str = APP_BG,
+        radius: int = 18,
         padding: tuple[int, int] = (20, 16),
         min_height: int = 0,
-        outline: str = "#eadfce",
+        outline: str = BORDER,
         shadow: bool = True,
         auto_height: bool = True,
     ) -> None:
@@ -62,7 +81,7 @@ class RoundedPanel(tk.Canvas):
         width = max(1, self.winfo_width())
         height = max(1, self.winfo_height())
         if self.shadow and width > 8 and height > 8:
-            self._rounded_rect(3, 5, width - 2, height - 1, self.radius, fill="#eee6da", outline="", tags="shadow")
+            self._rounded_rect(2, 4, width - 2, height - 1, self.radius, fill="#e8edf5", outline="", tags="shadow")
         self._rounded_rect(1, 1, width - 3, height - 4, self.radius, fill=self.fill, outline=self.outline, tags="panel")
         self.tag_lower("shadow")
         self.tag_lower("panel")
@@ -95,7 +114,7 @@ class PillButton(tk.Canvas):
         text: str,
         command: Callable[[], None],
         *,
-        fill: str = "#5f7f67",
+        fill: str = ACCENT,
         foreground: str = "#ffffff",
         active_fill: str | None = None,
         height: int = 40,
@@ -105,7 +124,7 @@ class PillButton(tk.Canvas):
         try:
             parent_bg = str(parent.cget("bg"))
         except tk.TclError:
-            parent_bg = "#fffaf4"
+            parent_bg = SURFACE
         super().__init__(parent, height=height, bg=parent_bg, highlightthickness=0, borderwidth=0, cursor="hand2")
         if width is not None:
             self.configure(width=width)
@@ -165,7 +184,7 @@ class Stepper(tk.Canvas):
         *,
         minimum: int,
         maximum: int,
-        background: str = "#fffaf4",
+        background: str = SURFACE,
     ) -> None:
         super().__init__(parent, height=38, bg=background, highlightthickness=0, borderwidth=0, cursor="hand2")
         self.variable = variable
@@ -195,21 +214,22 @@ class Stepper(tk.Canvas):
             18, height - 1, 1, height - 1, 1, height - 18, 1, 18, 1, 1,
             smooth=True,
             splinesteps=18,
-            fill="#fffdf9",
-            outline="#eadfce",
+            fill=SOFT_SURFACE,
+            outline=BORDER,
         )
-        self.create_text(22, height // 2, text="−", fill="#7a6d61", font=("Microsoft YaHei UI", 14, "bold"))
-        self.create_text(width - 22, height // 2, text="+", fill="#7a6d61", font=("Microsoft YaHei UI", 14, "bold"))
-        self.create_text(width // 2, height // 2, text=str(self.variable.get()), fill="#302b26", font=("Microsoft YaHei UI", 10))
+        self.create_text(22, height // 2, text="−", fill=MUTED, font=("Microsoft YaHei UI", 14, "bold"))
+        self.create_text(width - 22, height // 2, text="+", fill=MUTED, font=("Microsoft YaHei UI", 14, "bold"))
+        self.create_text(width // 2, height // 2, text=str(self.variable.get()), fill=TEXT, font=("Microsoft YaHei UI", 10))
 
 
 class App(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
         self.title(f"守望先锋 B 站直播挂宝 v{__version__}")
-        self.geometry("1200x900")
+        self.geometry("1180x860")
         self.minsize(1080, 820)
-        self.configure(bg="#f6f1e9")
+        self.configure(bg=APP_BG)
+        self._set_window_icon()
 
         self.config_data = load_config()
         self.log_queue: "queue.Queue[str]" = queue.Queue()
@@ -231,11 +251,20 @@ class App(tk.Tk):
         self.watch_threads_var = tk.IntVar(value=self.config_data.watch_threads)
         self.status_var = tk.StringVar(value="未运行")
         self.version_var = tk.StringVar(value=f"v{__version__}")
+        self.status_label: ttk.Label | None = None
 
         self._configure_style()
         self._build_ui()
         self.after(100, self._clear_initial_focus)
         self.after(200, self._drain_logs)
+
+    def _set_window_icon(self) -> None:
+        icon_path = _resource_path("assets/app.ico")
+        if icon_path.exists():
+            try:
+                self.iconbitmap(default=str(icon_path))
+            except tk.TclError:
+                pass
 
     def report_callback_exception(self, exc: type[BaseException], value: BaseException, tb: object) -> None:
         detail = "".join(traceback.format_exception(exc, value, tb))
@@ -253,53 +282,45 @@ class App(tk.Tk):
             pass
 
         font = ("Microsoft YaHei UI", 10)
-        style.configure(".", font=font, background="#f6f1e9", foreground="#2e2b28")
-        style.configure("App.TFrame", background="#f6f1e9")
-        style.configure("Surface.TFrame", background="#fffaf4", borderwidth=0, relief="flat")
-        style.configure("Rail.TFrame", background="#efe5d7", borderwidth=0, relief="flat")
-        style.configure("StepItem.TFrame", background="#fbf6ee", borderwidth=0, relief="flat")
-        style.configure("Header.TFrame", background="#f6f1e9")
-        style.configure("ActionBar.TFrame", background="#fffaf4", borderwidth=0, relief="flat")
-        style.configure("Step.TFrame", background="#f7efe4")
-        style.configure("Body.TLabel", background="#fffaf4", foreground="#2e2b28")
-        style.configure("Muted.TLabel", background="#fffaf4", foreground="#81776c", font=("Microsoft YaHei UI", 9))
-        style.configure("RailMuted.TLabel", background="#efe5d7", foreground="#7a6d61", font=("Microsoft YaHei UI", 9))
-        style.configure("RailTitle.TLabel", background="#efe5d7", foreground="#302b26", font=("Microsoft YaHei UI", 13, "bold"))
-        style.configure("StepItemTitle.TLabel", background="#fbf6ee", foreground="#4d6d55", font=("Microsoft YaHei UI", 10, "bold"))
-        style.configure("StepItemText.TLabel", background="#fbf6ee", foreground="#7a6d61", font=("Microsoft YaHei UI", 9))
-        style.configure("PageTitle.TLabel", background="#f6f1e9", foreground="#2a2622", font=("Microsoft YaHei UI", 21, "bold"))
-        style.configure("PageSubtitle.TLabel", background="#f6f1e9", foreground="#796f65", font=("Microsoft YaHei UI", 10))
-        style.configure("FreeNoticeTitle.TLabel", background="#fff2ec", foreground="#a23f32", font=("Microsoft YaHei UI", 11, "bold"))
-        style.configure("FreeNoticeBody.TLabel", background="#fff2ec", foreground="#6d5d55", font=("Microsoft YaHei UI", 9))
-        style.configure("FreeNoticeLink.TLabel", background="#fff2ec", foreground="#1f6feb", font=("Microsoft YaHei UI", 9, "underline"))
-        style.configure("Eyebrow.TLabel", background="#f6f1e9", foreground="#9a6b3d", font=("Microsoft YaHei UI", 9, "bold"))
-        style.configure("SectionTitle.TLabel", background="#fffaf4", foreground="#2a2622", font=("Microsoft YaHei UI", 12, "bold"))
-        style.configure("StepTitle.TLabel", background="#f1eadf", foreground="#5f725e", font=("Microsoft YaHei UI", 9, "bold"))
-        style.configure("StepText.TLabel", background="#f1eadf", foreground="#6d6259", font=("Microsoft YaHei UI", 9))
-        style.configure("Status.TLabel", background="#e8f0df", foreground="#3f6b50", padding=(14, 8), font=("Microsoft YaHei UI", 10, "bold"))
-        style.configure("Version.TLabel", background="#f1eadf", foreground="#7a6d61", padding=(10, 5), font=("Microsoft YaHei UI", 9, "bold"))
-        style.configure("TEntry", padding=(10, 8), fieldbackground="#fffdf9", bordercolor="#e4d8ca", lightcolor="#e4d8ca", darkcolor="#e4d8ca")
-        style.configure("TSpinbox", padding=(10, 8), fieldbackground="#fffdf9", bordercolor="#e4d8ca", lightcolor="#e4d8ca", darkcolor="#e4d8ca")
-        style.configure("TCheckbutton", background="#fffaf4", foreground="#2e2b28")
-        style.map("TCheckbutton", background=[("active", "#fffaf4")])
-        style.configure("Vertical.TScrollbar", background="#eadfce", troughcolor="#fffaf4", bordercolor="#fffaf4", arrowcolor="#7b6f63")
-
-        style.configure("Primary.TButton", padding=(16, 9), background="#5f7f67", foreground="#ffffff", borderwidth=0, font=("Microsoft YaHei UI", 10, "bold"))
-        style.map("Primary.TButton", background=[("active", "#536f5a"), ("pressed", "#48614f")], foreground=[("active", "#ffffff")])
-        style.configure("Secondary.TButton", padding=(14, 9), background="#f6eee4", foreground="#3c3732", bordercolor="#f6eee4", borderwidth=0)
-        style.map("Secondary.TButton", background=[("active", "#f4ece2"), ("pressed", "#ede2d6")])
-        style.configure("Danger.TButton", padding=(14, 9), background="#fff0eb", foreground="#a44e3f", bordercolor="#fff0eb", borderwidth=0)
-        style.map("Danger.TButton", background=[("active", "#fbe2d9"), ("pressed", "#f4d3c8")])
-        style.configure("SwitchOn.TButton", padding=(14, 9), background="#5f7f67", foreground="#ffffff", borderwidth=0, font=("Microsoft YaHei UI", 10, "bold"))
-        style.map("SwitchOn.TButton", background=[("active", "#536f5a"), ("pressed", "#48614f")], foreground=[("active", "#ffffff")])
-        style.configure("SwitchOff.TButton", padding=(14, 9), background="#f1eadf", foreground="#7a6d61", borderwidth=0, font=("Microsoft YaHei UI", 10, "bold"))
-        style.map("SwitchOff.TButton", background=[("active", "#eadfce"), ("pressed", "#e3d5c2")])
+        style.configure(".", font=font, background=APP_BG, foreground=TEXT)
+        style.configure("App.TFrame", background=APP_BG)
+        style.configure("Surface.TFrame", background=SURFACE, borderwidth=0, relief="flat")
+        style.configure("Rail.TFrame", background=SURFACE, borderwidth=0, relief="flat")
+        style.configure("StepItem.TFrame", background=SOFT_SURFACE, borderwidth=0, relief="flat")
+        style.configure("Header.TFrame", background=APP_BG)
+        style.configure("ActionBar.TFrame", background=SURFACE, borderwidth=0, relief="flat")
+        style.configure("Step.TFrame", background=SOFT_SURFACE)
+        style.configure("Body.TLabel", background=SURFACE, foreground=TEXT)
+        style.configure("Muted.TLabel", background=SURFACE, foreground=MUTED, font=("Microsoft YaHei UI", 9))
+        style.configure("RailMuted.TLabel", background=SURFACE, foreground=MUTED, font=("Microsoft YaHei UI", 9))
+        style.configure("RailTitle.TLabel", background=SURFACE, foreground=TEXT, font=("Microsoft YaHei UI", 12, "bold"))
+        style.configure("StepItemTitle.TLabel", background=SOFT_SURFACE, foreground=TEXT, font=("Microsoft YaHei UI", 10, "bold"))
+        style.configure("StepItemText.TLabel", background=SOFT_SURFACE, foreground=MUTED, font=("Microsoft YaHei UI", 9))
+        style.configure("PageTitle.TLabel", background=APP_BG, foreground=TEXT, font=("Microsoft YaHei UI", 22, "bold"))
+        style.configure("PageSubtitle.TLabel", background=APP_BG, foreground=MUTED, font=("Microsoft YaHei UI", 10))
+        style.configure("FreeNoticeTitle.TLabel", background=SURFACE, foreground="#b45309", font=("Microsoft YaHei UI", 10, "bold"))
+        style.configure("FreeNoticeBody.TLabel", background=SURFACE, foreground=MUTED, font=("Microsoft YaHei UI", 9))
+        style.configure("FreeNoticeLink.TLabel", background=SURFACE, foreground=ACCENT, font=("Microsoft YaHei UI", 9, "underline"))
+        style.configure("Eyebrow.TLabel", background=APP_BG, foreground=ACCENT, font=("Microsoft YaHei UI", 9, "bold"))
+        style.configure("SectionTitle.TLabel", background=SURFACE, foreground=TEXT, font=("Microsoft YaHei UI", 12, "bold"))
+        style.configure("StepTitle.TLabel", background=SOFT_SURFACE, foreground=ACCENT, font=("Microsoft YaHei UI", 9, "bold"))
+        style.configure("StepText.TLabel", background=SOFT_SURFACE, foreground=MUTED, font=("Microsoft YaHei UI", 9))
+        style.configure("Status.TLabel", background="#eef2f7", foreground=MUTED, padding=(14, 8), font=("Microsoft YaHei UI", 10, "bold"))
+        style.configure("StatusRunning.TLabel", background="#ecfdf5", foreground=SUCCESS, padding=(14, 8), font=("Microsoft YaHei UI", 10, "bold"))
+        style.configure("Version.TLabel", background="#e0ecff", foreground=ACCENT, padding=(10, 5), font=("Microsoft YaHei UI", 9, "bold"))
+        style.configure("TEntry", padding=(10, 8), fieldbackground=SOFT_SURFACE, bordercolor=BORDER, lightcolor=BORDER, darkcolor=BORDER)
+        style.configure("TSpinbox", padding=(10, 8), fieldbackground=SOFT_SURFACE, bordercolor=BORDER, lightcolor=BORDER, darkcolor=BORDER)
+        style.configure("TCombobox", padding=(8, 7), fieldbackground=SOFT_SURFACE, background=SOFT_SURFACE, bordercolor=BORDER, lightcolor=BORDER, darkcolor=BORDER, arrowcolor=MUTED)
+        style.map("TCombobox", fieldbackground=[("readonly", SOFT_SURFACE)], selectbackground=[("readonly", SOFT_SURFACE)], selectforeground=[("readonly", TEXT)])
+        style.configure("TCheckbutton", background=SURFACE, foreground=TEXT)
+        style.map("TCheckbutton", background=[("active", SURFACE)])
+        style.configure("Vertical.TScrollbar", background="#cbd5e1", troughcolor=SURFACE, bordercolor=SURFACE, arrowcolor=MUTED)
 
     def _build_ui(self) -> None:
         self.columnconfigure(0, weight=1)
         self.rowconfigure(1, weight=1)
 
-        header = ttk.Frame(self, padding=(30, 14, 30, 10), style="Header.TFrame")
+        header = ttk.Frame(self, padding=(28, 16, 28, 10), style="Header.TFrame")
         header.grid(row=0, column=0, sticky="ew")
         header.columnconfigure(0, weight=1)
 
@@ -307,22 +328,23 @@ class App(tk.Tk):
         meta.grid(row=0, column=0, sticky="w")
         ttk.Label(meta, text="本地直播掉宝助手", style="Eyebrow.TLabel").grid(row=0, column=0, sticky="w")
         ttk.Label(meta, textvariable=self.version_var, style="Version.TLabel").grid(row=0, column=1, sticky="w", padx=(10, 0))
-        ttk.Label(header, text="守望先锋 B 站直播挂宝", style="PageTitle.TLabel").grid(row=1, column=0, sticky="w", pady=(4, 0))
+        ttk.Label(header, text="守望先锋 B 站直播挂宝", style="PageTitle.TLabel").grid(row=1, column=0, sticky="w", pady=(5, 0))
         ttk.Label(
             header,
             text="登录、观看计时、任务检查和领奖都在这里完成。默认直播间已填好，打开后按步骤走就行。",
             style="PageSubtitle.TLabel",
         ).grid(row=2, column=0, sticky="w", pady=(6, 0))
-        ttk.Label(header, textvariable=self.status_var, style="Status.TLabel").grid(row=1, column=1, rowspan=2, sticky="e")
+        self.status_label = ttk.Label(header, textvariable=self.status_var, style="Status.TLabel")
+        self.status_label.grid(row=1, column=1, rowspan=2, sticky="e")
 
-        body = ttk.Frame(self, padding=(30, 0, 30, 18), style="App.TFrame")
+        body = ttk.Frame(self, padding=(28, 0, 28, 18), style="App.TFrame")
         body.grid(row=1, column=0, sticky="nsew")
         body.columnconfigure(0, weight=7, uniform="main")
         body.columnconfigure(1, weight=4, uniform="main")
         body.rowconfigure(2, weight=1)
 
-        free_panel = RoundedPanel(body, fill="#fff2ec", background="#f6f1e9", radius=18, padding=(14, 8), outline="#f1cabb", shadow=False)
-        free_panel.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 8))
+        free_panel = RoundedPanel(body, fill=SURFACE, background=APP_BG, radius=16, padding=(14, 8), outline="#fde68a", shadow=False)
+        free_panel.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 10))
         free = free_panel.inner
         free.columnconfigure(0, weight=1)
         free.columnconfigure(1, weight=0)
@@ -344,13 +366,13 @@ class App(tk.Tk):
         copy_label.grid(row=0, column=2, sticky="e", padx=(14, 0))
         copy_label.bind("<Button-1>", lambda _event: self._copy_source_url())
 
-        guide_panel = RoundedPanel(body, fill="#efe5d7", background="#f6f1e9", radius=20, padding=(14, 10), outline="#e5d8c7")
+        guide_panel = RoundedPanel(body, fill=SURFACE, background=APP_BG, radius=18, padding=(14, 10), outline=BORDER)
         guide_panel.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(0, 12))
         guide = guide_panel.inner
         guide.columnconfigure((0, 1, 2, 3), weight=1, uniform="guide")
 
         center = ttk.Frame(body, style="App.TFrame")
-        center.grid(row=2, column=0, sticky="nsew", padx=(0, 18))
+        center.grid(row=2, column=0, sticky="nsew", padx=(0, 16))
         center.columnconfigure((0, 1), weight=1, uniform="config")
         center.rowconfigure(1, weight=1)
         center.rowconfigure(2, weight=0)
@@ -382,7 +404,7 @@ class App(tk.Tk):
             ("04", "领取奖励", "完成后自动或手动领取"),
         )
         for index, (number, title, detail) in enumerate(items):
-            cell_panel = RoundedPanel(parent, fill="#fbf6ee", background="#efe5d7", radius=14, padding=(10, 8), outline="#eadfce", shadow=False)
+            cell_panel = RoundedPanel(parent, fill=SOFT_SURFACE, background=SURFACE, radius=14, padding=(10, 8), outline=BORDER, shadow=False)
             cell_panel.grid(row=1, column=index, sticky="nsew", pady=(10, 0), padx=(0 if index == 0 else 8, 0))
             cell = cell_panel.inner
             cell.columnconfigure(1, weight=1)
@@ -411,17 +433,17 @@ class App(tk.Tk):
         self.account_combo = ttk.Combobox(card, textvariable=self.selected_account_var, values=self._account_names(), state="readonly", height=6)
         self.account_combo.grid(row=3, column=0, sticky="ew", pady=(6, 8), padx=(0, 8))
         self.account_combo.bind("<<ComboboxSelected>>", self._on_account_selected)
-        account_entry = tk.Entry(card, textvariable=self.account_name_var, borderwidth=0, relief="flat", bg="#fffdf9", fg="#302b26", insertbackground="#302b26", font=("Microsoft YaHei UI", 10))
+        account_entry = tk.Entry(card, textvariable=self.account_name_var, borderwidth=0, relief="flat", bg=SOFT_SURFACE, fg=TEXT, insertbackground=TEXT, font=("Microsoft YaHei UI", 10))
         account_entry.grid(row=3, column=1, sticky="ew", pady=(6, 8), padx=(8, 0))
 
-        PillButton(card, "保存账号", self._save_account, fill="#f1eadf", foreground="#3c3732", active_fill="#eadfce", height=34).grid(row=4, column=0, sticky="ew", pady=(0, 10), padx=(0, 8))
-        PillButton(card, "删除账号", self._delete_account, fill="#fff0eb", foreground="#a44e3f", active_fill="#fbe2d9", height=34).grid(row=4, column=1, sticky="ew", pady=(0, 10), padx=(8, 0))
+        PillButton(card, "保存账号", self._save_account, fill=SOFT_SURFACE, foreground=TEXT, active_fill="#eef2ff", height=34).grid(row=4, column=0, sticky="ew", pady=(0, 10), padx=(0, 8))
+        PillButton(card, "删除账号", self._delete_account, fill=DANGER_BG, foreground=DANGER, active_fill="#ffe4e6", height=34).grid(row=4, column=1, sticky="ew", pady=(0, 10), padx=(8, 0))
 
-        PillButton(card, "自动获取 Cookie", self._capture_cookie, fill="#5f7f67", active_fill="#536f5a").grid(row=5, column=0, sticky="ew", pady=(0, 10), padx=(0, 8))
-        PillButton(card, "只打开登录页", self._open_cookie_login_page, fill="#f1eadf", foreground="#3c3732", active_fill="#eadfce").grid(row=5, column=1, sticky="ew", pady=(0, 10), padx=(8, 0))
+        PillButton(card, "自动获取 Cookie", self._capture_cookie, fill=ACCENT, active_fill=ACCENT_ACTIVE).grid(row=5, column=0, sticky="ew", pady=(0, 10), padx=(0, 8))
+        PillButton(card, "只打开登录页", self._open_cookie_login_page, fill=SOFT_SURFACE, foreground=TEXT, active_fill="#eef2ff").grid(row=5, column=1, sticky="ew", pady=(0, 10), padx=(8, 0))
 
         ttk.Label(card, text="Cookie 内容", style="Body.TLabel").grid(row=6, column=0, columnspan=2, sticky="w")
-        cookie_box = RoundedPanel(card, fill="#fffdf9", background="#fffaf4", radius=16, padding=(4, 4), min_height=72, outline="#eadfce", shadow=False)
+        cookie_box = RoundedPanel(card, fill=SOFT_SURFACE, background=SURFACE, radius=14, padding=(4, 4), min_height=72, outline=BORDER, shadow=False)
         cookie_box.grid(row=7, column=0, columnspan=2, sticky="nsew", pady=(6, 0))
         cookie_box.inner.columnconfigure(0, weight=1)
         cookie_box.inner.rowconfigure(0, weight=1)
@@ -432,9 +454,9 @@ class App(tk.Tk):
             undo=True,
             borderwidth=0,
             relief="flat",
-            bg="#fffdf9",
-            fg="#302b26",
-            insertbackground="#302b26",
+            bg=SOFT_SURFACE,
+            fg=TEXT,
+            insertbackground=TEXT,
             highlightthickness=0,
             padx=8,
             pady=6,
@@ -458,7 +480,7 @@ class App(tk.Tk):
         card.columnconfigure(1, weight=1)
 
         ttk.Label(card, text="直播间号或链接", style="Body.TLabel").grid(row=2, column=0, columnspan=2, sticky="w", pady=(10, 0))
-        room_box = RoundedPanel(card, fill="#fffdf9", background="#fffaf4", radius=16, padding=(12, 7), min_height=48, outline="#eadfce", shadow=False)
+        room_box = RoundedPanel(card, fill=SOFT_SURFACE, background=SURFACE, radius=14, padding=(12, 7), min_height=48, outline=BORDER, shadow=False)
         room_box.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(6, 10))
         room_box.inner.columnconfigure(0, weight=1)
         room_entry = tk.Entry(
@@ -466,9 +488,9 @@ class App(tk.Tk):
             textvariable=self.room_var,
             borderwidth=0,
             relief="flat",
-            bg="#fffdf9",
-            fg="#302b26",
-            insertbackground="#302b26",
+            bg=SOFT_SURFACE,
+            fg=TEXT,
+            insertbackground=TEXT,
             font=("Microsoft YaHei UI", 10),
         )
         room_entry.grid(row=0, column=0, sticky="ew")
@@ -479,17 +501,14 @@ class App(tk.Tk):
         Stepper(card, self.interval_var, minimum=MIN_CHECK_INTERVAL, maximum=MAX_CHECK_INTERVAL).grid(row=5, column=0, sticky="ew", pady=(6, 6))
         Stepper(card, self.watch_threads_var, minimum=1, maximum=MAX_WATCH_WINDOWS).grid(row=5, column=1, sticky="ew", padx=(14, 0), pady=(6, 6))
         ttk.Label(card, text="自动领奖", style="Body.TLabel").grid(row=6, column=0, sticky="w", pady=(4, 0))
-        self.auto_claim_button = PillButton(card, "已开启", self._toggle_auto_claim, fill="#5f7f67", active_fill="#536f5a")
+        self.auto_claim_button = PillButton(card, "已开启", self._toggle_auto_claim, fill=SUCCESS, active_fill=SUCCESS_ACTIVE)
         self.auto_claim_button.grid(row=6, column=1, sticky="ew", padx=(14, 0), pady=(2, 8))
         self._refresh_auto_claim_button()
-        ttk.Label(card, text="任务 ID（可留空）", style="Body.TLabel").grid(
-            row=7,
-            column=0,
-            sticky="w",
-            pady=(8, 0),
-        )
-        task_ids_box = RoundedPanel(card, fill="#fffdf9", background="#fffaf4", radius=16, padding=(4, 4), min_height=44, outline="#eadfce", shadow=False)
-        task_ids_box.grid(row=7, column=1, sticky="ew", padx=(14, 0), pady=(6, 0))
+        ttk.Label(card, text="任务 ID（可留空）", style="Body.TLabel").grid(row=7, column=0, sticky="w", pady=(8, 0))
+        ttk.Label(card, text="通知 URL（可留空）", style="Body.TLabel").grid(row=7, column=1, sticky="w", padx=(14, 0), pady=(8, 0))
+
+        task_ids_box = RoundedPanel(card, fill=SOFT_SURFACE, background=SURFACE, radius=14, padding=(4, 4), min_height=44, outline=BORDER, shadow=False)
+        task_ids_box.grid(row=8, column=0, sticky="ew", pady=(6, 0))
         task_ids_box.inner.columnconfigure(0, weight=1)
         task_ids_box.inner.rowconfigure(0, weight=1)
         self.task_ids_text = tk.Text(
@@ -499,9 +518,9 @@ class App(tk.Tk):
             undo=True,
             borderwidth=0,
             relief="flat",
-            bg="#fffdf9",
-            fg="#302b26",
-            insertbackground="#302b26",
+            bg=SOFT_SURFACE,
+            fg=TEXT,
+            insertbackground=TEXT,
             highlightthickness=0,
             padx=8,
             pady=6,
@@ -510,32 +529,31 @@ class App(tk.Tk):
         self.task_ids_text.grid(row=0, column=0, sticky="nsew")
         self.task_ids_text.insert("1.0", self.config_data.task_ids)
 
-        ttk.Label(card, text="通知 URL（可留空）", style="Body.TLabel").grid(row=8, column=0, columnspan=2, sticky="w", pady=(10, 0))
-        notify_box = RoundedPanel(card, fill="#fffdf9", background="#fffaf4", radius=16, padding=(12, 7), min_height=44, outline="#eadfce", shadow=False)
-        notify_box.grid(row=9, column=0, columnspan=2, sticky="ew", pady=(6, 0))
+        notify_box = RoundedPanel(card, fill=SOFT_SURFACE, background=SURFACE, radius=14, padding=(12, 7), min_height=44, outline=BORDER, shadow=False)
+        notify_box.grid(row=8, column=1, sticky="ew", padx=(14, 0), pady=(6, 0))
         notify_box.inner.columnconfigure(0, weight=1)
         notify_entry = tk.Entry(
             notify_box.inner,
             textvariable=self.notify_url_var,
             borderwidth=0,
             relief="flat",
-            bg="#fffdf9",
-            fg="#302b26",
-            insertbackground="#302b26",
+            bg=SOFT_SURFACE,
+            fg=TEXT,
+            insertbackground=TEXT,
             font=("Microsoft YaHei UI", 10),
         )
         notify_entry.grid(row=0, column=0, sticky="ew")
 
     def _build_actions(self, parent: ttk.Frame) -> None:
-        actions_panel = RoundedPanel(parent, fill="#fffaf4", background="#f6f1e9", radius=24, padding=(16, 12))
+        actions_panel = RoundedPanel(parent, fill=SURFACE, background=APP_BG, radius=18, padding=(16, 12))
         actions_panel.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(10, 0))
         actions = actions_panel.inner
         actions.columnconfigure((0, 1, 2, 3), weight=1, uniform="actions")
 
-        PillButton(actions, "保存配置", self._save, fill="#f1eadf", foreground="#3c3732", active_fill="#eadfce").grid(row=0, column=0, sticky="ew", padx=(0, 8))
-        PillButton(actions, "开始挂宝", self._start, fill="#5f7f67", active_fill="#536f5a").grid(row=0, column=1, sticky="ew", padx=8)
-        PillButton(actions, "领取奖励", self._claim, fill="#f1eadf", foreground="#3c3732", active_fill="#eadfce").grid(row=0, column=2, sticky="ew", padx=8)
-        PillButton(actions, "停止", self._stop, fill="#fff0eb", foreground="#a44e3f", active_fill="#fbe2d9").grid(row=0, column=3, sticky="ew", padx=(8, 0))
+        PillButton(actions, "保存配置", self._save, fill=SOFT_SURFACE, foreground=TEXT, active_fill="#eef2ff").grid(row=0, column=0, sticky="ew", padx=(0, 8))
+        PillButton(actions, "开始挂宝", self._start, fill=ACCENT, active_fill=ACCENT_ACTIVE).grid(row=0, column=1, sticky="ew", padx=8)
+        PillButton(actions, "领取奖励", self._claim, fill=SOFT_SURFACE, foreground=TEXT, active_fill="#eef2ff").grid(row=0, column=2, sticky="ew", padx=8)
+        PillButton(actions, "停止", self._stop, fill=DANGER_BG, foreground=DANGER, active_fill="#ffe4e6").grid(row=0, column=3, sticky="ew", padx=(8, 0))
 
     def _build_log_card(self, parent: ttk.Frame) -> None:
         parent.rowconfigure(0, weight=1)
@@ -545,7 +563,7 @@ class App(tk.Tk):
         progress_card.columnconfigure(0, weight=1)
         progress_card.rowconfigure(2, weight=1)
 
-        progress_wrap = RoundedPanel(progress_card, fill="#fffdf9", background="#fffaf4", radius=18, padding=(4, 4), min_height=300, outline="#eadfce", shadow=False, auto_height=False)
+        progress_wrap = RoundedPanel(progress_card, fill=SOFT_SURFACE, background=SURFACE, radius=14, padding=(4, 4), min_height=300, outline=BORDER, shadow=False, auto_height=False)
         progress_wrap.grid(row=2, column=0, sticky="nsew", pady=(14, 0))
         progress_wrap.inner.columnconfigure(0, weight=1)
         progress_wrap.inner.rowconfigure(0, weight=1)
@@ -557,9 +575,9 @@ class App(tk.Tk):
             state="disabled",
             borderwidth=0,
             relief="flat",
-            bg="#fffdf9",
-            fg="#3f3a35",
-            insertbackground="#3f3a35",
+            bg=SOFT_SURFACE,
+            fg=TEXT,
+            insertbackground=TEXT,
             highlightthickness=0,
             padx=14,
             pady=12,
@@ -575,7 +593,7 @@ class App(tk.Tk):
         card.columnconfigure(0, weight=1)
         card.rowconfigure(2, weight=1)
 
-        log_wrap = RoundedPanel(card, fill="#fffdf9", background="#fffaf4", radius=18, padding=(4, 4), min_height=72, outline="#eadfce", shadow=False)
+        log_wrap = RoundedPanel(card, fill=SOFT_SURFACE, background=SURFACE, radius=14, padding=(4, 4), min_height=72, outline=BORDER, shadow=False)
         log_wrap.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(10, 0))
         log_wrap.inner.columnconfigure(0, weight=1)
         log_wrap.inner.rowconfigure(0, weight=1)
@@ -587,9 +605,9 @@ class App(tk.Tk):
             state="disabled",
             borderwidth=0,
             relief="flat",
-            bg="#fffdf9",
-            fg="#3f3a35",
-            insertbackground="#3f3a35",
+            bg=SOFT_SURFACE,
+            fg=TEXT,
+            insertbackground=TEXT,
             highlightthickness=0,
             padx=14,
             pady=12,
@@ -617,7 +635,7 @@ class App(tk.Tk):
         auto_height: bool | None = None,
     ) -> ttk.Frame:
         panel_auto_height = auto_height if auto_height is not None else sticky != "nsew"
-        panel = RoundedPanel(parent, fill="#fffaf4", background="#f6f1e9", radius=24, padding=(19, 14), min_height=min_height, auto_height=panel_auto_height)
+        panel = RoundedPanel(parent, fill=SURFACE, background=APP_BG, radius=18, padding=(18, 14), min_height=min_height, auto_height=panel_auto_height)
         panel.grid(row=row, column=column, columnspan=columnspan, sticky=sticky, pady=(0, 12), padx=padx)
         card = panel.inner
         card.columnconfigure(0, weight=1)
@@ -648,9 +666,9 @@ class App(tk.Tk):
 
     def _refresh_auto_claim_button(self) -> None:
         if bool(self.auto_claim_var.get()):
-            self.auto_claim_button.set_appearance(text="已开启", fill="#5f7f67", foreground="#ffffff", active_fill="#536f5a")
+            self.auto_claim_button.set_appearance(text="自动领取已开", fill=SUCCESS, foreground="#ffffff", active_fill=SUCCESS_ACTIVE)
         else:
-            self.auto_claim_button.set_appearance(text="已关闭", fill="#f1eadf", foreground="#7a6d61", active_fill="#eadfce")
+            self.auto_claim_button.set_appearance(text="自动领取已关", fill=SOFT_SURFACE, foreground=MUTED, active_fill="#eef2ff")
 
     def _safe_int_var(self, variable: tk.IntVar, default: int) -> int:
         try:
@@ -773,7 +791,7 @@ class App(tk.Tk):
         )
         self.watcher = LiveWatcher(options, self._thread_log)
         self.watcher.start()
-        self.status_var.set("运行中")
+        self._set_status("运行中")
         start_message = (
             f"已启动：房间 {config.room_id}，后台计时 {config.watch_threads} 路，"
             f"检查间隔 {config.check_interval} 秒，自动领奖={'开启' if config.auto_claim else '关闭'}"
@@ -789,13 +807,13 @@ class App(tk.Tk):
     def _stop(self) -> None:
         if self.watcher:
             self.watcher.stop()
-        self.status_var.set("未运行")
+        self._set_status("未运行")
 
     def _capture_cookie(self) -> None:
         if self.cookie_capture_thread and self.cookie_capture_thread.is_alive():
             self._log("自动获取 Cookie 正在运行中")
             return
-        self.status_var.set("正在获取 Cookie")
+        self._set_status("正在获取 Cookie")
         self._log("正在准备打开 Edge/Chrome 登录 B 站，请稍等")
         self.cookie_capture_thread = threading.Thread(target=self._capture_cookie_worker, daemon=True)
         self.cookie_capture_thread.start()
@@ -838,6 +856,12 @@ class App(tk.Tk):
         self.log_text.insert("end", f"[{timestamp}] {message}\n")
         self.log_text.see("end")
         self.log_text.configure(state="disabled")
+
+    def _set_status(self, message: str) -> None:
+        self.status_var.set(message)
+        if self.status_label is not None:
+            style = "StatusRunning.TLabel" if message == "运行中" else "Status.TLabel"
+            self.status_label.configure(style=style)
 
     def _notify_from_message(self, message: str) -> None:
         if not self._is_notification_message(message):
@@ -955,7 +979,7 @@ class App(tk.Tk):
                 self._save()
                 continue
             if message.startswith("__STATUS__:"):
-                self.status_var.set(message.removeprefix("__STATUS__:"))
+                self._set_status(message.removeprefix("__STATUS__:"))
                 continue
             if message.startswith("__ERROR__:"):
                 detail = message.removeprefix("__ERROR__:")
