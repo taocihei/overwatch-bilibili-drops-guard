@@ -11,8 +11,9 @@ from tkinter import messagebox, ttk
 from typing import Callable
 
 from . import __version__
-from .config import APP_DIR, MAX_CHECK_INTERVAL, MAX_WATCH_WINDOWS, MIN_CHECK_INTERVAL, AppConfig, load_config, sanitize_config, save_config
+from .config import APP_DIR, MAX_CHECK_INTERVAL, MAX_WATCH_WINDOWS, MIN_CHECK_INTERVAL, AccountProfile, AppConfig, load_config, sanitize_config, save_config
 from .cookie_capture import capture_bilibili_cookie, open_bilibili_login_page
+from .notifier import send_notification
 from .watcher import LiveWatcher, WatchOptions
 
 
@@ -216,8 +217,14 @@ class App(tk.Tk):
         self.cookie_capture_thread: threading.Thread | None = None
         self.progress_events: list[str] = []
         self.progress_snapshot = ""
+        self.notification_history: dict[str, float] = {}
+        self.notification_failure_history: dict[str, float] = {}
+        self.notification_pending: set[str] = set()
 
         self.cookie_var = tk.StringVar(value=self.config_data.cookie)
+        self.selected_account_var = tk.StringVar(value=self.config_data.account_name)
+        self.account_name_var = tk.StringVar(value=self.config_data.account_name)
+        self.notify_url_var = tk.StringVar(value=self.config_data.notify_url)
         self.room_var = tk.StringVar(value=self.config_data.room_id)
         self.interval_var = tk.IntVar(value=self.config_data.check_interval)
         self.auto_claim_var = tk.BooleanVar(value=self.config_data.auto_claim)
@@ -397,14 +404,25 @@ class App(tk.Tk):
         )
         card.columnconfigure(0, weight=1)
         card.columnconfigure(1, weight=1)
-        card.rowconfigure(4, weight=1)
+        card.rowconfigure(7, weight=1)
 
-        PillButton(card, "自动获取 Cookie", self._capture_cookie, fill="#5f7f67", active_fill="#536f5a").grid(row=2, column=0, sticky="ew", pady=(10, 10), padx=(0, 8))
-        PillButton(card, "只打开登录页", self._open_cookie_login_page, fill="#f1eadf", foreground="#3c3732", active_fill="#eadfce").grid(row=2, column=1, sticky="ew", pady=(10, 10), padx=(8, 0))
+        ttk.Label(card, text="当前账号", style="Body.TLabel").grid(row=2, column=0, sticky="w", pady=(10, 0))
+        ttk.Label(card, text="账号名称", style="Body.TLabel").grid(row=2, column=1, sticky="w", padx=(8, 0), pady=(10, 0))
+        self.account_combo = ttk.Combobox(card, textvariable=self.selected_account_var, values=self._account_names(), state="readonly", height=6)
+        self.account_combo.grid(row=3, column=0, sticky="ew", pady=(6, 8), padx=(0, 8))
+        self.account_combo.bind("<<ComboboxSelected>>", self._on_account_selected)
+        account_entry = tk.Entry(card, textvariable=self.account_name_var, borderwidth=0, relief="flat", bg="#fffdf9", fg="#302b26", insertbackground="#302b26", font=("Microsoft YaHei UI", 10))
+        account_entry.grid(row=3, column=1, sticky="ew", pady=(6, 8), padx=(8, 0))
 
-        ttk.Label(card, text="Cookie 内容", style="Body.TLabel").grid(row=3, column=0, columnspan=2, sticky="w")
+        PillButton(card, "保存账号", self._save_account, fill="#f1eadf", foreground="#3c3732", active_fill="#eadfce", height=34).grid(row=4, column=0, sticky="ew", pady=(0, 10), padx=(0, 8))
+        PillButton(card, "删除账号", self._delete_account, fill="#fff0eb", foreground="#a44e3f", active_fill="#fbe2d9", height=34).grid(row=4, column=1, sticky="ew", pady=(0, 10), padx=(8, 0))
+
+        PillButton(card, "自动获取 Cookie", self._capture_cookie, fill="#5f7f67", active_fill="#536f5a").grid(row=5, column=0, sticky="ew", pady=(0, 10), padx=(0, 8))
+        PillButton(card, "只打开登录页", self._open_cookie_login_page, fill="#f1eadf", foreground="#3c3732", active_fill="#eadfce").grid(row=5, column=1, sticky="ew", pady=(0, 10), padx=(8, 0))
+
+        ttk.Label(card, text="Cookie 内容", style="Body.TLabel").grid(row=6, column=0, columnspan=2, sticky="w")
         cookie_box = RoundedPanel(card, fill="#fffdf9", background="#fffaf4", radius=16, padding=(4, 4), min_height=72, outline="#eadfce", shadow=False)
-        cookie_box.grid(row=4, column=0, columnspan=2, sticky="nsew", pady=(6, 0))
+        cookie_box.grid(row=7, column=0, columnspan=2, sticky="nsew", pady=(6, 0))
         cookie_box.inner.columnconfigure(0, weight=1)
         cookie_box.inner.rowconfigure(0, weight=1)
         self.cookie_text = tk.Text(
@@ -438,7 +456,6 @@ class App(tk.Tk):
         )
         card.columnconfigure(0, weight=1)
         card.columnconfigure(1, weight=1)
-        card.rowconfigure(8, weight=1)
 
         ttk.Label(card, text="直播间号或链接", style="Body.TLabel").grid(row=2, column=0, columnspan=2, sticky="w", pady=(10, 0))
         room_box = RoundedPanel(card, fill="#fffdf9", background="#fffaf4", radius=16, padding=(12, 7), min_height=48, outline="#eadfce", shadow=False)
@@ -493,15 +510,21 @@ class App(tk.Tk):
         self.task_ids_text.grid(row=0, column=0, sticky="nsew")
         self.task_ids_text.insert("1.0", self.config_data.task_ids)
 
-        rule_panel = RoundedPanel(card, fill="#f7efe4", background="#fffaf4", radius=17, padding=(12, 8), outline="#eadfce", shadow=False)
-        rule_panel.grid(row=8, column=0, columnspan=2, sticky="nsew", pady=(12, 0))
-        rules = rule_panel.inner
-        rules.columnconfigure(0, weight=1)
-        for index, text in enumerate((
-            "后台计时只发观看心跳，不打开直播间页面。",
-            "自动领奖固定 1 个线程；任务 ID 通常留空自动识别。",
-        )):
-            ttk.Label(rules, text=text, style="StepText.TLabel", wraplength=290).grid(row=index, column=0, sticky="ew", pady=(0 if index == 0 else 5, 0))
+        ttk.Label(card, text="通知 URL（可留空）", style="Body.TLabel").grid(row=8, column=0, columnspan=2, sticky="w", pady=(10, 0))
+        notify_box = RoundedPanel(card, fill="#fffdf9", background="#fffaf4", radius=16, padding=(12, 7), min_height=44, outline="#eadfce", shadow=False)
+        notify_box.grid(row=9, column=0, columnspan=2, sticky="ew", pady=(6, 0))
+        notify_box.inner.columnconfigure(0, weight=1)
+        notify_entry = tk.Entry(
+            notify_box.inner,
+            textvariable=self.notify_url_var,
+            borderwidth=0,
+            relief="flat",
+            bg="#fffdf9",
+            fg="#302b26",
+            insertbackground="#302b26",
+            font=("Microsoft YaHei UI", 10),
+        )
+        notify_entry.grid(row=0, column=0, sticky="ew")
 
     def _build_actions(self, parent: ttk.Frame) -> None:
         actions_panel = RoundedPanel(parent, fill="#fffaf4", background="#f6f1e9", radius=24, padding=(16, 12))
@@ -606,11 +629,14 @@ class App(tk.Tk):
     def _current_config(self) -> AppConfig:
         return sanitize_config(AppConfig(
             cookie=self.cookie_text.get("1.0", "end").strip(),
+            account_name=self.account_name_var.get().strip() or "默认账号",
+            accounts=self._accounts_with_current_cookie(),
             room_id=self.room_var.get().strip(),
             check_interval=self._safe_int_var(self.interval_var, 10),
             auto_claim=bool(self.auto_claim_var.get()),
             task_ids=self.task_ids_text.get("1.0", "end").strip(),
             watch_threads=self._safe_int_var(self.watch_threads_var, 1),
+            notify_url=self.notify_url_var.get().strip(),
         ))
 
     def _clear_initial_focus(self) -> None:
@@ -641,11 +667,84 @@ class App(tk.Tk):
         self.clipboard_append(SOURCE_URL)
         self._log("开源地址已复制")
 
+    def _account_names(self) -> list[str]:
+        names = [account.name for account in self.config_data.accounts if account.name]
+        if self.config_data.account_name and self.config_data.account_name not in names:
+            names.insert(0, self.config_data.account_name)
+        return names or ["默认账号"]
+
+    def _accounts_with_current_cookie(self) -> list[AccountProfile]:
+        account_name = self.account_name_var.get().strip() or "默认账号"
+        cookie = self.cookie_text.get("1.0", "end").strip()
+        accounts: list[AccountProfile] = []
+        replaced = False
+        for account in self.config_data.accounts:
+            if account.name == account_name:
+                if cookie:
+                    accounts.append(AccountProfile(name=account_name, cookie=cookie))
+                else:
+                    accounts.append(AccountProfile(name=account.name, cookie=account.cookie))
+                replaced = True
+            else:
+                accounts.append(AccountProfile(name=account.name, cookie=account.cookie))
+        if cookie and not replaced:
+            accounts.insert(0, AccountProfile(name=account_name, cookie=cookie))
+        return accounts
+
+    def _refresh_account_selector(self) -> None:
+        if hasattr(self, "account_combo"):
+            self.account_combo.configure(values=self._account_names())
+
+    def _on_account_selected(self, _event: tk.Event | None = None) -> None:
+        name = self.selected_account_var.get().strip()
+        for account in self.config_data.accounts:
+            if account.name == name:
+                self.account_name_var.set(name)
+                self.cookie_text.delete("1.0", "end")
+                self.cookie_text.insert("1.0", account.cookie)
+                self._log(f"已切换账号：{name}")
+                return
+
+    def _save_account(self) -> None:
+        self._save()
+        self._log(f"账号已保存：{self.config_data.account_name}")
+
+    def _delete_account(self) -> None:
+        name = self.account_name_var.get().strip() or self.selected_account_var.get().strip()
+        accounts = [account for account in self.config_data.accounts if account.name != name]
+        if len(accounts) == len(self.config_data.accounts):
+            self._log("没有可删除的账号")
+            return
+        next_account = accounts[0] if accounts else AccountProfile()
+        config = sanitize_config(AppConfig(
+            cookie=next_account.cookie,
+            account_name=next_account.name,
+            accounts=accounts,
+            room_id=self.room_var.get().strip(),
+            check_interval=self._safe_int_var(self.interval_var, 10),
+            auto_claim=bool(self.auto_claim_var.get()),
+            task_ids=self.task_ids_text.get("1.0", "end").strip(),
+            watch_threads=self._safe_int_var(self.watch_threads_var, 1),
+            notify_url=self.notify_url_var.get().strip(),
+        ))
+        save_config(config)
+        self.config_data = config
+        self.selected_account_var.set(config.account_name)
+        self.account_name_var.set(config.account_name)
+        self.cookie_text.delete("1.0", "end")
+        self.cookie_text.insert("1.0", config.cookie)
+        self._refresh_account_selector()
+        self._log(f"已删除账号：{name}")
+
     def _save(self) -> None:
         config = self._current_config()
         save_config(config)
         self.config_data = config
         self.room_var.set(config.room_id)
+        self.selected_account_var.set(config.account_name)
+        self.account_name_var.set(config.account_name)
+        self.notify_url_var.set(config.notify_url)
+        self._refresh_account_selector()
         self._log("配置已保存")
 
     def _start(self) -> None:
@@ -675,14 +774,17 @@ class App(tk.Tk):
         self.watcher = LiveWatcher(options, self._thread_log)
         self.watcher.start()
         self.status_var.set("运行中")
-        self._log(
+        start_message = (
             f"已启动：房间 {config.room_id}，后台计时 {config.watch_threads} 路，"
             f"检查间隔 {config.check_interval} 秒，自动领奖={'开启' if config.auto_claim else '关闭'}"
         )
-        self._progress_log(
+        progress_start_message = (
             f"已启动：房间 {config.room_id}，后台计时 {config.watch_threads} 路，"
             f"每 {config.check_interval} 秒刷新一次，自动领奖={'开启' if config.auto_claim else '关闭'}"
         )
+        self._notify_from_message(start_message)
+        self._log(start_message)
+        self._progress_log(progress_start_message)
 
     def _stop(self) -> None:
         if self.watcher:
@@ -736,6 +838,60 @@ class App(tk.Tk):
         self.log_text.insert("end", f"[{timestamp}] {message}\n")
         self.log_text.see("end")
         self.log_text.configure(state="disabled")
+
+    def _notify_from_message(self, message: str) -> None:
+        if not self._is_notification_message(message):
+            return
+        url = self.notify_url_var.get().strip() or self.config_data.notify_url
+        if not url:
+            return
+        key = self._notification_key(url, message)
+        now = datetime.now().timestamp()
+        if now - self.notification_history.get(key, 0) < 300:
+            return
+        if now - self.notification_failure_history.get(key, 0) < 30:
+            return
+        if key in self.notification_pending:
+            return
+        self.notification_pending.add(key)
+        level = "error" if "失败" in message or "异常" in message or "失效" in message else "info"
+        threading.Thread(target=self._send_notification_worker, args=(url, key, message, level), daemon=True).start()
+
+    def _send_notification_worker(self, url: str, key: str, message: str, level: str) -> None:
+        try:
+            send_notification(url, "守望先锋 B 站直播挂宝", message, level)
+            self.notification_history[key] = datetime.now().timestamp()
+        except Exception as exc:
+            self.notification_failure_history[key] = datetime.now().timestamp()
+            self.log_queue.put(f"通知发送失败：{exc}")
+        finally:
+            self.notification_pending.discard(key)
+
+    def _is_notification_message(self, message: str) -> bool:
+        return message.startswith((
+            "Cookie 获取成功",
+            "已启动：",
+            "检测到 ",
+            "开始领取奖励",
+            "已领取：",
+            "领取失败：",
+            "守护循环异常",
+            "登录状态失效",
+            "守护已停止",
+        )) or "Cookie 获取成功" in message
+
+    def _notification_key(self, url: str, message: str) -> str:
+        return f"{url.strip()}|{self._notification_account_name()}|{message.strip()}"
+
+    def _notification_account_name(self) -> str:
+        if hasattr(self, "account_name_var"):
+            try:
+                name = self.account_name_var.get().strip()
+                if name:
+                    return name
+            except Exception:
+                pass
+        return getattr(self.config_data, "account_name", "默认账号") or "默认账号"
 
     def _progress_log(self, message: str) -> None:
         timestamp = datetime.now().strftime("%H:%M:%S")
@@ -803,9 +959,11 @@ class App(tk.Tk):
                 continue
             if message.startswith("__ERROR__:"):
                 detail = message.removeprefix("__ERROR__:")
+                self._notify_from_message(detail)
                 self._log(detail)
                 messagebox.showerror("Cookie 获取失败", detail)
                 continue
+            self._notify_from_message(message)
             if message.startswith("掉宝任务："):
                 self._progress_snapshot_log(message.removeprefix("掉宝任务：").strip())
                 continue

@@ -52,6 +52,45 @@ class ConfigTest(unittest.TestCase):
         self.assertEqual(loaded.cookie, "")
         self.assertEqual(loaded.room_id, config.DEFAULT_ROOM_ID)
 
+    def test_load_config_migrates_cookie_to_account_profile(self) -> None:
+        original_path = config.CONFIG_PATH
+        with tempfile.TemporaryDirectory() as temp_dir:
+            try:
+                config.CONFIG_PATH = Path(temp_dir) / "config.json"
+                config.CONFIG_PATH.write_text(
+                    json.dumps({"cookie": "SESSDATA=a;bili_jct=b", "account_name": "主账号", "config_version": 2}, ensure_ascii=False),
+                    encoding="utf-8",
+                )
+
+                loaded = config.load_config()
+            finally:
+                config.CONFIG_PATH = original_path
+
+        self.assertEqual(loaded.account_name, "主账号")
+        self.assertEqual(loaded.cookie, "SESSDATA=a;bili_jct=b")
+        self.assertEqual([(item.name, item.cookie) for item in loaded.accounts], [("主账号", "SESSDATA=a;bili_jct=b")])
+        self.assertEqual(loaded.config_version, config.CONFIG_VERSION)
+
+    def test_sanitize_config_uses_selected_account_cookie(self) -> None:
+        sanitized = config.sanitize_config(
+            config.AppConfig(
+                cookie="old-cookie",
+                account_name="小号",
+                accounts=[
+                    config.AccountProfile(name="主账号", cookie="main-cookie"),
+                    config.AccountProfile(name="小号", cookie="alt-cookie"),
+                ],
+            )
+        )
+
+        self.assertEqual(sanitized.cookie, "alt-cookie")
+        self.assertEqual(sanitized.account_name, "小号")
+
+    def test_sanitize_config_keeps_notify_url(self) -> None:
+        sanitized = config.sanitize_config(config.AppConfig(notify_url=" https://example.com/hook "))
+
+        self.assertEqual(sanitized.notify_url, "https://example.com/hook")
+
     def test_default_config_uses_overwatch_room_url(self) -> None:
         self.assertEqual(config.AppConfig().room_id, config.DEFAULT_ROOM_ID)
 

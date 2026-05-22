@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 from .bilibili import normalize_room_id
@@ -21,17 +21,26 @@ MAX_CHECK_INTERVAL = 600
 MAX_WATCH_WINDOWS = 20
 DEFAULT_CHECK_INTERVAL = 10
 LEGACY_DEFAULT_CHECK_INTERVAL = 60
-CONFIG_VERSION = 2
+CONFIG_VERSION = 3
+
+
+@dataclass
+class AccountProfile:
+    name: str = "默认账号"
+    cookie: str = ""
 
 
 @dataclass
 class AppConfig:
     cookie: str = ""
+    account_name: str = "默认账号"
+    accounts: list[AccountProfile] = field(default_factory=list)
     room_id: str = DEFAULT_ROOM_ID
     check_interval: int = DEFAULT_CHECK_INTERVAL
     auto_claim: bool = True
     task_ids: str = DEFAULT_TASK_IDS
     watch_threads: int = 1
+    notify_url: str = ""
     config_version: int = CONFIG_VERSION
 
 
@@ -48,6 +57,8 @@ def load_config() -> AppConfig:
         config_version = _coerce_int(data.get("config_version"), 1, 1, CONFIG_VERSION)
         if config_version < 2 and data.get("check_interval") == LEGACY_DEFAULT_CHECK_INTERVAL:
             data["check_interval"] = DEFAULT_CHECK_INTERVAL
+        if config_version < 3 and data.get("cookie") and not data.get("accounts"):
+            data["accounts"] = [{"name": data.get("account_name") or "默认账号", "cookie": data.get("cookie")}]
         data["config_version"] = CONFIG_VERSION
         return sanitize_config(AppConfig(**{**asdict(AppConfig()), **data}))
     except Exception:
@@ -65,15 +76,51 @@ def save_config(config: AppConfig) -> None:
 
 def sanitize_config(config: AppConfig) -> AppConfig:
     room_id = normalize_room_id(str(config.room_id or "")) or DEFAULT_ROOM_ID
+    accounts = _sanitize_accounts(config.accounts, str(config.cookie or ""), str(config.account_name or "默认账号"))
+    account_name = str(config.account_name or "").strip() or (accounts[0].name if accounts else "默认账号")
+    active_cookie = str(config.cookie or "")
+    for account in accounts:
+        if account.name == account_name:
+            active_cookie = account.cookie
+            break
     return AppConfig(
-        cookie=str(config.cookie or ""),
+        cookie=active_cookie,
+        account_name=account_name,
+        accounts=accounts,
         room_id=room_id,
         check_interval=_coerce_int(config.check_interval, DEFAULT_CHECK_INTERVAL, MIN_CHECK_INTERVAL, MAX_CHECK_INTERVAL),
         auto_claim=_coerce_bool(config.auto_claim, True),
         task_ids=str(config.task_ids or ""),
         watch_threads=_coerce_int(config.watch_threads, 1, 1, MAX_WATCH_WINDOWS),
+        notify_url=str(config.notify_url or "").strip(),
         config_version=CONFIG_VERSION,
     )
+
+
+def _sanitize_accounts(value: object, fallback_cookie: str, fallback_name: str) -> list[AccountProfile]:
+    accounts: list[AccountProfile] = []
+    seen: set[str] = set()
+    if isinstance(value, list):
+        for item in value:
+            if isinstance(item, AccountProfile):
+                name = item.name
+                cookie = item.cookie
+            elif isinstance(item, dict):
+                name = str(item.get("name") or "")
+                cookie = str(item.get("cookie") or "")
+            else:
+                continue
+            name = name.strip() or f"账号 {len(accounts) + 1}"
+            cookie = cookie.strip()
+            if not cookie or name in seen:
+                continue
+            accounts.append(AccountProfile(name=name, cookie=cookie))
+            seen.add(name)
+    fallback_name = fallback_name.strip() or "默认账号"
+    fallback_cookie = fallback_cookie.strip()
+    if fallback_cookie and fallback_name not in seen:
+        accounts.insert(0, AccountProfile(name=fallback_name, cookie=fallback_cookie))
+    return accounts
 
 
 def _coerce_int(value: object, default: int, minimum: int, maximum: int) -> int:

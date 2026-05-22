@@ -1,6 +1,6 @@
 # 守望先锋 B 站直播挂宝 / Overwatch Bilibili Live Drops Guard
 
-当前版本：`v0.2.0`
+当前版本：`v0.3.0`
 
 开源地址：<https://github.com/taocihei/overwatch-bilibili-drops-guard>
 
@@ -29,8 +29,9 @@
 5. 如果 Windows 提示“未知发布者”或“Windows 已保护你的电脑”，点击“更多信息”，再点“仍要运行”。这是个人开源软件常见提示，不代表一定有病毒。
 6. 第一次使用先点“自动获取 Cookie”，在弹出的独立 Edge/Chrome 窗口里登录 B 站。
 7. 登录成功后，软件会自动回填 Cookie 并关闭登录窗口。
-8. 直播间默认已填好，直接点“开始挂宝”即可。
-9. 在“任务进度”里看还差多少分钟、是否已完成、是否已领取。
+8. 可以点“保存账号”保存当前 Cookie，之后用账号下拉切换。
+9. 直播间默认已填好，直接点“开始挂宝”即可。
+10. 在“任务进度”里看还差多少分钟、是否已完成、是否已领取。
 
 如果 `Releases` 里暂时没有安装包，说明作者还没有上传新版 EXE，可以按下面的“源码运行”方式启动。
 
@@ -38,11 +39,13 @@
 
 - `自动获取 Cookie`：推荐使用。程序会拉起独立 Edge/Chrome，你登录 B 站后自动回填。
 - `只打开登录页`：只帮你打开 B 站登录页，不自动读取 Cookie。适合排查浏览器打不开的问题。
+- `当前账号 / 账号名称`：用来切换多个 B 站账号。获取 Cookie 后点“保存账号”，下次可直接从下拉框切换。
 - `直播间号或链接`：默认 `23612045`。也可以粘贴完整直播间链接，保存后会自动变成数字房间号。
 - `检查间隔`：多久检查一次任务进度。默认 10 秒。
 - `后台观看线程数`：用来加速累计观看时长。B 站允许多个直播窗口同时计时，所以这里可以并行计时。不要设置过大，避免账号或网络异常。
 - `自动领奖`：开启后，任务满足条件会自动领取。领奖固定只用 1 个线程，避免请求太快失败。
 - `任务 ID`：通常留空。程序会自动从活动页读取任务，不需要用户手填。
+- `通知 URL`：可留空。填写后，启动、检测到可领取、领取成功、领取失败、Cookie 获取成功等关键事件会向该地址发送 JSON POST。
 - `任务进度`：优先显示本次可挂的日期和奖励，比如“还差 48 分钟”“已完成，待领取”“已领取”。
 - `运行日志`：只保留辅助记录，主要结果请看任务进度。
 
@@ -66,29 +69,58 @@
 
 如果刚开始挂宝，请等待一个检查周期。默认每 10 秒检查一次。多开后台观看线程后，进度也需要等 B 站接口刷新，不会每秒变化。
 
-### 4. 软件提示“还差多少分钟”和 B 站页面不一致
+### 4. 怎么切换多个账号
+
+每个账号都需要单独获取一次 Cookie。
+
+1. 在“账号名称”里填一个好记的名字，比如 `主账号`。
+2. 点“自动获取 Cookie”，登录对应的 B 站账号。
+3. 回填成功后点“保存账号”。
+4. 换另一个账号名，重复获取并保存。
+5. 之后从“当前账号”下拉框选择即可切换。
+
+切换账号后，如果正在挂宝，请先停止再重新开始。已经运行中的后台计时会继续使用启动时的账号 Cookie。
+
+### 5. 通知 URL 怎么用
+
+通知 URL 是给进阶用户或自用机器人用的 Webhook。留空不影响使用。
+
+程序会发送 `POST` 请求，内容是 JSON：
+
+```json
+{
+  "title": "守望先锋 B 站直播挂宝",
+  "message": "已领取：某个奖励",
+  "level": "info",
+  "source": "OverwatchBiliDrops"
+}
+```
+
+如果通知发送失败，只会写入运行日志，不会影响挂宝和领奖。
+
+### 6. 软件提示“还差多少分钟”和 B 站页面不一致
 
 B 站活动页和接口刷新可能有延迟。可以等待 1 到 2 个检查周期，或者停止后重新开始。
 
 后续活动可能按日期、页签、任务批次更新，软件会尝试每次检查时重新读取最新任务，不会把任务日期写死。
 
-### 5. 显示“已完成，待领取”，但没有立刻领取
+### 7. 显示“已完成，待领取”，但没有立刻领取
 
 自动领奖开启时，软件会按顺序一个一个领取。领奖固定只用 1 个线程。
 
 如果 B 站提示操作太快，软件会等待后自动重试。你也可以稍后点“领取奖励”手动再试。
 
-### 6. 领取失败，提示重新获取 Cookie
+### 8. 领取失败，提示重新获取 Cookie
 
 这通常表示登录信息过期、不完整，或者 Cookie 里缺少 `bili_jct`。
 
 点“自动获取 Cookie”重新登录一次，然后再开始挂宝或点击领取。
 
-### 7. 领取失败，提示 B 站操作太快
+### 9. 领取失败，提示 B 站操作太快
 
 这是 B 站限频。不要连续点领取。等待一会儿后再试，软件也会自动放慢领取速度。
 
-### 8. 打开软件闪退
+### 10. 打开软件闪退
 
 到下面目录查看错误日志：
 
@@ -98,7 +130,7 @@ B 站活动页和接口刷新可能有延迟。可以等待 1 到 2 个检查周
 
 把 `crash.log` 内容发到 GitHub Issues，或者发给作者定位。
 
-### 9. 杀毒软件报毒
+### 11. 杀毒软件报毒
 
 这是 Python + PyInstaller 打包的单文件 EXE，个人开源软件可能被误报。你可以从源码运行，或自行查看代码后本地打包。
 
@@ -140,7 +172,7 @@ dist\OverwatchBiliDrops.exe
 
 Project name: **守望先锋 B 站直播挂宝 / Overwatch Bilibili Live Drops Guard**
 
-Version: `v0.2.0`
+Version: `v0.3.0`
 
 Repository: <https://github.com/taocihei/overwatch-bilibili-drops-guard>
 
@@ -165,14 +197,17 @@ Default room: `23612045`.
 5. If Windows shows an unknown-publisher warning, click `More info`, then `Run anyway`.
 6. Click `自动获取 Cookie` and sign in to Bilibili in the opened Edge/Chrome window.
 7. The app will fill the Cookie automatically after login.
-8. Keep the default room or enter another live-room ID/URL.
-9. Click `开始挂宝`.
-10. Check `任务进度` for remaining minutes, claimable rewards, and claimed rewards.
+8. Click `保存账号` if you want to keep this account profile and switch accounts later.
+9. Keep the default room or enter another live-room ID/URL.
+10. Click `开始挂宝`.
+11. Check `任务进度` for remaining minutes, claimable rewards, and claimed rewards.
 
 ## Common Problems
 
 - Browser does not open: make sure Edge or Chrome is installed, then try `只打开登录页`.
 - Cookie capture fails: sign in again with `自动获取 Cookie`. Reward claiming usually requires `bili_jct`.
+- Multiple accounts: capture Cookie once for each account, name it, then switch from the account dropdown.
+- Notification URL: optional webhook. The app sends JSON POST messages for important events such as claim success or failure.
 - Progress does not change: wait for one or two check intervals and confirm the live room is active.
 - Claim fails because requests are too frequent: wait and retry later. The app slows down automatic claiming.
 - App crashes: check `%APPDATA%\OverwatchBiliDrops\crash.log` and report it in GitHub Issues.
