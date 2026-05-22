@@ -20,6 +20,8 @@ MIN_CHECK_INTERVAL = 10
 MAX_CHECK_INTERVAL = 600
 MAX_WATCH_WINDOWS = 20
 DEFAULT_CHECK_INTERVAL = 10
+LEGACY_DEFAULT_CHECK_INTERVAL = 60
+CONFIG_VERSION = 2
 
 
 @dataclass
@@ -30,6 +32,7 @@ class AppConfig:
     auto_claim: bool = True
     task_ids: str = DEFAULT_TASK_IDS
     watch_threads: int = 1
+    config_version: int = CONFIG_VERSION
 
 
 def load_config() -> AppConfig:
@@ -42,6 +45,10 @@ def load_config() -> AppConfig:
         data.pop("claim_threads", None)
         if data.get("task_ids") == LEGACY_DEFAULT_TASK_IDS:
             data["task_ids"] = DEFAULT_TASK_IDS
+        config_version = _coerce_int(data.get("config_version"), 1, 1, CONFIG_VERSION)
+        if config_version < 2 and data.get("check_interval") == LEGACY_DEFAULT_CHECK_INTERVAL:
+            data["check_interval"] = DEFAULT_CHECK_INTERVAL
+        data["config_version"] = CONFIG_VERSION
         return sanitize_config(AppConfig(**{**asdict(AppConfig()), **data}))
     except Exception:
         return AppConfig()
@@ -65,6 +72,7 @@ def sanitize_config(config: AppConfig) -> AppConfig:
         auto_claim=_coerce_bool(config.auto_claim, True),
         task_ids=str(config.task_ids or ""),
         watch_threads=_coerce_int(config.watch_threads, 1, 1, MAX_WATCH_WINDOWS),
+        config_version=CONFIG_VERSION,
     )
 
 

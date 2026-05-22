@@ -55,6 +55,41 @@ class ConfigTest(unittest.TestCase):
     def test_default_config_uses_overwatch_room_url(self) -> None:
         self.assertEqual(config.AppConfig().room_id, config.DEFAULT_ROOM_ID)
 
+    def test_legacy_default_interval_migrates_to_ten_seconds_once(self) -> None:
+        original_path = config.CONFIG_PATH
+        with tempfile.TemporaryDirectory() as temp_dir:
+            try:
+                config.CONFIG_PATH = Path(temp_dir) / "config.json"
+                config.CONFIG_PATH.write_text(
+                    json.dumps({"check_interval": config.LEGACY_DEFAULT_CHECK_INTERVAL}, ensure_ascii=False),
+                    encoding="utf-8",
+                )
+
+                loaded = config.load_config()
+            finally:
+                config.CONFIG_PATH = original_path
+
+        self.assertEqual(loaded.check_interval, config.DEFAULT_CHECK_INTERVAL)
+
+    def test_saved_new_config_can_keep_sixty_second_interval(self) -> None:
+        original_path = config.CONFIG_PATH
+        with tempfile.TemporaryDirectory() as temp_dir:
+            try:
+                config.CONFIG_PATH = Path(temp_dir) / "config.json"
+                config.CONFIG_PATH.write_text(
+                    json.dumps(
+                        {"check_interval": config.LEGACY_DEFAULT_CHECK_INTERVAL, "config_version": config.CONFIG_VERSION},
+                        ensure_ascii=False,
+                    ),
+                    encoding="utf-8",
+                )
+
+                loaded = config.load_config()
+            finally:
+                config.CONFIG_PATH = original_path
+
+        self.assertEqual(loaded.check_interval, config.LEGACY_DEFAULT_CHECK_INTERVAL)
+
     def test_sanitize_config_stores_room_url_as_number(self) -> None:
         room_url = "https://live.bilibili.com/23612045?live_from=82002&spm_id_from=333.788.top_right_bar_window_dynamic.content.click"
 
