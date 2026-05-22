@@ -113,7 +113,7 @@ class CookieCaptureTest(unittest.TestCase):
                 cookie_capture.subprocess.Popen = original_popen
                 cookie_capture.APP_DIR = original_app_dir
 
-        self.assertTrue(attached)
+        self.assertIsNotNone(attached)
         self.assertEqual(options.debugger_address, "127.0.0.1:45678")
         self.assertIn(BILIBILI_LOGIN_URL, calls[0])
         self.assertTrue(any("cookie-browser-profile" in str(item) for item in calls[0]))

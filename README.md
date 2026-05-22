@@ -1,125 +1,189 @@
-# 守望先锋 B 站直播挂宝
+# 守望先锋 B 站直播挂宝 / Overwatch Bilibili Live Drops Guard
 
-> 中文说明在前，English guide below.
+当前版本：`v0.2.0`
 
-这是一个自用的 B 站直播掉宝守护工具。它通过本机 Edge/Chrome 登录获取 B 站 Cookie，再打开一个或多个直播窗口累计观看时长，并定时检查直播间、任务进度和领奖状态。
+开源地址：<https://github.com/taocihei/overwatch-bilibili-drops-guard>
 
-本项目不会内置账号，不破解客户端，不承诺绕过平台风控。实际掉宝是否到账取决于 B 站活动规则、账号资格、直播间活动状态和平台接口变化。
+## 重要声明
 
-## 功能
+本软件完全免费。如果你是购买得到的，请立即联系商家退款。
 
-- 图形界面填写 Cookie、直播间号、检查间隔和直播窗口数。
-- 支持自动拉起 Edge/Chrome 的 B 站登录页并读取登录 Cookie。
-- 支持手动粘贴 Cookie。
-- 获取 Cookie 后会写入自动化浏览器，用真实直播页面观看。
-- “直播窗口数”用于并行累计直播观看时长。
-- 定时检查登录状态、直播间状态和掉宝任务进度。
-- 任务 ID 可留空，程序会尽量自动识别；也可以手动填写。
-- 勾选“自动领奖”后，识别到完成任务会固定用 1 个领奖线程提交请求。
-- 实时日志显示 Cookie、直播窗口、任务检查和领奖结果。
+赞助没有任何功能效果，不会解锁功能、不会提高成功率、不会获得优先支持，也不会影响掉宝或领奖结果。赞助只相当于给作者点了一次赞。
 
-## 安装与运行
+本工具只是本机辅助观看和检查任务状态。请自行遵守 B 站活动规则和账号使用规则。掉宝是否到账取决于 B 站活动规则、账号资格、直播间活动状态和平台接口变化。
+
+## 这个软件做什么
+
+这是一个给守望先锋 B 站直播掉宝活动使用的桌面工具。
+
+它会通过本机 Edge 或 Chrome 获取你的 B 站登录 Cookie，然后在后台发送直播观看计时请求。正式挂宝时不会打开一堆直播间浏览器窗口。程序会定时检查直播间、任务进度和领奖状态，任务完成后可以自动领取，也可以手动点击领取。
+
+默认直播间是守望先锋赛事直播间：`23612045`。
+
+## 普通用户下载使用
+
+1. 打开项目页面：<https://github.com/taocihei/overwatch-bilibili-drops-guard>
+2. 进入右侧或页面中的 `Releases`。
+3. 下载 `OverwatchBiliDrops.exe`。
+4. 双击运行。
+5. 如果 Windows 提示“未知发布者”或“Windows 已保护你的电脑”，点击“更多信息”，再点“仍要运行”。这是个人开源软件常见提示，不代表一定有病毒。
+6. 第一次使用先点“自动获取 Cookie”，在弹出的独立 Edge/Chrome 窗口里登录 B 站。
+7. 登录成功后，软件会自动回填 Cookie 并关闭登录窗口。
+8. 直播间默认已填好，直接点“开始挂宝”即可。
+9. 在“任务进度”里看还差多少分钟、是否已完成、是否已领取。
+
+如果 `Releases` 里暂时没有安装包，说明作者还没有上传新版 EXE，可以按下面的“源码运行”方式启动。
+
+## 界面怎么用
+
+- `自动获取 Cookie`：推荐使用。程序会拉起独立 Edge/Chrome，你登录 B 站后自动回填。
+- `只打开登录页`：只帮你打开 B 站登录页，不自动读取 Cookie。适合排查浏览器打不开的问题。
+- `直播间号或链接`：默认 `23612045`。也可以粘贴完整直播间链接，保存后会自动变成数字房间号。
+- `检查间隔`：多久检查一次任务进度。默认 10 秒。
+- `后台观看线程数`：用来加速累计观看时长。B 站允许多个直播窗口同时计时，所以这里可以并行计时。不要设置过大，避免账号或网络异常。
+- `自动领奖`：开启后，任务满足条件会自动领取。领奖固定只用 1 个线程，避免请求太快失败。
+- `任务 ID`：通常留空。程序会自动从活动页读取任务，不需要用户手填。
+- `任务进度`：优先显示本次可挂的日期和奖励，比如“还差 48 分钟”“已完成，待领取”“已领取”。
+- `运行日志`：只保留辅助记录，主要结果请看任务进度。
+
+## 常见问题
+
+### 1. 点“自动获取 Cookie”没有弹出浏览器
+
+先点“只打开登录页”测试本机 Edge/Chrome 是否能正常打开 B 站。
+
+如果仍然失败，请确认电脑已安装 Edge 或 Chrome，并关闭可能拦截浏览器启动的安全软件。
+
+### 2. 已经登录 B 站，但软件还是说 Cookie 获取失败
+
+重新点一次“自动获取 Cookie”，在弹出的独立浏览器里完成登录后等几秒。
+
+如果还是失败，可以手动复制 Cookie。Cookie 至少需要包含 `SESSDATA`，领奖通常还需要 `bili_jct`。缺少 `bili_jct` 时，软件会提示重新获取 Cookie。
+
+### 3. 任务进度一直不变
+
+先确认直播间正在直播，并且活动规则允许当前账号参与掉宝。
+
+如果刚开始挂宝，请等待一个检查周期。默认每 10 秒检查一次。多开后台观看线程后，进度也需要等 B 站接口刷新，不会每秒变化。
+
+### 4. 软件提示“还差多少分钟”和 B 站页面不一致
+
+B 站活动页和接口刷新可能有延迟。可以等待 1 到 2 个检查周期，或者停止后重新开始。
+
+后续活动可能按日期、页签、任务批次更新，软件会尝试每次检查时重新读取最新任务，不会把任务日期写死。
+
+### 5. 显示“已完成，待领取”，但没有立刻领取
+
+自动领奖开启时，软件会按顺序一个一个领取。领奖固定只用 1 个线程。
+
+如果 B 站提示操作太快，软件会等待后自动重试。你也可以稍后点“领取奖励”手动再试。
+
+### 6. 领取失败，提示重新获取 Cookie
+
+这通常表示登录信息过期、不完整，或者 Cookie 里缺少 `bili_jct`。
+
+点“自动获取 Cookie”重新登录一次，然后再开始挂宝或点击领取。
+
+### 7. 领取失败，提示 B 站操作太快
+
+这是 B 站限频。不要连续点领取。等待一会儿后再试，软件也会自动放慢领取速度。
+
+### 8. 打开软件闪退
+
+到下面目录查看错误日志：
+
+```text
+%APPDATA%\OverwatchBiliDrops\crash.log
+```
+
+把 `crash.log` 内容发到 GitHub Issues，或者发给作者定位。
+
+### 9. 杀毒软件报毒
+
+这是 Python + PyInstaller 打包的单文件 EXE，个人开源软件可能被误报。你可以从源码运行，或自行查看代码后本地打包。
+
+## 源码运行
+
+需要电脑已安装 Python 3.11 或更新版本。
 
 ```powershell
 python -m pip install -r requirements.txt
 python app.py
 ```
 
-## 使用方法
-
-1. 启动程序：`python app.py`。
-2. 点击“自动获取 Cookie”，在打开的 Edge/Chrome 里登录 B 站。
-3. 如果自动获取失败，可以点“只打开登录页”，确认本机浏览器能正常打开 B 站。
-4. 填入直播间号或直播间链接，例如 `123456` 或 `https://live.bilibili.com/123456`。
-5. 设置“直播窗口数”。窗口数越多，程序会打开越多直播窗口，用于并行累计观看时长。
-6. 按需勾选“自动领奖”。
-7. 点击“开始挂宝”。
-8. 需要手动领奖时，点击“领取奖励”。领奖请求固定只使用 1 个线程。
-
-## Cookie 获取提示
-
-推荐优先使用“自动获取 Cookie”。程序会优先尝试 Edge，再尝试 Chrome。浏览器打开后完成 B 站登录，程序检测到 `SESSDATA` 后会自动回填并保存 Cookie。
-
-如果自动获取失败，也可以在已登录 B 站的浏览器里打开 `https://www.bilibili.com`，按 `F12` 打开开发者工具，在 Network 请求里复制 Cookie 请求头。Cookie 至少需要包含 `SESSDATA`，通常还需要 `bili_jct` 才能提交领奖请求。
-
-## 任务 ID 说明
-
-任务 ID 输入框可以留空。程序会先调用任务进度接口，自动识别响应里的 `task_id`、`taskId` 或 `id`。只有当活动接口不返回任务 ID，或自动识别不稳定时，才需要手动填写任务 ID。
-
-多个任务 ID 可以用空格、逗号或分号分隔。
-
-## 打包
+## 自己打包
 
 ```powershell
 python -m pip install -r requirements.txt
 powershell -ExecutionPolicy Bypass -File .\build.ps1
 ```
 
-打包后的程序会生成在 `dist\OverwatchBiliDrops.exe`。
+打包后的程序在：
+
+```text
+dist\OverwatchBiliDrops.exe
+```
 
 ## 赞助
 
 如果这个工具帮到了你，可以扫码赞助。
 
-**赞助没有任何功能效果，不会解锁功能、不会提高成功率、不会获得优先支持，也不会影响掉宝或领奖结果。它只相当于你给作者点了一次赞。**
+再次说明：赞助没有任何功能效果，不会解锁功能、不会提高成功率、不会获得优先支持，也不会影响掉宝或领奖结果。它只是给作者点了一次赞。
 
 二维码已核对：左侧是支付宝，右侧是微信。
 
 ![赞助二维码](assets/sponsor.jpg)
 
-## 免责声明
-
-本工具仅用于本机自动化辅助观看和任务状态检查。请自行遵守 B 站活动规则和账号使用规则。平台接口、活动规则或风控策略变化可能导致功能失效。
-
 ---
 
-# Overwatch Bilibili Live Drops Guard
+# English Guide
 
-This is a personal desktop helper for Bilibili live drop tasks. It uses the local Edge/Chrome browser to sign in and capture Bilibili cookies, opens one or more live-room windows to accumulate watch time, and periodically checks room status, task progress, and reward claiming state.
+Project name: **守望先锋 B 站直播挂宝 / Overwatch Bilibili Live Drops Guard**
 
-This project does not bundle accounts, does not crack any client, and does not promise to bypass platform risk controls. Whether rewards arrive depends on Bilibili activity rules, account eligibility, live-room status, and platform API changes.
+Version: `v0.2.0`
 
-## Features
+Repository: <https://github.com/taocihei/overwatch-bilibili-drops-guard>
 
-- GUI for Cookie, live room, check interval, and live window count.
-- Automatically opens Edge/Chrome for Bilibili login and reads the login Cookie.
-- Supports manually pasted Cookie headers.
-- Writes Cookie into an automated browser and watches the real live page.
-- Uses multiple live windows to accumulate watch time in parallel.
-- Periodically checks login state, live-room state, and drop task progress.
-- Task IDs can be left empty for auto-discovery, or filled manually.
-- Auto-claim uses exactly one reward-claiming thread.
-- Realtime logs for Cookie capture, browser windows, task checks, and reward claiming.
+This software is completely free. If you paid for it, please ask the seller for a refund.
 
-## Install And Run
+Sponsorship has no functional effect. It does not unlock features, improve success rate, provide priority support, or affect drop/reward results. It is only a way to give the author a thumbs-up.
+
+## What It Does
+
+This is a Windows desktop helper for Overwatch Bilibili live drop tasks.
+
+It opens your local Edge or Chrome browser to capture Bilibili login cookies. During guarding, it sends background live heartbeat requests to accumulate watch time, checks task progress, and claims completed rewards. It does not open multiple visible live-room browser windows.
+
+Default room: `23612045`.
+
+## Download And Use
+
+1. Open the repository page: <https://github.com/taocihei/overwatch-bilibili-drops-guard>
+2. Open `Releases`.
+3. Download `OverwatchBiliDrops.exe`.
+4. Double-click to run it.
+5. If Windows shows an unknown-publisher warning, click `More info`, then `Run anyway`.
+6. Click `自动获取 Cookie` and sign in to Bilibili in the opened Edge/Chrome window.
+7. The app will fill the Cookie automatically after login.
+8. Keep the default room or enter another live-room ID/URL.
+9. Click `开始挂宝`.
+10. Check `任务进度` for remaining minutes, claimable rewards, and claimed rewards.
+
+## Common Problems
+
+- Browser does not open: make sure Edge or Chrome is installed, then try `只打开登录页`.
+- Cookie capture fails: sign in again with `自动获取 Cookie`. Reward claiming usually requires `bili_jct`.
+- Progress does not change: wait for one or two check intervals and confirm the live room is active.
+- Claim fails because requests are too frequent: wait and retry later. The app slows down automatic claiming.
+- App crashes: check `%APPDATA%\OverwatchBiliDrops\crash.log` and report it in GitHub Issues.
+- Antivirus warning: PyInstaller single-file apps may be falsely flagged. You can inspect the source and run from source.
+
+## Run From Source
 
 ```powershell
 python -m pip install -r requirements.txt
 python app.py
 ```
-
-## Usage
-
-1. Start the app: `python app.py`.
-2. Click "自动获取 Cookie" and sign in to Bilibili in the opened Edge/Chrome window.
-3. If automatic Cookie capture fails, click "只打开登录页" to verify that the local browser can open Bilibili.
-4. Enter a room ID or live-room URL, such as `123456` or `https://live.bilibili.com/123456`.
-5. Set the live window count. More windows mean more live pages opened to accumulate watch time in parallel.
-6. Enable auto-claim if needed.
-7. Click "开始挂宝".
-8. To claim manually, click "领取奖励". Reward claiming always uses one thread.
-
-## Cookie Notes
-
-The recommended path is automatic Cookie capture. The app tries Edge first, then Chrome. After you sign in to Bilibili, the app detects `SESSDATA`, fills the Cookie field, and saves it automatically.
-
-If automatic capture fails, open `https://www.bilibili.com` in a browser where you are already signed in, press `F12`, and copy the Cookie request header from a Network request. The Cookie must include at least `SESSDATA`; `bili_jct` is usually required for reward-claiming requests.
-
-## Task ID Notes
-
-The Task ID field can be left empty. The app tries to discover `task_id`, `taskId`, or `id` from the task-progress API response. Fill Task IDs manually only when the activity API does not return them or auto-discovery is unstable.
-
-Multiple Task IDs can be separated by spaces, commas, or semicolons.
 
 ## Build
 
@@ -128,18 +192,8 @@ python -m pip install -r requirements.txt
 powershell -ExecutionPolicy Bypass -File .\build.ps1
 ```
 
-The packaged executable is generated at `dist\OverwatchBiliDrops.exe`.
+The executable will be generated at:
 
-## Sponsorship
-
-If this tool helped you, you may scan the QR codes to sponsor the author.
-
-**Sponsorship has no functional effect. It does not unlock features, improve success rates, grant priority support, or affect drops/reward claiming in any way. It is simply the equivalent of giving the author a like.**
-
-The QR codes have been checked: Alipay is on the left, WeChat Pay is on the right.
-
-![Sponsor QR codes](assets/sponsor.jpg)
-
-## Disclaimer
-
-This tool is only a local automation helper for watching live rooms and checking task state. Please follow Bilibili activity rules and account rules. Platform API changes, activity rule changes, or risk-control changes may break functionality.
+```text
+dist\OverwatchBiliDrops.exe
+```

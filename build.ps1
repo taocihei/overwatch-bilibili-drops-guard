@@ -2,6 +2,7 @@ $ErrorActionPreference = "Stop"
 
 python -m PyInstaller `
   --noconfirm `
+  --collect-all selenium `
   --onefile `
   --windowed `
   --name OverwatchBiliDrops `

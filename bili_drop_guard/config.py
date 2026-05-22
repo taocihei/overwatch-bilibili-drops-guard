@@ -4,6 +4,8 @@ import json
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+from .bilibili import normalize_room_id
+
 
 APP_DIR = Path.home() / "AppData" / "Roaming" / "OverwatchBiliDrops"
 CONFIG_PATH = APP_DIR / "config.json"
@@ -13,16 +15,18 @@ LEGACY_DEFAULT_TASK_IDS = (
     "6ERAcwloghvqks00,6ERAcwloghvqka00,6ERAcwloghvwbs00"
 )
 DEFAULT_TASK_IDS = ""
+DEFAULT_ROOM_ID = "23612045"
 MIN_CHECK_INTERVAL = 10
 MAX_CHECK_INTERVAL = 600
 MAX_WATCH_WINDOWS = 20
+DEFAULT_CHECK_INTERVAL = 10
 
 
 @dataclass
 class AppConfig:
     cookie: str = ""
-    room_id: str = ""
-    check_interval: int = 60
+    room_id: str = DEFAULT_ROOM_ID
+    check_interval: int = DEFAULT_CHECK_INTERVAL
     auto_claim: bool = True
     task_ids: str = DEFAULT_TASK_IDS
     watch_threads: int = 1
@@ -53,10 +57,11 @@ def save_config(config: AppConfig) -> None:
 
 
 def sanitize_config(config: AppConfig) -> AppConfig:
+    room_id = normalize_room_id(str(config.room_id or "")) or DEFAULT_ROOM_ID
     return AppConfig(
         cookie=str(config.cookie or ""),
-        room_id=str(config.room_id or ""),
-        check_interval=_coerce_int(config.check_interval, 60, MIN_CHECK_INTERVAL, MAX_CHECK_INTERVAL),
+        room_id=room_id,
+        check_interval=_coerce_int(config.check_interval, DEFAULT_CHECK_INTERVAL, MIN_CHECK_INTERVAL, MAX_CHECK_INTERVAL),
         auto_claim=_coerce_bool(config.auto_claim, True),
         task_ids=str(config.task_ids or ""),
         watch_threads=_coerce_int(config.watch_threads, 1, 1, MAX_WATCH_WINDOWS),

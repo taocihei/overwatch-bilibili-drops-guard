@@ -6,6 +6,7 @@ import subprocess
 import time
 import urllib.request
 from dataclasses import dataclass
+from importlib import import_module
 from pathlib import Path
 from typing import Any, Callable
 from uuid import uuid4
@@ -20,6 +21,12 @@ CookieLog = Callable[[str], None]
 class CapturedCookie:
     browser: str
     cookie_header: str
+
+
+@dataclass
+class AttachedBrowser:
+    process: subprocess.Popen[Any]
+    profile_dir: Path
 
 
 BILIBILI_LOGIN_URL = "https://passport.bilibili.com/login"
@@ -40,7 +47,6 @@ def open_bilibili_login_page(log: CookieLog | None = None) -> str:
 
 def capture_bilibili_cookie(timeout_seconds: int = 180, log: CookieLog | None = None) -> CapturedCookie:
     try:
-        from selenium import webdriver
         from selenium.common.exceptions import WebDriverException
         from selenium.webdriver.chrome.options import Options as ChromeOptions
         from selenium.webdriver.edge.options import Options as EdgeOptions
@@ -48,20 +54,24 @@ def capture_bilibili_cookie(timeout_seconds: int = 180, log: CookieLog | None = 
         raise RuntimeError("缺少 Selenium 依赖，请先运行：python -m pip install -r requirements.txt") from exc
 
     errors: list[str] = []
-    candidates: list[tuple[str, Any, Any]] = [
-        ("Edge", webdriver.Edge, EdgeOptions),
-        ("Chrome", webdriver.Chrome, ChromeOptions),
+    candidates: list[tuple[str, str, Any]] = [
+        ("Edge", "selenium.webdriver.edge.webdriver", EdgeOptions),
+        ("Chrome", "selenium.webdriver.chrome.webdriver", ChromeOptions),
     ]
 
-    for browser_name, driver_factory, options_factory in candidates:
+    for browser_name, driver_module, options_factory in candidates:
         driver = None
+        attached_browser: AttachedBrowser | None = None
         try:
             options = options_factory()
             options.add_argument("--disable-blink-features=AutomationControlled")
             options.add_argument("--disable-infobars")
             options.add_argument("--start-maximized")
-            _log(log, f"正在启动 {browser_name} 自动获取 Cookie")
-            _launch_browser_for_attach(browser_name, options, log)
+            _log(log, f"正在拉起独立 {browser_name} 登录窗口")
+            attached_browser = _launch_browser_for_attach(browser_name, options, log)
+            if not attached_browser:
+                raise RuntimeError(f"未找到本机 {browser_name} 浏览器")
+            driver_factory = _load_webdriver_class(driver_module)
             driver = driver_factory(options=options)
             return _wait_for_cookie(driver, browser_name, timeout_seconds, log)
         except WebDriverException as exc:
@@ -74,6 +84,8 @@ def capture_bilibili_cookie(timeout_seconds: int = 180, log: CookieLog | None = 
                     driver.quit()
                 except Exception:
                     pass
+            if attached_browser is not None:
+                _close_attached_browser(attached_browser)
 
     try:
         browser_name = open_bilibili_login_page(log)
@@ -156,10 +168,10 @@ def _open_live_probe(driver: Any) -> None:
         pass
 
 
-def _launch_browser_for_attach(browser_name: str, options: Any, log: CookieLog | None) -> bool:
+def _launch_browser_for_attach(browser_name: str, options: Any, log: CookieLog | None) -> AttachedBrowser | None:
     browser = _find_local_browser(browser_name)
     if not browser:
-        return False
+        return None
 
     port = _find_free_port()
     profile_dir = APP_DIR / "cookie-browser-profile" / browser_name.lower() / uuid4().hex
@@ -184,7 +196,33 @@ def _launch_browser_for_attach(browser_name: str, options: Any, log: CookieLog |
             pass
         raise RuntimeError(f"{browser_name} 已启动但调试端口未就绪，请重试或使用“只打开登录页”")
     _log(log, f"已拉起 {browser_name} 的 B 站登录页，正在连接浏览器读取 Cookie")
-    return True
+    return AttachedBrowser(process=process, profile_dir=profile_dir)
+
+
+def _close_attached_browser(attached_browser: AttachedBrowser) -> None:
+    process = attached_browser.process
+    if process.poll() is not None:
+        return
+    try:
+        process.terminate()
+        process.wait(timeout=3)
+        return
+    except Exception:
+        pass
+    try:
+        subprocess.run(
+            ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+    except Exception:
+        pass
+
+
+def _load_webdriver_class(module_name: str) -> Any:
+    module = import_module(module_name)
+    return getattr(module, "WebDriver")
 
 
 def _wait_for_debugger_port(port: int, timeout_seconds: float = 15.0) -> bool:
@@ -215,9 +253,10 @@ def _find_local_browser(preferred: str = "") -> str:
         ("chrome", Path(os.environ.get("ProgramFiles(x86)", "")) / "Google" / "Chrome" / "Application" / "chrome.exe"),
         ("chrome", Path(os.environ.get("LocalAppData", "")) / "Google" / "Chrome" / "Application" / "chrome.exe"),
     ]
-    ordered = candidates
     if preferred:
-        ordered = [item for item in candidates if preferred in item[0]] + [item for item in candidates if preferred not in item[0]]
+        ordered = [item for item in candidates if preferred in item[0]]
+    else:
+        ordered = candidates
     for _name, candidate in ordered:
         if candidate.exists():
             return str(candidate)
