@@ -285,8 +285,58 @@ class WatchStatusCard(tk.Frame):
             self._render_rows()
 
     def _render_rows(self) -> None:
-        # 折叠态先返回；展开态在 Task 7 实现
-        return
+        if self._rows_container is None:
+            self._rows_canvas = tk.Canvas(self._panel.inner, bg=SURFACE, highlightthickness=0, height=240)
+            self._rows_scrollbar = ttk.Scrollbar(self._panel.inner, orient="vertical", command=self._rows_canvas.yview, style="Vertical.TScrollbar")
+            self._rows_canvas.configure(yscrollcommand=self._rows_scrollbar.set)
+            self._rows_container = tk.Frame(self._rows_canvas, bg=SURFACE)
+            self._rows_window = self._rows_canvas.create_window((0, 0), window=self._rows_container, anchor="nw")
+            self._rows_container.bind(
+                "<Configure>",
+                lambda _event: self._rows_canvas.configure(scrollregion=self._rows_canvas.bbox("all")),
+            )
+            self._rows_canvas.bind(
+                "<Configure>",
+                lambda event: self._rows_canvas.itemconfigure(self._rows_window, width=event.width),
+            )
+
+        if not self._expanded:
+            self._rows_canvas.grid_remove()
+            self._rows_scrollbar.grid_remove()
+            self._rendered_rows: list[dict[str, str]] = []
+            return
+
+        for widget in self._rows_container.winfo_children():
+            widget.destroy()
+
+        width = 3 if len(self._snapshot) >= 100 else 2
+        self._rendered_rows = []
+        for status in self._snapshot:
+            label = f"#{status.worker_id:0{width}d}"
+            detail = self._format_detail(status)
+            color = self.STATE_COLORS.get(status.state, MUTED)
+            row = tk.Frame(self._rows_container, bg=SURFACE, height=self.ROW_HEIGHT)
+            row.pack(fill="x", padx=4, pady=1)
+            row.pack_propagate(False)
+            tk.Label(row, text=label, bg=SURFACE, fg=TEXT, font=("Consolas", 9), width=5, anchor="w").pack(side="left")
+            tk.Label(row, text="●", bg=SURFACE, fg=color, font=("Microsoft YaHei UI", 11, "bold")).pack(side="left", padx=(4, 6))
+            tk.Label(row, text=status.state, bg=SURFACE, fg=TEXT, font=("Microsoft YaHei UI", 9), width=7, anchor="w").pack(side="left")
+            tk.Label(row, text=detail, bg=SURFACE, fg=MUTED, font=("Microsoft YaHei UI", 9), anchor="w").pack(side="left", padx=(4, 0), fill="x", expand=True)
+            self._rendered_rows.append({"label": label, "state": status.state, "detail": detail, "color": color})
+
+        self._rows_canvas.grid(row=3, column=0, sticky="nsew", pady=(8, 0))
+        self._rows_scrollbar.grid(row=3, column=1, sticky="ns", padx=(4, 0))
+        self._panel.inner.rowconfigure(3, weight=1)
+
+    def _format_detail(self, status: WatchWorkerStatus) -> str:
+        if status.state == "正常" and status.interval:
+            return f"下一次 {status.interval}s"
+        if status.message:
+            return status.message
+        return ""
+
+    def rendered_rows_for_test(self) -> list[dict[str, str]]:
+        return list(getattr(self, "_rendered_rows", []))
 
 
 class App(tk.Tk):
@@ -322,6 +372,7 @@ class App(tk.Tk):
 
         self._configure_style()
         self._build_ui()
+        self.after(1000, self._poll_watch_status)
         self.after(100, self._clear_initial_focus)
         self.after(200, self._drain_logs)
 
@@ -633,8 +684,9 @@ class App(tk.Tk):
         PillButton(actions, "停止", self._stop, fill=DANGER_BG, foreground=DANGER, active_fill="#ffe4e6").grid(row=0, column=3, sticky="ew", padx=(8, 0))
 
     def _build_log_card(self, parent: ttk.Frame) -> None:
-        parent.rowconfigure(0, weight=1)
+        parent.rowconfigure(0, weight=3)
         parent.rowconfigure(1, weight=0)
+        parent.rowconfigure(2, weight=1)
 
         progress_card = self._card(parent, row=0, title="任务进度", subtitle="登录、房间、计时、剩余分钟和领取结果都在这里", sticky="nsew", min_height=400, subtitle_wrap=350, auto_height=False)
         progress_card.columnconfigure(0, weight=1)
@@ -666,7 +718,10 @@ class App(tk.Tk):
         self.progress_text.configure(yscrollcommand=progress_scrollbar.set)
         self._progress_log("等待任务检查。开始挂宝后，这里会显示本次可挂任务、剩余分钟和领取状态。")
 
-        card = self._card(parent, row=1, title="运行日志", subtitle="辅助记录，主要结果看上面的任务进度。", sticky="ew", min_height=150, subtitle_wrap=330)
+        self.watch_status_card = WatchStatusCard(parent, background=APP_BG)
+        self.watch_status_card.grid(row=1, column=0, sticky="ew", pady=(0, 12))
+
+        card = self._card(parent, row=2, title="运行日志", subtitle="辅助记录，主要结果看上面的任务进度。", sticky="ew", min_height=150, subtitle_wrap=330)
         card.columnconfigure(0, weight=1)
         card.rowconfigure(2, weight=1)
 
@@ -1091,6 +1146,16 @@ class App(tk.Tk):
                 continue
             self._log(message)
         self.after(200, self._drain_logs)
+
+    def _poll_watch_status(self) -> None:
+        try:
+            if self.watcher and self.watcher.running:
+                snapshot, summary = self.watcher.get_watch_status_snapshot()
+                self.watch_status_card.update_snapshot(snapshot, summary)
+            else:
+                self.watch_status_card.update_snapshot([], "后台计时状态：未启动")
+        finally:
+            self.after(1000, self._poll_watch_status)
 
     def destroy(self) -> None:
         if self.watcher:
