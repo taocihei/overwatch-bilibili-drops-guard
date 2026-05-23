@@ -113,6 +113,27 @@ class LiveWatcher:
         except Exception as exc:
             self.log(f"手动刷新失败：{self._friendly_error(exc)}")
 
+    def rediscover_tasks_once(self) -> None:
+        if self._rediscover_thread and self._rediscover_thread.is_alive():
+            self.log("重新识别任务正在进行中")
+            return
+        self._rediscover_thread = threading.Thread(
+            target=self._rediscover_tasks_worker, daemon=True
+        )
+        self._rediscover_thread.start()
+
+    def _rediscover_tasks_worker(self) -> None:
+        self.log("重新识别任务列表")
+        with self._claim_lock:
+            self._activity_task_ids.clear()
+            self._activity_task_meta.clear()
+            self._claimable_task_ids.clear()
+        client = BilibiliClient(self.options.cookie)
+        try:
+            self._discover_activity_task_ids(client, announce_progress=True)
+        except Exception as exc:
+            self.log(f"重新识别任务失败：{self._friendly_error(exc)}")
+
     def _run(self) -> None:
         client = BilibiliClient(self.options.cookie)
         login = client.check_login()

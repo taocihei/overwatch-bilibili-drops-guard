@@ -126,5 +126,52 @@ class RefreshProgressOnceTest(unittest.TestCase):
         self.assertTrue(any("尚未开始挂宝" in message or "暂时无法刷新" in message for message in logs))
 
 
+class RediscoverTasksOnceTest(unittest.TestCase):
+    def test_rediscover_clears_cached_ids_then_invokes_discover(self) -> None:
+        watcher = LiveWatcher(WatchOptions(cookie="a=b", room_id="1"), lambda _m: None)
+        watcher._activity_task_ids.add("old-task")
+        watcher._activity_task_meta["old-task"] = {"group_label": "5月22日"}
+        watcher._claimable_task_ids.add("old-task")
+        finished = threading.Event()
+        captured: list[tuple[set[str], dict[str, dict]]] = []
+
+        def fake_discover(client, announce_progress: bool = True) -> list[str]:
+            captured.append((set(watcher._activity_task_ids), dict(watcher._activity_task_meta)))
+            finished.set()
+            return []
+
+        watcher._discover_activity_task_ids = fake_discover  # type: ignore[method-assign]
+
+        watcher.rediscover_tasks_once()
+
+        self.assertTrue(finished.wait(timeout=2))
+        cached_ids, cached_meta = captured[0]
+        self.assertEqual(cached_ids, set())
+        self.assertEqual(cached_meta, {})
+        self.assertEqual(watcher._claimable_task_ids, set())
+
+    def test_rediscover_skips_when_already_running(self) -> None:
+        watcher = LiveWatcher(WatchOptions(cookie="a=b", room_id="1"), lambda _m: None)
+        gate = threading.Event()
+        release = threading.Event()
+        invocations: list[int] = []
+
+        def slow_discover(client, announce_progress: bool = True) -> list[str]:
+            gate.set()
+            release.wait(timeout=2)
+            invocations.append(1)
+            return []
+
+        watcher._discover_activity_task_ids = slow_discover  # type: ignore[method-assign]
+
+        watcher.rediscover_tasks_once()
+        self.assertTrue(gate.wait(timeout=2))
+        watcher.rediscover_tasks_once()  # should skip
+        release.set()
+        watcher._rediscover_thread.join(timeout=2)
+
+        self.assertEqual(invocations, [1])
+
+
 if __name__ == "__main__":
     unittest.main()
