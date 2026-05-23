@@ -42,8 +42,20 @@ class StartHeartbeatSessionCallsRoomEntryActionFirstTest(unittest.TestCase):
 
         state = live_watcher._start_heartbeat_session(FlakyClient(), room, HeartbeatState())
 
+        # 心跳能继续：interval 来自 enter_room_heartbeat 的成功返回
         self.assertEqual(state.interval, 30)
-        self.assertTrue(any("上报进入直播间失败" in message for message in logs))
+        # 第一次失败会写一条聚合日志（之后每 50 次再写一条，避免刷屏）
+        self.assertTrue(any("上报进入直播间累计失败 1 次" in message for message in logs))
+
+    def test_room_entry_failure_aggregated_log_does_not_spam(self) -> None:
+        logs: list[str] = []
+        live_watcher = LiveWatcher(WatchOptions(cookie="a=b", room_id="1"), logs.append)
+        # 触发 20 次失败，应该只写一条 "累计失败 1 次"
+        for _ in range(20):
+            live_watcher._record_room_entry_failure()
+        room_entry_logs = [m for m in logs if "上报进入直播间" in m]
+        self.assertEqual(len(room_entry_logs), 1)
+        self.assertIn("累计失败 1 次", room_entry_logs[0])
 
 
 class WorkerStaggerTest(unittest.TestCase):

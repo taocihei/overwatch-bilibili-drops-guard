@@ -373,12 +373,22 @@ class LiveWatcher:
     def _start_heartbeat_session(self, client: BilibiliClient, room: RoomInfo, fallback: HeartbeatState) -> HeartbeatState:
         # 先注册"进入直播间"动作，B 站才会把后续 x25Kn 心跳算到当前会话上。
         # 缺这一步是 v0.4.1 多路计时仍然只算一路的关键原因。
+        # 失败不致命：网络抖动/代理偶尔断时跳过，让 x25Kn 心跳继续跑。
+        # 不在这里写日志，否则 20 路每次失败都会刷屏；用全局静默计数代替。
         try:
             client.room_entry_action(room)
-        except Exception as exc:
-            self.log(f"上报进入直播间失败（不影响心跳）：{self._friendly_error(exc)}")
+        except Exception:
+            self._record_room_entry_failure()
         data = client.enter_room_heartbeat(room)
         return self._extract_heartbeat_state(data, fallback)
+
+    def _record_room_entry_failure(self) -> None:
+        # 每 N 次失败汇总写一条日志，避免 20 路同时报错刷屏。
+        with self._watch_status_lock:
+            count = getattr(self, "_room_entry_fail_count", 0) + 1
+            self._room_entry_fail_count = count
+        if count == 1 or count % 50 == 0:
+            self.log(f"上报进入直播间累计失败 {count} 次（不影响心跳，可能是代理抖动）")
 
     def _continue_heartbeat_session(
         self,

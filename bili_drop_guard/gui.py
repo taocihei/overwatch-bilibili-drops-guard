@@ -299,7 +299,7 @@ class WatchStatusCard(tk.Frame):
             self._rows_container.rowconfigure(0, weight=1)
             self._rows_text = tk.Text(
                 self._rows_container,
-                height=10,
+                height=4,
                 wrap="none",
                 state="disabled",
                 borderwidth=0,
@@ -309,7 +309,7 @@ class WatchStatusCard(tk.Frame):
                 insertbackground=TEXT,
                 highlightthickness=0,
                 padx=10,
-                pady=8,
+                pady=6,
                 font=("Consolas", 9),
             )
             self._rows_text.grid(row=0, column=0, sticky="nsew")
