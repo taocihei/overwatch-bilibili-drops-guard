@@ -342,7 +342,7 @@ class WatchStatusCard(tk.Frame):
 def build_onboarding_guide(parent: tk.Misc) -> tk.Toplevel:
     top = tk.Toplevel(parent)
     top.title("上手指引")
-    top.geometry("540x480")
+    top.geometry("560x620")
     top.configure(bg=APP_BG)
     try:
         top.transient(parent)
@@ -355,22 +355,26 @@ def build_onboarding_guide(parent: tk.Misc) -> tk.Toplevel:
     tk.Label(container, text="上手指引", bg=APP_BG, fg=TEXT, font=("Microsoft YaHei UI", 16, "bold")).pack(anchor="w")
     tk.Label(container, text="跟着 4 步走就能挂宝。", bg=APP_BG, fg=MUTED, font=("Microsoft YaHei UI", 10)).pack(anchor="w", pady=(2, 14))
 
+    PillButton(container, "我知道了", top.destroy, fill=ACCENT, active_fill=ACCENT_ACTIVE, height=36, width=120).pack(side="bottom", pady=(14, 0))
+
+    steps_frame = tk.Frame(container, bg=APP_BG, highlightthickness=0, borderwidth=0)
+    steps_frame.pack(fill="both", expand=True)
+
     steps = (
-        ("01", "获取 Cookie", "点“自动获取 Cookie”,在弹出的 Edge/Chrome 里登录 B 站即可。"),
+        ("01", "获取 Cookie", "点“自动获取 Cookie”，在弹出的 Edge/Chrome 里登录 B 站即可。"),
         ("02", "确认直播间", "默认 23612045 即可。要换直播间就粘贴链接，会自动保存成房间号。"),
         ("03", "开始计时", "点“开始挂宝”。后台计时不会弹直播窗口。可调整“后台观看线程数”加速累计时长。"),
         ("04", "领取奖励", "“自动领奖”开启时会按顺序领；也可手动点“领取奖励”。看右侧“任务进度”确认状态。"),
     )
     for number, title, detail in steps:
-        row = RoundedPanel(container, fill=SURFACE, background=APP_BG, radius=14, padding=(14, 10), outline=BORDER, shadow=False)
+        row = RoundedPanel(steps_frame, fill=SURFACE, background=APP_BG, radius=14, padding=(14, 10), outline=BORDER, shadow=False)
         row.pack(fill="x", pady=(0, 8))
         inner = row.inner
         inner.columnconfigure(1, weight=1)
         tk.Label(inner, text=number, bg=SURFACE, fg=ACCENT, font=("Microsoft YaHei UI", 14, "bold"), width=4).grid(row=0, column=0, rowspan=2, sticky="nw")
         tk.Label(inner, text=title, bg=SURFACE, fg=TEXT, font=("Microsoft YaHei UI", 11, "bold")).grid(row=0, column=1, sticky="w")
-        tk.Label(inner, text=detail, bg=SURFACE, fg=MUTED, font=("Microsoft YaHei UI", 9), wraplength=420, justify="left").grid(row=1, column=1, sticky="w", pady=(2, 0))
+        tk.Label(inner, text=detail, bg=SURFACE, fg=MUTED, font=("Microsoft YaHei UI", 9), wraplength=440, justify="left").grid(row=1, column=1, sticky="w", pady=(2, 0))
 
-    PillButton(container, "我知道了", top.destroy, fill=ACCENT, active_fill=ACCENT_ACTIVE, height=36, width=120).pack(pady=(10, 0))
     return top
 
 
@@ -729,10 +733,12 @@ class App(tk.Tk):
 
         progress_card = self._card(parent, row=0, title="任务进度", subtitle="登录、房间、计时、剩余分钟和领取结果都在这里", sticky="nsew", min_height=400, subtitle_wrap=350, auto_height=False)
         progress_card.columnconfigure(0, weight=1)
-        progress_card.columnconfigure(1, weight=0)
-        progress_card.columnconfigure(2, weight=0)
+        progress_card.rowconfigure(3, weight=1)
+
+        progress_buttons = tk.Frame(progress_card, bg=SURFACE, highlightthickness=0, borderwidth=0)
+        progress_buttons.grid(row=2, column=0, columnspan=2, sticky="e", pady=(10, 0))
         self.manual_refresh_button = PillButton(
-            progress_card,
+            progress_buttons,
             "↻ 刷新",
             self._handle_manual_refresh,
             fill=SOFT_SURFACE,
@@ -741,9 +747,9 @@ class App(tk.Tk):
             height=28,
             width=80,
         )
-        self.manual_refresh_button.grid(row=0, column=1, sticky="e", padx=(8, 4))
+        self.manual_refresh_button.pack(side="left", padx=(0, 6))
         self.rediscover_button = PillButton(
-            progress_card,
+            progress_buttons,
             "↻ 重新识别任务",
             self._handle_rediscover_tasks,
             fill=SOFT_SURFACE,
@@ -752,11 +758,10 @@ class App(tk.Tk):
             height=28,
             width=130,
         )
-        self.rediscover_button.grid(row=0, column=2, sticky="e", padx=(4, 0))
-        progress_card.rowconfigure(2, weight=1)
+        self.rediscover_button.pack(side="left")
 
         progress_wrap = RoundedPanel(progress_card, fill=SOFT_SURFACE, background=SURFACE, radius=14, padding=(4, 4), min_height=300, outline=BORDER, shadow=False, auto_height=False)
-        progress_wrap.grid(row=2, column=0, sticky="nsew", pady=(14, 0))
+        progress_wrap.grid(row=3, column=0, columnspan=2, sticky="nsew", pady=(8, 0))
         progress_wrap.inner.columnconfigure(0, weight=1)
         progress_wrap.inner.rowconfigure(0, weight=1)
 
@@ -835,8 +840,8 @@ class App(tk.Tk):
         card = panel.inner
         card.columnconfigure(0, weight=1)
         card.columnconfigure(1, weight=1)
-        ttk.Label(card, text=title, style="SectionTitle.TLabel").grid(row=0, column=0, sticky="w")
-        ttk.Label(card, text=subtitle, style="Muted.TLabel", wraplength=subtitle_wrap).grid(row=1, column=0, columnspan=3, sticky="ew", pady=(5, 0))
+        ttk.Label(card, text=title, style="SectionTitle.TLabel").grid(row=0, column=0, columnspan=2, sticky="w")
+        ttk.Label(card, text=subtitle, style="Muted.TLabel", wraplength=subtitle_wrap).grid(row=1, column=0, columnspan=2, sticky="ew", pady=(5, 0))
         return card
 
     def _current_config(self) -> AppConfig:
