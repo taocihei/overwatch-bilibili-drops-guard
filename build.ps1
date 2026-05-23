@@ -17,8 +17,8 @@ python -m PyInstaller `
   --collect-all selenium `
   --hidden-import _tkinter `
   --add-data "assets/app.ico;assets" `
-  --add-data "$tclLibrary;tcl/tcl8.6" `
-  --add-data "$tkLibrary;tcl/tk8.6" `
+  --add-data "$tclLibrary;_tcl_data" `
+  --add-data "$tkLibrary;_tk_data" `
   --add-data "$tkinterLib;tkinter" `
   --add-binary "$tkinterPyd;." `
   --add-binary "$tclDll;." `
