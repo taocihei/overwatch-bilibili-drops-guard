@@ -657,7 +657,7 @@ class App(tk.Tk):
         room_entry.grid(row=0, column=0, sticky="ew")
 
         ttk.Label(card, text="检查间隔（秒）", style="Body.TLabel").grid(row=4, column=0, sticky="w")
-        ttk.Label(card, text=f"后台观看线程数（最多 {MAX_WATCH_THREADS}）", style="Body.TLabel").grid(row=4, column=1, sticky="w", padx=(14, 0))
+        ttk.Label(card, text=f"观看线程数 (最多 {MAX_WATCH_THREADS})", style="Body.TLabel").grid(row=4, column=1, sticky="w", padx=(14, 0))
 
         NumberInput(card, self.interval_var, minimum=MIN_CHECK_INTERVAL, maximum=MAX_CHECK_INTERVAL).grid(row=5, column=0, sticky="ew", pady=(6, 6))
         NumberInput(card, self.watch_threads_var, minimum=1, maximum=MAX_WATCH_THREADS).grid(row=5, column=1, sticky="ew", padx=(14, 0), pady=(6, 6))
@@ -731,7 +731,7 @@ class App(tk.Tk):
         parent.rowconfigure(1, weight=0)
         parent.rowconfigure(2, weight=1)
 
-        progress_card = self._card(parent, row=0, title="任务进度", subtitle="登录、房间、计时、剩余分钟和领取结果都在这里", sticky="nsew", min_height=400, subtitle_wrap=350, auto_height=False)
+        progress_card = self._card(parent, row=0, title="任务进度", subtitle="登录、房间、计时、剩余分钟和领取结果都在这里", sticky="nsew", min_height=280, subtitle_wrap=350, auto_height=False)
         progress_card.columnconfigure(0, weight=1)
         progress_card.rowconfigure(3, weight=1)
 
@@ -789,7 +789,7 @@ class App(tk.Tk):
         self.watch_status_card = WatchStatusCard(parent, background=APP_BG)
         self.watch_status_card.grid(row=1, column=0, sticky="ew", pady=(0, 12))
 
-        card = self._card(parent, row=2, title="运行日志", subtitle="辅助记录，主要结果看上面的任务进度。", sticky="ew", min_height=150, subtitle_wrap=330)
+        card = self._card(parent, row=2, title="运行日志", subtitle="辅助记录，主要结果看上面的任务进度。", sticky="nsew", min_height=200, subtitle_wrap=330)
         card.columnconfigure(0, weight=1)
         card.rowconfigure(2, weight=1)
 
