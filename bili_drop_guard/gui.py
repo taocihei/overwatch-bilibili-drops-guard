@@ -228,9 +228,9 @@ class NumberInput(tk.Frame):
 
 
 class WatchStatusCard(tk.Frame):
-    """右栏后台计时状态卡。折叠时仅显示汇总，展开时逐路列表。"""
+    """右栏后台计时状态卡。原地只显示汇总，每路明细通过弹窗查看，避免挤压
+    其他卡片。"""
 
-    ROW_HEIGHT = 22
     STATE_COLORS = {
         "正常": SUCCESS,
         "计时中": "#f59e0b",
@@ -238,12 +238,20 @@ class WatchStatusCard(tk.Frame):
         "等待开播": MUTED,
         "暂时失败": DANGER,
     }
+    STATE_TAGS = {
+        "正常": "normal",
+        "计时中": "warning",
+        "启动中": "warning",
+        "等待开播": "muted",
+        "暂时失败": "danger",
+    }
 
     def __init__(self, parent: tk.Misc, *, background: str = APP_BG) -> None:
         super().__init__(parent, bg=background, highlightthickness=0, borderwidth=0)
         self.summary_var = tk.StringVar(value="后台计时状态：未启动")
-        self._expanded = False
         self._snapshot: list[WatchWorkerStatus] = []
+        self._detail_window: tk.Toplevel | None = None
+        self._detail_text: tk.Text | None = None
 
         self._panel = RoundedPanel(self, fill=SURFACE, background=background, radius=18, padding=(16, 12), outline=BORDER)
         self._panel.pack(fill="both", expand=True)
@@ -252,63 +260,61 @@ class WatchStatusCard(tk.Frame):
 
         ttk.Label(inner, text="后台计时状态", style="SectionTitle.TLabel").grid(row=0, column=0, sticky="w")
         ttk.Label(inner, textvariable=self.summary_var, style="Muted.TLabel", wraplength=320).grid(row=1, column=0, sticky="ew", pady=(4, 8))
-        self._toggle_button = PillButton(
+        self._detail_button = PillButton(
             inner,
-            "展开查看每路",
-            self.toggle,
+            "查看每路状态",
+            self.show_detail_window,
             fill=SOFT_SURFACE,
             foreground=TEXT,
             active_fill="#eef2ff",
             height=28,
         )
-        self._toggle_button.grid(row=2, column=0, sticky="ew")
-
-        self._rows_container: tk.Frame | None = None
+        self._detail_button.grid(row=2, column=0, sticky="ew")
 
     def is_expanded(self) -> bool:
-        return self._expanded
+        # 兼容旧测试：弹窗存在视为展开
+        return self._detail_window is not None and self._detail_window.winfo_exists()
 
     def toggle(self) -> None:
-        self._expanded = not self._expanded
-        self._toggle_button.set_appearance(
-            text="收起" if self._expanded else "展开查看每路",
-            fill=SOFT_SURFACE,
-            foreground=TEXT,
-            active_fill="#eef2ff",
-        )
-        self._render_rows()
-        # 强制 RoundedPanel 重新计算高度，否则新加的内容可能被裁掉看不到。
-        self._panel.inner.update_idletasks()
+        # 兼容旧测试和老代码：toggle 等价于打开/关闭弹窗
+        if self.is_expanded():
+            try:
+                self._detail_window.destroy()
+            except Exception:
+                pass
+            self._detail_window = None
+            self._detail_text = None
+        else:
+            self.show_detail_window()
+
+    def show_detail_window(self) -> tk.Toplevel:
+        if self._detail_window is not None and self._detail_window.winfo_exists():
+            self._detail_window.lift()
+            self._detail_window.focus_set()
+            return self._detail_window
+
+        top = tk.Toplevel(self)
+        top.title("后台计时每路状态")
+        top.geometry("520x520")
+        top.configure(bg=APP_BG)
         try:
-            self._panel._sync_height(None)
+            top.transient(self.winfo_toplevel())
         except tk.TclError:
             pass
 
-    def update_snapshot(self, snapshot: list[WatchWorkerStatus], summary: str) -> None:
-        self._snapshot = list(snapshot)
-        self.summary_var.set(summary)
-        if self._expanded:
-            self._render_rows()
+        container = tk.Frame(top, bg=APP_BG, padx=18, pady=14)
+        container.pack(fill="both", expand=True)
+        container.columnconfigure(0, weight=1)
+        container.rowconfigure(1, weight=1)
 
-    def _render_rows(self) -> None:
-        # 关键：未展开时根本不创建 rows_container，避免 Tk 几何系统把它的隐含
-        # reqheight 计进父 RoundedPanel，导致整个右栏被挤。
-        if not self._expanded:
-            if self._rows_container is not None:
-                self._rows_container.destroy()
-                self._rows_container = None
-            self._rendered_rows: list[dict[str, str]] = []
-            return
+        ttk.Label(container, textvariable=self.summary_var, style="Muted.TLabel", wraplength=460).grid(row=0, column=0, sticky="ew", pady=(0, 10))
 
-        # 展开时才创建 + 填内容，每次展开都重新建一个新的，省得记状态
-        if self._rows_container is not None:
-            self._rows_container.destroy()
-        self._rows_container = tk.Frame(self._panel.inner, bg=SURFACE, highlightthickness=0, borderwidth=0)
-        self._rows_container.columnconfigure(0, weight=1)
-        self._rows_container.rowconfigure(0, weight=1)
-        rows_text = tk.Text(
-            self._rows_container,
-            height=4,
+        text_wrap = tk.Frame(container, bg=APP_BG)
+        text_wrap.grid(row=1, column=0, sticky="nsew")
+        text_wrap.columnconfigure(0, weight=1)
+        text_wrap.rowconfigure(0, weight=1)
+        text = tk.Text(
+            text_wrap,
             wrap="none",
             state="disabled",
             borderwidth=0,
@@ -317,45 +323,59 @@ class WatchStatusCard(tk.Frame):
             fg=TEXT,
             insertbackground=TEXT,
             highlightthickness=0,
-            padx=10,
-            pady=6,
-            font=("Consolas", 9),
+            padx=12,
+            pady=10,
+            font=("Consolas", 10),
         )
-        rows_text.grid(row=0, column=0, sticky="nsew")
-        rows_scrollbar = ttk.Scrollbar(
-            self._rows_container,
-            orient="vertical",
-            command=rows_text.yview,
-            style="Vertical.TScrollbar",
-        )
-        rows_scrollbar.grid(row=0, column=1, sticky="ns")
-        rows_text.configure(yscrollcommand=rows_scrollbar.set)
-        rows_text.tag_configure("normal", foreground=SUCCESS)
-        rows_text.tag_configure("warning", foreground="#f59e0b")
-        rows_text.tag_configure("muted", foreground=MUTED)
-        rows_text.tag_configure("danger", foreground=DANGER)
+        text.grid(row=0, column=0, sticky="nsew")
+        scrollbar = ttk.Scrollbar(text_wrap, orient="vertical", command=text.yview, style="Vertical.TScrollbar")
+        scrollbar.grid(row=0, column=1, sticky="ns")
+        text.configure(yscrollcommand=scrollbar.set)
+        text.tag_configure("normal", foreground=SUCCESS)
+        text.tag_configure("warning", foreground="#f59e0b")
+        text.tag_configure("muted", foreground=MUTED)
+        text.tag_configure("danger", foreground=DANGER)
 
-        rows_text.configure(state="normal")
+        PillButton(container, "关闭", top.destroy, fill=ACCENT, active_fill=ACCENT_ACTIVE, height=32, width=100).grid(row=2, column=0, sticky="e", pady=(10, 0))
+
+        self._detail_window = top
+        self._detail_text = text
+        top.protocol("WM_DELETE_WINDOW", self._on_detail_closed)
+        self._render_detail()
+        return top
+
+    def _on_detail_closed(self) -> None:
+        if self._detail_window is not None:
+            try:
+                self._detail_window.destroy()
+            except Exception:
+                pass
+        self._detail_window = None
+        self._detail_text = None
+
+    def update_snapshot(self, snapshot: list[WatchWorkerStatus], summary: str) -> None:
+        self._snapshot = list(snapshot)
+        self.summary_var.set(summary)
+        if self._detail_window is not None and self._detail_window.winfo_exists():
+            self._render_detail()
+
+    def _render_detail(self) -> None:
+        if self._detail_text is None:
+            return
+        self._detail_text.configure(state="normal")
+        self._detail_text.delete("1.0", "end")
         width = 3 if len(self._snapshot) >= 100 else 2
-        self._rendered_rows = []
-        tag_by_state = {
-            "正常": "normal",
-            "计时中": "warning",
-            "启动中": "warning",
-            "等待开播": "muted",
-            "暂时失败": "danger",
-        }
+        self._rendered_rows: list[dict[str, str]] = []
         for status in self._snapshot:
             label = f"#{status.worker_id:0{width}d}"
             detail = self._format_detail(status)
-            tag = tag_by_state.get(status.state, "muted")
+            tag = self.STATE_TAGS.get(status.state, "muted")
             line = f"{label}  ● {status.state:<5} {detail}\n"
-            rows_text.insert("end", line, tag)
+            self._detail_text.insert("end", line, tag)
             self._rendered_rows.append({"label": label, "state": status.state, "detail": detail, "tag": tag})
-        rows_text.configure(state="disabled")
-
-        self._rows_container.grid(row=3, column=0, sticky="nsew", pady=(8, 0))
-        self._panel.inner.rowconfigure(3, weight=1)
+        if not self._snapshot:
+            self._detail_text.insert("end", "暂无后台计时数据。开始挂宝后这里会显示每路状态。\n", "muted")
+        self._detail_text.configure(state="disabled")
 
     def _format_detail(self, status: WatchWorkerStatus) -> str:
         if status.state == "正常" and status.interval:
@@ -1089,9 +1109,26 @@ class App(tk.Tk):
         self._thread_log(f"{result.browser} Cookie 获取成功")
 
     def _claim(self) -> None:
+        # 如果还没开始挂宝，也允许用户单独点击领取奖励：临时构造一个 LiveWatcher
+        # 只用来跑领取流程（不会启动心跳 worker，因为我们没调用 .start()）。
         if not self.watcher:
-            self._log("请先开始挂宝，等待程序识别完成任务")
-            return
+            config = self._current_config()
+            if not config.cookie:
+                messagebox.showwarning("缺少 Cookie", "请先粘贴 B 站 Cookie 才能领取奖励。")
+                return
+            if not config.room_id:
+                messagebox.showwarning("缺少直播间号", "请先填写直播间号才能领取奖励。")
+                return
+            options = WatchOptions(
+                cookie=config.cookie,
+                room_id=config.room_id,
+                check_interval=config.check_interval,
+                auto_claim=False,
+                task_ids=self._parse_task_ids(config.task_ids),
+                watch_threads=1,
+            )
+            self.watcher = LiveWatcher(options, self._thread_log)
+            self._log("尚未挂宝，临时获取一次任务进度并领取已完成奖励")
         self.watcher.claim_completed_tasks()
 
     def _thread_log(self, message: str) -> None:
