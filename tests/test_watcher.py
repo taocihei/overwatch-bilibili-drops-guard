@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from datetime import date, timedelta
 from threading import Lock
 
 from bili_drop_guard.bilibili import RoomInfo
@@ -38,6 +39,19 @@ class LiveWatcherTest(unittest.TestCase):
             thread.join(timeout=2)
 
         self.assertEqual(live_watcher.started_workers, [1, 2, 3])
+
+    def test_watch_status_summary_reports_all_background_workers(self) -> None:
+        live_watcher = LiveWatcher(WatchOptions(cookie="a=b", room_id="1", watch_threads=20), lambda _message: None)
+        live_watcher._watch_worker_count = 20
+        for worker_id in range(1, 21):
+            live_watcher._set_watch_status(worker_id, "正常", interval=60)
+
+        summary, normal_count, problem_count = live_watcher._watch_status_summary_info()
+
+        self.assertEqual(normal_count, 20)
+        self.assertEqual(problem_count, 0)
+        self.assertIn("20/20 正常", summary)
+        self.assertIn("下一次约 60 秒后", summary)
 
     def test_extract_heartbeat_state_keeps_fallback_values(self) -> None:
         live_watcher = LiveWatcher(WatchOptions(cookie="a=b", room_id="1"), lambda _message: None)
@@ -304,6 +318,10 @@ class LiveWatcherTest(unittest.TestCase):
     def test_activity_task_progress_auto_discovers_ids_from_live_page(self) -> None:
         logs: list[str] = []
         calls: list[list[str]] = []
+        today = date.today()
+        yesterday = today - timedelta(days=1)
+        today_label = f"{today.month}月{today.day}日"
+        yesterday_label = f"{yesterday.month}月{yesterday.day}日"
 
         class FakeClient:
             def discover_live_activity_tasks(self, room_id: str) -> dict[str, object]:
@@ -313,7 +331,7 @@ class LiveWatcherTest(unittest.TestCase):
                             "task_id": "activity-a",
                             "task_name": "观看 30 分钟",
                             "award_name": "奖励 A",
-                            "group_label": "5月22日",
+                            "group_label": yesterday_label,
                             "current": 0,
                             "target": 30,
                         },
@@ -321,7 +339,7 @@ class LiveWatcherTest(unittest.TestCase):
                             "task_id": "activity-b",
                             "task_name": "观看 60 分钟",
                             "award_name": "奖励 B",
-                            "group_label": "5月23日",
+                            "group_label": today_label,
                             "current": 0,
                             "target": 60,
                         },
@@ -355,8 +373,9 @@ class LiveWatcherTest(unittest.TestCase):
         self.assertEqual(calls, [["activity-a", "activity-b"]])
         self.assertEqual(live_watcher._activity_task_ids, {"activity-a", "activity-b"})
         self.assertEqual(live_watcher._claimable_task_ids, {"activity-a"})
-        self.assertEqual(live_watcher._activity_task_meta["activity-a"]["group_label"], "5月22日")
-        self.assertTrue(any("5月22日｜观看 30 分钟｜奖励 A" in message for message in logs))
+        self.assertEqual(live_watcher._activity_task_meta["activity-a"]["group_label"], yesterday_label)
+        self.assertTrue(any(f"{today_label}｜观看 60 分钟｜奖励 B" in message for message in logs))
+        self.assertFalse(any(f"{yesterday_label}｜观看 30 分钟｜奖励 A" in message for message in logs))
         self.assertTrue(any("已找到本次活动任务" in message for message in logs))
 
     def test_activity_totalv2_result_marks_queried_ids_as_activity_tasks(self) -> None:
@@ -530,7 +549,42 @@ class LiveWatcherTest(unittest.TestCase):
         self.assertIn("已领取", summary)
         self.assertNotIn("状态=", summary)
 
-    def test_task_summary_focuses_current_activity_group(self) -> None:
+    def test_task_summary_focuses_today_activity_group(self) -> None:
+        live_watcher = LiveWatcher(WatchOptions(cookie="a=b", room_id="1"), lambda _message: None)
+        today = date.today()
+        yesterday = today - timedelta(days=1)
+        today_label = f"{today.month}月{today.day}日"
+        yesterday_label = f"{yesterday.month}月{yesterday.day}日"
+        progress = {
+            "list": [
+                {
+                    "task_id": "day-a-30",
+                    "task_name": "观看守望先锋电竞直播间30分钟",
+                    "award_name": "第一天奖励",
+                    "group_label": yesterday_label,
+                    "group_index": 0,
+                    "task_status": 1,
+                    "indicators": [{"cur_value": 0, "limit": 30}],
+                },
+                {
+                    "task_id": "day-b-30",
+                    "task_name": "观看守望先锋电竞直播间30分钟",
+                    "award_name": "第二天奖励",
+                    "group_label": today_label,
+                    "group_index": 1,
+                    "task_status": 1,
+                    "indicators": [{"cur_value": 0, "limit": 30}],
+                },
+            ]
+        }
+
+        summary = live_watcher._summarize_task(progress)
+
+        self.assertIn(f"当前可挂：{today_label}", summary)
+        self.assertIn("第二天奖励", summary)
+        self.assertNotIn("第一天奖励", summary)
+
+    def test_task_summary_falls_back_to_active_group_when_today_missing(self) -> None:
         live_watcher = LiveWatcher(WatchOptions(cookie="a=b", room_id="1"), lambda _message: None)
         progress = {
             "list": [
@@ -541,13 +595,13 @@ class LiveWatcherTest(unittest.TestCase):
                     "group_label": "5月22日",
                     "group_index": 0,
                     "task_status": 1,
-                    "indicators": [{"cur_value": 0, "limit": 30}],
+                    "indicators": [{"cur_value": 12, "limit": 30}],
                 },
                 {
                     "task_id": "day-b-30",
                     "task_name": "观看守望先锋电竞直播间30分钟",
                     "award_name": "第二天奖励",
-                    "group_label": "5月23日",
+                    "group_label": "5月24日",
                     "group_index": 1,
                     "task_status": 1,
                     "indicators": [{"cur_value": 0, "limit": 30}],

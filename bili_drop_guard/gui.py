@@ -176,7 +176,7 @@ class PillButton(tk.Canvas):
         self.create_text(width // 2, height // 2, text=self.text, fill=self.foreground, font=self.font)
 
 
-class Stepper(tk.Canvas):
+class NumberInput(tk.Frame):
     def __init__(
         self,
         parent: tk.Misc,
@@ -186,40 +186,45 @@ class Stepper(tk.Canvas):
         maximum: int,
         background: str = SURFACE,
     ) -> None:
-        super().__init__(parent, height=38, bg=background, highlightthickness=0, borderwidth=0, cursor="hand2")
+        super().__init__(parent, height=38, bg=background, highlightthickness=0, borderwidth=0)
         self.variable = variable
         self.minimum = minimum
         self.maximum = maximum
-        self.bind("<Configure>", lambda _event: self._redraw())
-        self.bind("<Button-1>", self._click)
-        self.variable.trace_add("write", lambda *_args: self._redraw())
+        self.pack_propagate(False)
 
-    def _click(self, event: tk.Event) -> None:
-        width = max(1, self.winfo_width())
-        if event.x < 42:
-            self._set_value(self.variable.get() - 1)
-        elif event.x > width - 42:
-            self._set_value(self.variable.get() + 1)
+        panel = RoundedPanel(self, fill=SOFT_SURFACE, background=background, radius=18, padding=(4, 4), min_height=38, outline=BORDER, shadow=False, auto_height=False)
+        panel.pack(fill="both", expand=True)
+        panel.inner.columnconfigure(1, weight=1)
+
+        PillButton(panel.inner, "−", lambda: self._set_value(self._current_value() - 1), fill=SOFT_SURFACE, foreground=MUTED, active_fill="#eef2ff", height=28, width=34, font=("Microsoft YaHei UI", 13, "bold")).grid(row=0, column=0, sticky="nsw")
+        self.entry = tk.Entry(
+            panel.inner,
+            textvariable=self.variable,
+            justify="center",
+            borderwidth=0,
+            relief="flat",
+            bg=SOFT_SURFACE,
+            fg=TEXT,
+            insertbackground=TEXT,
+            font=("Microsoft YaHei UI", 10),
+        )
+        self.entry.grid(row=0, column=1, sticky="nsew", padx=4)
+        PillButton(panel.inner, "+", lambda: self._set_value(self._current_value() + 1), fill=SOFT_SURFACE, foreground=MUTED, active_fill="#eef2ff", height=28, width=34, font=("Microsoft YaHei UI", 13, "bold")).grid(row=0, column=2, sticky="nse")
+
+        self.entry.bind("<FocusOut>", lambda _event: self._commit())
+        self.entry.bind("<Return>", lambda _event: self._commit())
+
+    def _current_value(self) -> int:
+        try:
+            return int(self.variable.get())
+        except (tk.TclError, ValueError):
+            return self.minimum
 
     def _set_value(self, value: int) -> None:
         self.variable.set(min(max(int(value), self.minimum), self.maximum))
 
-    def _redraw(self) -> None:
-        self.delete("all")
-        width = max(1, self.winfo_width())
-        height = max(1, self.winfo_height())
-        self.create_polygon(
-            18, 1, width - 18, 1, width, 1, width, 18,
-            width, height - 18, width, height - 1, width - 18, height - 1,
-            18, height - 1, 1, height - 1, 1, height - 18, 1, 18, 1, 1,
-            smooth=True,
-            splinesteps=18,
-            fill=SOFT_SURFACE,
-            outline=BORDER,
-        )
-        self.create_text(22, height // 2, text="−", fill=MUTED, font=("Microsoft YaHei UI", 14, "bold"))
-        self.create_text(width - 22, height // 2, text="+", fill=MUTED, font=("Microsoft YaHei UI", 14, "bold"))
-        self.create_text(width // 2, height // 2, text=str(self.variable.get()), fill=TEXT, font=("Microsoft YaHei UI", 10))
+    def _commit(self) -> None:
+        self._set_value(self._current_value())
 
 
 class App(tk.Tk):
@@ -498,8 +503,8 @@ class App(tk.Tk):
         ttk.Label(card, text="检查间隔（秒）", style="Body.TLabel").grid(row=4, column=0, sticky="w")
         ttk.Label(card, text="后台观看线程数", style="Body.TLabel").grid(row=4, column=1, sticky="w", padx=(14, 0))
 
-        Stepper(card, self.interval_var, minimum=MIN_CHECK_INTERVAL, maximum=MAX_CHECK_INTERVAL).grid(row=5, column=0, sticky="ew", pady=(6, 6))
-        Stepper(card, self.watch_threads_var, minimum=1, maximum=MAX_WATCH_WINDOWS).grid(row=5, column=1, sticky="ew", padx=(14, 0), pady=(6, 6))
+        NumberInput(card, self.interval_var, minimum=MIN_CHECK_INTERVAL, maximum=MAX_CHECK_INTERVAL).grid(row=5, column=0, sticky="ew", pady=(6, 6))
+        NumberInput(card, self.watch_threads_var, minimum=1, maximum=MAX_WATCH_WINDOWS).grid(row=5, column=1, sticky="ew", padx=(14, 0), pady=(6, 6))
         ttk.Label(card, text="自动领奖", style="Body.TLabel").grid(row=6, column=0, sticky="w", pady=(4, 0))
         self.auto_claim_button = PillButton(card, "已开启", self._toggle_auto_claim, fill=SUCCESS, active_fill=SUCCESS_ACTIVE)
         self.auto_claim_button.grid(row=6, column=1, sticky="ew", padx=(14, 0), pady=(2, 8))

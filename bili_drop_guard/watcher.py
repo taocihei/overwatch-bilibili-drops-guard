@@ -3,6 +3,7 @@ from __future__ import annotations
 import threading
 import time
 from dataclasses import dataclass
+from datetime import date
 from typing import Any, Callable, Optional
 
 from .bilibili import BilibiliClient, RoomInfo
@@ -49,6 +50,10 @@ class LiveWatcher:
         self._claim_lock = threading.Lock()
         self._claim_thread: Optional[threading.Thread] = None
         self._last_up_id: int | None = None
+        self._watch_status_lock = threading.Lock()
+        self._watch_statuses: dict[int, dict[str, Any]] = {}
+        self._watch_worker_count = max(1, int(self.options.watch_threads or 1))
+        self._last_watch_status_summary = ""
 
     @property
     def running(self) -> bool:
@@ -110,13 +115,73 @@ class LiveWatcher:
 
     def _start_watch_threads(self, room: RoomInfo | None = None) -> None:
         worker_count = max(1, int(self.options.watch_threads or 1))
+        self._watch_worker_count = worker_count
         self._watch_threads = []
+        with self._watch_status_lock:
+            self._watch_statuses = {
+                worker_id: {"state": "启动中", "updated_at": time.time(), "interval": None, "message": ""}
+                for worker_id in range(1, worker_count + 1)
+            }
+            self._last_watch_status_summary = ""
         target_room = room or self._room
         for worker_id in range(1, worker_count + 1):
             thread = threading.Thread(target=self._heartbeat_watch_worker, args=(worker_id, target_room), daemon=True)
             self._watch_threads.append(thread)
             thread.start()
         self.log(f"已启动 {worker_count} 路后台计时，不会打开直播间浏览器窗口")
+        self._log_watch_status_summary(force=True)
+
+    def _watch_detail_enabled(self) -> bool:
+        return self._watch_worker_count <= 5
+
+    def _set_watch_status(self, worker_id: int, state: str, *, interval: int | None = None, message: str = "") -> None:
+        with self._watch_status_lock:
+            self._watch_statuses[worker_id] = {
+                "state": state,
+                "updated_at": time.time(),
+                "interval": interval,
+                "message": message,
+            }
+
+    def _watch_status_summary_info(self) -> tuple[str, int, int]:
+        with self._watch_status_lock:
+            worker_count = self._watch_worker_count
+            statuses = [self._watch_statuses.get(worker_id, {"state": "启动中"}) for worker_id in range(1, worker_count + 1)]
+
+        normal_count = sum(1 for status in statuses if status.get("state") == "正常")
+        starting_count = sum(1 for status in statuses if status.get("state") in {"启动中", "计时中"})
+        waiting_count = sum(1 for status in statuses if status.get("state") == "等待开播")
+        failed_count = sum(1 for status in statuses if status.get("state") == "暂时失败")
+        intervals = [
+            int(status["interval"])
+            for status in statuses
+            if status.get("state") == "正常" and status.get("interval") is not None
+        ]
+
+        parts = [f"{normal_count}/{worker_count} 正常"]
+        if starting_count:
+            parts.append(f"{starting_count} 路启动中")
+        if waiting_count:
+            parts.append(f"{waiting_count} 路等待开播")
+        if failed_count:
+            parts.append(f"{failed_count} 路稍后重试")
+        interval_text = ""
+        if intervals:
+            min_interval = min(intervals)
+            max_interval = max(intervals)
+            if min_interval == max_interval:
+                interval_text = f"，下一次约 {min_interval} 秒后"
+            else:
+                interval_text = f"，下一次约 {min_interval}-{max_interval} 秒后"
+        return f"后台计时状态：{'，'.join(parts)}{interval_text}", normal_count, failed_count + waiting_count
+
+    def _log_watch_status_summary(self, *, force: bool = False) -> None:
+        summary, normal_count, problem_count = self._watch_status_summary_info()
+        if not force and normal_count < self._watch_worker_count and problem_count == 0:
+            return
+        if force or summary != self._last_watch_status_summary:
+            self._last_watch_status_summary = summary
+            self.log(summary)
 
     def _log_room(self, room: RoomInfo) -> None:
         if not room.room_id:
@@ -133,23 +198,35 @@ class LiveWatcher:
             try:
                 current_room = self._resolve_heartbeat_room(client, current_room)
                 if not current_room.room_id:
+                    self._set_watch_status(worker_id, "暂时失败", message=current_room.message)
                     self.log(f"后台计时 {worker_id} 暂停：{current_room.message}")
+                    self._log_watch_status_summary()
                     self._stop.wait(20)
                     continue
                 if current_room.live_status != 1:
-                    self.log(f"后台计时 {worker_id} 等待开播：房间 {current_room.room_id} 当前未开播")
+                    self._set_watch_status(worker_id, "等待开播", message=f"房间 {current_room.room_id} 当前未开播")
+                    if self._watch_detail_enabled():
+                        self.log(f"后台计时 {worker_id} 等待开播：房间 {current_room.room_id} 当前未开播")
+                    self._log_watch_status_summary()
                     self._stop.wait(30)
                     continue
 
-                self.log(f"后台计时 {worker_id} 已进入房间 {current_room.room_id}，开始累计观看时长")
+                self._set_watch_status(worker_id, "计时中", message=f"已进入房间 {current_room.room_id}")
+                if self._watch_detail_enabled():
+                    self.log(f"后台计时 {worker_id} 已进入房间 {current_room.room_id}，开始累计观看时长")
 
                 while not self._stop.is_set():
                     data = client.web_live_heartbeat(current_room.room_id, state.interval)
                     state.interval = self._extract_web_heartbeat_interval(data, state.interval)
-                    self.log(f"后台计时 {worker_id} 正常，下一次约 {state.interval} 秒后")
+                    self._set_watch_status(worker_id, "正常", interval=state.interval)
+                    if self._watch_detail_enabled():
+                        self.log(f"后台计时 {worker_id} 正常，下一次约 {state.interval} 秒后")
+                    self._log_watch_status_summary()
                     self._stop.wait(state.interval)
             except Exception as exc:
+                self._set_watch_status(worker_id, "暂时失败", message=self._friendly_error(exc))
                 self.log(f"后台计时 {worker_id} 暂时失败：{self._friendly_error(exc)}；稍后重试")
+                self._log_watch_status_summary()
                 self._stop.wait(15)
 
     def _resolve_heartbeat_room(self, client: BilibiliClient, room: RoomInfo | None) -> RoomInfo:
@@ -527,9 +604,11 @@ class LiveWatcher:
             return nodes, "", 0
 
         chosen_key: tuple[int, str] | None = None
-        active_keys = [key for key, group_nodes in groups.items() if any(self._task_has_visible_activity(node) for node in group_nodes)]
-        if active_keys:
-            chosen_key = sorted(active_keys)[0]
+        chosen_key = self._today_task_group_key(groups)
+        if chosen_key is None:
+            active_keys = [key for key, group_nodes in groups.items() if any(self._task_has_visible_activity(node) for node in group_nodes)]
+            if active_keys:
+                chosen_key = sorted(active_keys)[0]
         if chosen_key is None:
             unfinished_keys = [key for key, group_nodes in groups.items() if any(not self._node_received(node) for node in group_nodes)]
             chosen_key = sorted(unfinished_keys or groups.keys())[0]
@@ -537,6 +616,19 @@ class LiveWatcher:
         focused = [*groups[chosen_key], *ungrouped]
         hidden_count = max(0, len(nodes) - len(focused))
         return focused, chosen_key[1], hidden_count
+
+    def _today_task_group_key(self, groups: dict[tuple[int, str], list[dict[str, Any]]]) -> tuple[int, str] | None:
+        today = date.today()
+        today_labels = {
+            f"{today.month}月{today.day}日",
+            f"{today.month:02d}月{today.day}日",
+            f"{today.month}月{today.day:02d}日",
+            f"{today.month:02d}月{today.day:02d}日",
+        }
+        for key in groups:
+            if key[1].strip() in today_labels:
+                return key
+        return None
 
     def _task_group_key(self, node: dict[str, Any]) -> tuple[int, str] | None:
         group_label = str(node.get("group_label") or "").strip()
