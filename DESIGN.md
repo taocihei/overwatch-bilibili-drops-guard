@@ -2,7 +2,7 @@
 
 ## Source of truth
 - Status: Active
-- Last refreshed: 2026-05-22
+- Last refreshed: 2026-05-23
 - Primary product surfaces: Tkinter 桌面主窗口、Cookie 获取流程、直播观看配置、任务进度、运行日志、领奖操作。
 - Evidence reviewed: `bili_drop_guard/gui.py`、`bili_drop_guard/config.py`、`README.md`、`tests/`、`.omx/artifacts/ui-top-guide-v2.png`。
 
@@ -79,5 +79,5 @@
 - Test/screenshot expectations: UI 改动后运行 `python -m unittest discover -s tests -v` 和 `py_compile`；可运行时截图检查默认窗口是否无裁切、无重叠、无系统硬控件突兀。
 
 ## Open questions
-- [ ] 是否后续增加“每个后台观看线程状态”列表 / 用户 / 影响：能更直观看到每个心跳线程是否正常计时。
-- [ ] 是否后续增加“首次使用引导弹窗” / 用户 / 影响：能减少主页面说明文字密度。
+
+- 暂无。v0.4.0 已实现”每个后台观看线程状态列表”（右栏后台计时状态卡）和”首次使用引导”（顶部”看上手指引”链接 + Toplevel modal）。

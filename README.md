@@ -1,6 +1,6 @@
 ﻿# 守望先锋 B 站直播挂宝 / Overwatch Bilibili Live Drops Guard
 
-当前版本：`v0.3.6`
+当前版本：`v0.4.0`
 
 开源地址：<https://github.com/taocihei/overwatch-bilibili-drops-guard>
 
@@ -48,6 +48,13 @@
 - `通知 URL`：可留空。填写后，启动、检测到可领取、领取成功、领取失败、Cookie 获取成功等关键事件会向该地址发送 JSON POST。
 - `任务进度`：优先显示本次可挂的日期和奖励，比如“还差 48 分钟”“已完成，待领取”“已领取”。
 - `运行日志`：只保留辅助记录，主要结果请看任务进度。
+
+## v0.4.0 新增
+
+- `看上手指引`：顶部声明条右侧的链接，点开是 4 步入门 modal。
+- `任务进度刷新按钮`：任务进度卡右上角"↻ 刷新"，开始挂宝后才能用。
+- `重新识别任务按钮`：任务进度卡右上角"↻ 重新识别任务"，清掉缓存重新拉活动任务。
+- `后台计时状态卡`：右栏中间区域，默认折叠显示"X/Y 正常"汇总；点"展开查看每路"看每条后台线程的状态（编号、状态、下一次心跳秒数、错误原因）。
 
 ## 手动获取直播间号和任务 ID
 
@@ -219,7 +226,7 @@ dist\OverwatchBiliDrops.exe
 
 Project name: **守望先锋 B 站直播挂宝 / Overwatch Bilibili Live Drops Guard**
 
-Version: `v0.3.6`
+Version: `v0.4.0`
 
 Repository: <https://github.com/taocihei/overwatch-bilibili-drops-guard>
 
