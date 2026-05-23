@@ -703,6 +703,17 @@ class App(tk.Tk):
             width=80,
         )
         self.manual_refresh_button.grid(row=0, column=1, sticky="e", padx=(8, 4))
+        self.rediscover_button = PillButton(
+            progress_card,
+            "↻ 重新识别任务",
+            self._handle_rediscover_tasks,
+            fill=SOFT_SURFACE,
+            foreground=TEXT,
+            active_fill="#eef2ff",
+            height=28,
+            width=130,
+        )
+        self.rediscover_button.grid(row=0, column=2, sticky="e", padx=(4, 0))
         progress_card.rowconfigure(2, weight=1)
 
         progress_wrap = RoundedPanel(progress_card, fill=SOFT_SURFACE, background=SURFACE, radius=14, padding=(4, 4), min_height=300, outline=BORDER, shadow=False, auto_height=False)
@@ -1091,6 +1102,12 @@ class App(tk.Tk):
             self._log("请先开始挂宝，再手动刷新进度")
             return
         self.watcher.refresh_progress_once()
+
+    def _handle_rediscover_tasks(self) -> None:
+        if not self.watcher or not self.watcher.running:
+            self._log("请先开始挂宝，再重新识别任务")
+            return
+        self.watcher.rediscover_tasks_once()
 
     def _progress_snapshot_log(self, message: str) -> None:
         timestamp = datetime.now().strftime("%H:%M:%S")

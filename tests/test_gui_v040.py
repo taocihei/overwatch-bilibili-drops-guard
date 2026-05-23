@@ -127,5 +127,41 @@ class ManualRefreshButtonTest(unittest.TestCase):
         fake_watcher.refresh_progress_once.assert_not_called()
 
 
+class RediscoverTasksButtonTest(unittest.TestCase):
+    def _new_app(self) -> gui.App:
+        app = object.__new__(gui.App)
+        app.watcher = None
+        app._log_calls: list[str] = []
+        app._log = app._log_calls.append  # type: ignore[method-assign]
+        return app
+
+    def test_handle_rediscover_logs_when_no_watcher(self) -> None:
+        app = self._new_app()
+
+        gui.App._handle_rediscover_tasks(app)
+
+        self.assertTrue(any("请先开始挂宝" in message for message in app._log_calls))
+
+    def test_handle_rediscover_calls_watcher_method(self) -> None:
+        app = self._new_app()
+        fake_watcher = MagicMock()
+        fake_watcher.running = True
+        app.watcher = fake_watcher
+
+        gui.App._handle_rediscover_tasks(app)
+
+        fake_watcher.rediscover_tasks_once.assert_called_once()
+
+    def test_handle_rediscover_skips_when_watcher_not_running(self) -> None:
+        app = self._new_app()
+        fake_watcher = MagicMock()
+        fake_watcher.running = False
+        app.watcher = fake_watcher
+
+        gui.App._handle_rediscover_tasks(app)
+
+        fake_watcher.rediscover_tasks_once.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()
