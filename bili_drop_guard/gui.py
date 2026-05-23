@@ -690,6 +690,19 @@ class App(tk.Tk):
 
         progress_card = self._card(parent, row=0, title="任务进度", subtitle="登录、房间、计时、剩余分钟和领取结果都在这里", sticky="nsew", min_height=400, subtitle_wrap=350, auto_height=False)
         progress_card.columnconfigure(0, weight=1)
+        progress_card.columnconfigure(1, weight=0)
+        progress_card.columnconfigure(2, weight=0)
+        self.manual_refresh_button = PillButton(
+            progress_card,
+            "↻ 刷新",
+            self._handle_manual_refresh,
+            fill=SOFT_SURFACE,
+            foreground=TEXT,
+            active_fill="#eef2ff",
+            height=28,
+            width=80,
+        )
+        self.manual_refresh_button.grid(row=0, column=1, sticky="e", padx=(8, 4))
         progress_card.rowconfigure(2, weight=1)
 
         progress_wrap = RoundedPanel(progress_card, fill=SOFT_SURFACE, background=SURFACE, radius=14, padding=(4, 4), min_height=300, outline=BORDER, shadow=False, auto_height=False)
@@ -772,8 +785,8 @@ class App(tk.Tk):
         card = panel.inner
         card.columnconfigure(0, weight=1)
         card.columnconfigure(1, weight=1)
-        ttk.Label(card, text=title, style="SectionTitle.TLabel").grid(row=0, column=0, columnspan=2, sticky="w")
-        ttk.Label(card, text=subtitle, style="Muted.TLabel", wraplength=subtitle_wrap).grid(row=1, column=0, columnspan=2, sticky="ew", pady=(5, 0))
+        ttk.Label(card, text=title, style="SectionTitle.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Label(card, text=subtitle, style="Muted.TLabel", wraplength=subtitle_wrap).grid(row=1, column=0, columnspan=3, sticky="ew", pady=(5, 0))
         return card
 
     def _current_config(self) -> AppConfig:
@@ -1072,6 +1085,12 @@ class App(tk.Tk):
         self.progress_events.append(f"[{timestamp}] {message}")
         self.progress_events = self.progress_events[-6:]
         self._render_progress_text()
+
+    def _handle_manual_refresh(self) -> None:
+        if not self.watcher or not self.watcher.running:
+            self._log("请先开始挂宝，再手动刷新进度")
+            return
+        self.watcher.refresh_progress_once()
 
     def _progress_snapshot_log(self, message: str) -> None:
         timestamp = datetime.now().strftime("%H:%M:%S")
