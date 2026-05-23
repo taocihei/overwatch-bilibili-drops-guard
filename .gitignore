@@ -14,23 +14,9 @@ build/
 dist/
 *.spec.bak
 
-.omx/
-
 *.log
 crash.log
 config.json
 
-# 内部文档，不公开
-内部使用-需求文档与设计稿.md
-docs/superpowers/
-
-# 调试与分析产物，不入库
-_competitor_analysis/
-_screenshot_modal.py
-ui_*.png
-v042_*.png
-competitor_*.png
-
-# 处理 sponsor.jpg 时产生的中间图，不入库
 assets/_sponsor_*
 assets/sponsor_crop.png

@@ -283,7 +283,6 @@ class LiveWatcher:
             session_device_uuid=make_session_device_uuid(),
         )
         # 错开启动，每秒只启动一个 worker，避免短时间内大量心跳被 B 站频控拦截。
-        # 这是参考 bilibili-drops-miner 的做法（它每秒启动一个连接 #N）。
         if worker_id > 1:
             self._stop.wait(worker_id - 1)
         if self._stop.is_set():

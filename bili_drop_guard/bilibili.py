@@ -231,8 +231,7 @@ class BilibiliClient:
         )
 
     def room_entry_action(self, room: RoomInfo) -> Dict[str, Any]:
-        """注册"进入直播间"动作。x25Kn 心跳之前必须先调这个，B 站才会把后续
-        心跳算到当前 (uid, buvid, room) 这个会话上。竞品也是先 entry 再 x25Kn。"""
+        """注册"进入直播间"动作，让后续心跳能计入当前观看会话。"""
 
         if not self.csrf:
             raise RuntimeError("Cookie 缺少 bili_jct，无法上报进入直播间动作")
