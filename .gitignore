@@ -20,10 +20,11 @@ dist/
 crash.log
 config.json
 
-# 内部沟通文档，不公开
+# 内部文档，不公开
 内部使用-需求文档与设计稿.md
+docs/superpowers/
 
-# 调试与逆向分析产物，不应入库
+# 调试与分析产物，不入库
 _competitor_analysis/
 _screenshot_modal.py
 ui_*.png
