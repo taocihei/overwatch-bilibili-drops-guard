@@ -277,6 +277,12 @@ class WatchStatusCard(tk.Frame):
             active_fill="#eef2ff",
         )
         self._render_rows()
+        # 强制 RoundedPanel 重新计算高度，否则新加的内容可能被裁掉看不到。
+        self._panel.inner.update_idletasks()
+        try:
+            self._panel._sync_height(None)
+        except tk.TclError:
+            pass
 
     def update_snapshot(self, snapshot: list[WatchWorkerStatus], summary: str) -> None:
         self._snapshot = list(snapshot)
@@ -285,47 +291,69 @@ class WatchStatusCard(tk.Frame):
             self._render_rows()
 
     def _render_rows(self) -> None:
+        # 用一个简单的 Text widget 显示所有 worker 行。比之前的 Canvas+滚动+per-row Frame
+        # 嵌套简单太多，几何变化能正常传播给父容器，展开按钮可以可靠地撑开整个卡片。
         if self._rows_container is None:
-            self._rows_canvas = tk.Canvas(self._panel.inner, bg=SURFACE, highlightthickness=0, height=240)
-            self._rows_scrollbar = ttk.Scrollbar(self._panel.inner, orient="vertical", command=self._rows_canvas.yview, style="Vertical.TScrollbar")
-            self._rows_canvas.configure(yscrollcommand=self._rows_scrollbar.set)
-            self._rows_container = tk.Frame(self._rows_canvas, bg=SURFACE)
-            self._rows_window = self._rows_canvas.create_window((0, 0), window=self._rows_container, anchor="nw")
-            self._rows_container.bind(
-                "<Configure>",
-                lambda _event: self._rows_canvas.configure(scrollregion=self._rows_canvas.bbox("all")),
+            self._rows_container = tk.Frame(self._panel.inner, bg=SURFACE, highlightthickness=0, borderwidth=0)
+            self._rows_container.columnconfigure(0, weight=1)
+            self._rows_container.rowconfigure(0, weight=1)
+            self._rows_text = tk.Text(
+                self._rows_container,
+                height=10,
+                wrap="none",
+                state="disabled",
+                borderwidth=0,
+                relief="flat",
+                bg=SOFT_SURFACE,
+                fg=TEXT,
+                insertbackground=TEXT,
+                highlightthickness=0,
+                padx=10,
+                pady=8,
+                font=("Consolas", 9),
             )
-            self._rows_canvas.bind(
-                "<Configure>",
-                lambda event: self._rows_canvas.itemconfigure(self._rows_window, width=event.width),
+            self._rows_text.grid(row=0, column=0, sticky="nsew")
+            self._rows_scrollbar = ttk.Scrollbar(
+                self._rows_container,
+                orient="vertical",
+                command=self._rows_text.yview,
+                style="Vertical.TScrollbar",
             )
+            self._rows_scrollbar.grid(row=0, column=1, sticky="ns")
+            self._rows_text.configure(yscrollcommand=self._rows_scrollbar.set)
+            # 配置颜色 tag
+            self._rows_text.tag_configure("normal", foreground=SUCCESS)
+            self._rows_text.tag_configure("warning", foreground="#f59e0b")
+            self._rows_text.tag_configure("muted", foreground=MUTED)
+            self._rows_text.tag_configure("danger", foreground=DANGER)
 
         if not self._expanded:
-            self._rows_canvas.grid_remove()
-            self._rows_scrollbar.grid_remove()
+            self._rows_container.grid_forget()
             self._rendered_rows: list[dict[str, str]] = []
             return
 
-        for widget in self._rows_container.winfo_children():
-            widget.destroy()
-
+        # 重新填内容
+        self._rows_text.configure(state="normal")
+        self._rows_text.delete("1.0", "end")
         width = 3 if len(self._snapshot) >= 100 else 2
         self._rendered_rows = []
+        tag_by_state = {
+            "正常": "normal",
+            "计时中": "warning",
+            "启动中": "warning",
+            "等待开播": "muted",
+            "暂时失败": "danger",
+        }
         for status in self._snapshot:
             label = f"#{status.worker_id:0{width}d}"
             detail = self._format_detail(status)
-            color = self.STATE_COLORS.get(status.state, MUTED)
-            row = tk.Frame(self._rows_container, bg=SURFACE, height=self.ROW_HEIGHT)
-            row.pack(fill="x", padx=4, pady=1)
-            row.pack_propagate(False)
-            tk.Label(row, text=label, bg=SURFACE, fg=TEXT, font=("Consolas", 9), width=5, anchor="w").pack(side="left")
-            tk.Label(row, text="●", bg=SURFACE, fg=color, font=("Microsoft YaHei UI", 11, "bold")).pack(side="left", padx=(4, 6))
-            tk.Label(row, text=status.state, bg=SURFACE, fg=TEXT, font=("Microsoft YaHei UI", 9), width=7, anchor="w").pack(side="left")
-            tk.Label(row, text=detail, bg=SURFACE, fg=MUTED, font=("Microsoft YaHei UI", 9), anchor="w").pack(side="left", padx=(4, 0), fill="x", expand=True)
-            self._rendered_rows.append({"label": label, "state": status.state, "detail": detail, "color": color})
+            tag = tag_by_state.get(status.state, "muted")
+            line = f"{label}  ● {status.state:<5} {detail}\n"
+            self._rows_text.insert("end", line, tag)
+            self._rendered_rows.append({"label": label, "state": status.state, "detail": detail, "tag": tag})
+        self._rows_text.configure(state="disabled")
 
-        self._rows_canvas.grid(row=3, column=0, sticky="nsew", pady=(8, 0))
-        self._rows_scrollbar.grid(row=3, column=1, sticky="ns", padx=(4, 0))
+        self._rows_container.grid(row=3, column=0, sticky="nsew", pady=(8, 0))
         self._panel.inner.rowconfigure(3, weight=1)
 
     def _format_detail(self, status: WatchWorkerStatus) -> str:
@@ -787,7 +815,7 @@ class App(tk.Tk):
         self._progress_log("等待任务检查。开始挂宝后，这里会显示本次可挂任务、剩余分钟和领取状态。")
 
         self.watch_status_card = WatchStatusCard(parent, background=APP_BG)
-        self.watch_status_card.grid(row=1, column=0, sticky="ew", pady=(0, 12))
+        self.watch_status_card.grid(row=1, column=0, sticky="nsew", pady=(0, 12))
 
         card = self._card(parent, row=2, title="运行日志", subtitle="辅助记录，主要结果看上面的任务进度。", sticky="nsew", min_height=200, subtitle_wrap=330)
         card.columnconfigure(0, weight=1)
