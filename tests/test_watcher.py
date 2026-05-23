@@ -73,6 +73,37 @@ class LiveWatcherTest(unittest.TestCase):
         self.assertEqual(live_watcher._extract_web_heartbeat_interval({}, 60), 60)
         self.assertEqual(live_watcher._extract_web_heartbeat_interval({"next_interval": "bad"}, 30), 30)
 
+    def test_live_watch_uses_enter_and_in_room_heartbeat(self) -> None:
+        calls: list[tuple[str, int]] = []
+
+        class FakeClient:
+            def enter_room_heartbeat(self, room: RoomInfo) -> dict[str, object]:
+                calls.append(("E", room.room_id))
+                return {"heartbeat_interval": 30, "timestamp": 100, "secret_key": "secret", "secret_rule": [0]}
+
+            def in_room_heartbeat(
+                self,
+                room: RoomInfo,
+                sequence: int,
+                interval: int,
+                ets: int,
+                secret_key: str,
+                secret_rule: list[int],
+            ) -> dict[str, object]:
+                calls.append((f"X{sequence}:{interval}:{ets}:{secret_key}:{secret_rule[0]}", room.room_id))
+                return {"heartbeat_interval": 45, "timestamp": 200}
+
+        live_watcher = LiveWatcher(WatchOptions(cookie="a=b", room_id="1"), lambda _message: None)
+        room = RoomInfo(room_id=23612045, live_status=1)
+
+        state = live_watcher._start_heartbeat_session(FakeClient(), room, watcher.HeartbeatState())
+        next_state = live_watcher._continue_heartbeat_session(FakeClient(), room, 1, state)
+
+        self.assertEqual(calls, [("E", 23612045), ("X1:30:100:secret:0", 23612045)])
+        self.assertEqual(next_state.interval, 45)
+        self.assertEqual(next_state.ets, 200)
+        self.assertEqual(next_state.secret_key, "secret")
+
     def test_claim_worker_uses_single_sequential_path(self) -> None:
         calls: list[tuple[int, str | None]] = []
 

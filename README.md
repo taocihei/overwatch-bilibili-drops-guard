@@ -1,6 +1,6 @@
 ﻿# 守望先锋 B 站直播挂宝 / Overwatch Bilibili Live Drops Guard
 
-当前版本：`v0.3.4`
+当前版本：`v0.3.5`
 
 开源地址：<https://github.com/taocihei/overwatch-bilibili-drops-guard>
 
@@ -44,10 +44,58 @@
 - `检查间隔`：多久检查一次任务进度。默认 10 秒。
 - `后台观看线程数`：用来加速累计观看时长。B 站允许多个直播窗口同时计时，所以这里可以并行计时。不要设置过大，避免账号或网络异常。
 - `自动领奖`：开启后，任务满足条件会自动领取。领奖固定只用 1 个线程，避免请求太快失败。
-- `任务 ID`：通常留空。程序会自动从活动页读取任务，不需要用户手填。
+- `任务 ID`：通常留空。程序会自动从活动页读取任务，不需要用户手填。自动识别失败时，可以按下面“手动获取直播间号和任务 ID”填写。
 - `通知 URL`：可留空。填写后，启动、检测到可领取、领取成功、领取失败、Cookie 获取成功等关键事件会向该地址发送 JSON POST。
 - `任务进度`：优先显示本次可挂的日期和奖励，比如“还差 48 分钟”“已完成，待领取”“已领取”。
 - `运行日志`：只保留辅助记录，主要结果请看任务进度。
+
+## 手动获取直播间号和任务 ID
+
+大多数情况下不需要手动获取，软件会自动识别。只有出现“任务进度一直无数据”“任务 ID 获取失败”时，再按这里操作。
+
+### 手动获取直播间号
+
+1. 打开有当前掉宝活动的 B 站直播间。
+2. 复制浏览器地址栏里的链接。
+3. 取 `live.bilibili.com/` 后面的数字。
+
+例如：
+
+```text
+https://live.bilibili.com/23612045?live_from=82002
+```
+
+软件里只需要填写：
+
+```text
+23612045
+```
+
+### 手动获取任务 ID
+
+任务 ID 用来查询任务进度和领取奖励。通常软件会自动从直播页读取；如果自动失败，可以手动复制。
+
+1. 用浏览器登录 B 站。
+2. 打开有当前掉宝任务的直播间或活动页面。
+3. 按 `F12` 打开开发者工具。
+4. 切到 `网络 / Network`。
+5. 刷新页面，搜索 `totalv2` 或 `task`。
+6. 找到类似下面的请求：
+
+```text
+https://api.bilibili.com/x/task/totalv2?task_ids=...
+```
+
+7. 复制 `task_ids=` 后面的内容，粘贴到软件的“任务 ID”输入框。
+8. 如果有多个任务 ID，用英文逗号分隔。
+
+任务 ID 通常长这样：
+
+```text
+6ERAcwloghvqrb00,6ERAcwloghvqnk00,6ERAcwloghvql500
+```
+
+如果找不到 `totalv2` 请求，也可以在页面源码或网络响应里搜索 `taskId`，复制对应的任务 ID。
 
 ## 常见问题
 
@@ -171,7 +219,7 @@ dist\OverwatchBiliDrops.exe
 
 Project name: **守望先锋 B 站直播挂宝 / Overwatch Bilibili Live Drops Guard**
 
-Version: `v0.3.4`
+Version: `v0.3.5`
 
 Repository: <https://github.com/taocihei/overwatch-bilibili-drops-guard>
 

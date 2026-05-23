@@ -214,14 +214,22 @@ class LiveWatcher:
 
                 self._set_watch_status(worker_id, "计时中", message=f"已进入房间 {current_room.room_id}")
                 if self._watch_detail_enabled():
-                    self.log(f"后台计时 {worker_id} 已进入房间 {current_room.room_id}，开始累计观看时长")
+                    self.log(f"后台计时 {worker_id} 已进入房间 {current_room.room_id}，正在提交观看计时")
+
+                sequence = 1
+                state = self._start_heartbeat_session(client, current_room, state)
+                self._set_watch_status(worker_id, "正常", interval=state.interval, message="首次计时请求已提交")
+                if self._watch_detail_enabled():
+                    self.log(f"后台计时 {worker_id} 首次计时请求成功，下一次约 {state.interval} 秒后")
+                self._log_watch_status_summary()
+                self._stop.wait(state.interval)
 
                 while not self._stop.is_set():
-                    data = client.web_live_heartbeat(current_room.room_id, state.interval)
-                    state.interval = self._extract_web_heartbeat_interval(data, state.interval)
+                    state = self._continue_heartbeat_session(client, current_room, sequence, state)
+                    sequence += 1
                     self._set_watch_status(worker_id, "正常", interval=state.interval)
                     if self._watch_detail_enabled():
-                        self.log(f"后台计时 {worker_id} 正常，下一次约 {state.interval} 秒后")
+                        self.log(f"后台计时 {worker_id} 计时请求已提交，下一次约 {state.interval} 秒后")
                     self._log_watch_status_summary()
                     self._stop.wait(state.interval)
             except Exception as exc:
@@ -266,6 +274,32 @@ class LiveWatcher:
             return max(10, int(value or fallback or 60))
         except (TypeError, ValueError):
             return max(10, int(fallback or 60))
+
+    def _start_heartbeat_session(self, client: BilibiliClient, room: RoomInfo, fallback: HeartbeatState) -> HeartbeatState:
+        data = client.enter_room_heartbeat(room)
+        return self._extract_heartbeat_state(data, fallback)
+
+    def _continue_heartbeat_session(
+        self,
+        client: BilibiliClient,
+        room: RoomInfo,
+        sequence: int,
+        state: HeartbeatState,
+    ) -> HeartbeatState:
+        if state.secret_key and state.secret_rule:
+            data = client.in_room_heartbeat(
+                room,
+                sequence=sequence,
+                interval=state.interval,
+                ets=state.ets,
+                secret_key=state.secret_key,
+                secret_rule=state.secret_rule,
+            )
+            return self._extract_heartbeat_state(data, state)
+
+        data = client.web_live_heartbeat(room.room_id, state.interval)
+        state.interval = self._extract_web_heartbeat_interval(data, state.interval)
+        return state
 
     def _start_auto_claim_thread(self) -> None:
         if self._claim_thread and self._claim_thread.is_alive():

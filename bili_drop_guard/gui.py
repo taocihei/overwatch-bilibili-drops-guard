@@ -397,7 +397,7 @@ class App(tk.Tk):
         ttk.Label(parent, text="使用说明", style="RailTitle.TLabel").grid(row=0, column=0, sticky="w")
         ttk.Label(
             parent,
-            text="第一次先获取 Cookie；直播间默认 23612045；任务 ID 通常留空，程序会自动识别。",
+            text="第一次先获取 Cookie；直播间默认 23612045；任务 ID 通常会自动识别，失败时可点下方说明手动填写。",
             style="RailMuted.TLabel",
             wraplength=760,
         ).grid(row=0, column=1, columnspan=3, sticky="ew", padx=(18, 0))
@@ -549,6 +549,16 @@ class App(tk.Tk):
         )
         notify_entry.grid(row=0, column=0, sticky="ew")
 
+        PillButton(
+            card,
+            "自动失败？查看房间号和任务 ID 手动获取方法",
+            self._show_manual_task_help,
+            fill=SOFT_SURFACE,
+            foreground=TEXT,
+            active_fill="#eef2ff",
+            height=34,
+        ).grid(row=9, column=0, columnspan=2, sticky="ew", pady=(10, 0))
+
     def _build_actions(self, parent: ttk.Frame) -> None:
         actions_panel = RoundedPanel(parent, fill=SURFACE, background=APP_BG, radius=18, padding=(16, 12))
         actions_panel.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(10, 0))
@@ -689,6 +699,23 @@ class App(tk.Tk):
         self.clipboard_clear()
         self.clipboard_append(SOURCE_URL)
         self._log("开源地址已复制")
+
+    def _show_manual_task_help(self) -> None:
+        messagebox.showinfo(
+            "手动填写方法",
+            "一般不用手动填写，程序会自动获取。只有任务进度一直无数据时再按下面处理。\n\n"
+            "房间号怎么填：\n"
+            "1. 打开 B 站直播间链接。\n"
+            "2. 复制 live.bilibili.com/ 后面的数字。\n"
+            "3. 例如 https://live.bilibili.com/23612045?... 只填 23612045。\n\n"
+            "任务 ID 怎么找：\n"
+            "1. 用浏览器登录 B 站，打开有掉宝任务的直播间或活动页。\n"
+            "2. 按 F12 打开开发者工具，切到“网络/Network”。\n"
+            "3. 刷新页面，搜索 totalv2 或 task。\n"
+            "4. 找到 x/task/totalv2 请求后，复制参数 task_ids= 后面的内容。\n"
+            "5. 多个任务 ID 用英文逗号分隔，粘贴到本软件“任务 ID”输入框。\n\n"
+            "如果找不到 totalv2，也可以在页面源码或网络响应里搜索 taskId。任务 ID 通常像 6ERAcwloghvqrb00 这样的字符串。",
+        )
 
     def _account_names(self) -> list[str]:
         names = [account.name for account in self.config_data.accounts if account.name]
