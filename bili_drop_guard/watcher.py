@@ -35,6 +35,14 @@ class HeartbeatState:
     secret_rule: list[int] | None = None
 
 
+@dataclass
+class WatchWorkerStatus:
+    worker_id: int
+    state: str
+    interval: int | None
+    message: str
+
+
 class LiveWatcher:
     def __init__(self, options: WatchOptions, log: LogSink) -> None:
         self.options = options
@@ -191,6 +199,31 @@ class LiveWatcher:
         if force or summary != self._last_watch_status_summary:
             self._last_watch_status_summary = summary
             self.log(summary)
+
+    def get_watch_status_snapshot(self) -> tuple[list["WatchWorkerStatus"], str]:
+        with self._watch_status_lock:
+            worker_count = self._watch_worker_count
+            statuses = [
+                (worker_id, dict(self._watch_statuses.get(worker_id, {"state": "启动中"})))
+                for worker_id in range(1, worker_count + 1)
+            ]
+        rows: list[WatchWorkerStatus] = []
+        for worker_id, status in statuses:
+            interval_value = status.get("interval")
+            try:
+                interval = int(interval_value) if interval_value is not None else None
+            except (TypeError, ValueError):
+                interval = None
+            rows.append(
+                WatchWorkerStatus(
+                    worker_id=worker_id,
+                    state=str(status.get("state") or "启动中"),
+                    interval=interval,
+                    message=str(status.get("message") or ""),
+                )
+            )
+        summary, _normal, _problem = self._watch_status_summary_info()
+        return rows, summary
 
     def _log_room(self, room: RoomInfo) -> None:
         if not room.room_id:
