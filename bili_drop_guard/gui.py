@@ -16,7 +16,7 @@ from . import __version__
 from .config import APP_DIR, MAX_CHECK_INTERVAL, MAX_WATCH_THREADS, MIN_CHECK_INTERVAL, AccountProfile, AppConfig, load_config, sanitize_config, save_config
 from .cookie_capture import capture_bilibili_cookie, open_bilibili_login_page
 from .notifier import send_notification
-from .watcher import LiveWatcher, WatchOptions
+from .watcher import LiveWatcher, WatchOptions, WatchWorkerStatus
 
 
 SOURCE_URL = "https://github.com/taocihei/overwatch-bilibili-drops-guard"
@@ -225,6 +225,68 @@ class NumberInput(tk.Frame):
 
     def _commit(self) -> None:
         self._set_value(self._current_value())
+
+
+class WatchStatusCard(tk.Frame):
+    """右栏后台计时状态卡。折叠时仅显示汇总，展开时逐路列表。"""
+
+    ROW_HEIGHT = 22
+    STATE_COLORS = {
+        "正常": SUCCESS,
+        "计时中": "#f59e0b",
+        "启动中": "#f59e0b",
+        "等待开播": MUTED,
+        "暂时失败": DANGER,
+    }
+
+    def __init__(self, parent: tk.Misc, *, background: str = APP_BG) -> None:
+        super().__init__(parent, bg=background, highlightthickness=0, borderwidth=0)
+        self.summary_var = tk.StringVar(value="后台计时状态：未启动")
+        self._expanded = False
+        self._snapshot: list[WatchWorkerStatus] = []
+
+        self._panel = RoundedPanel(self, fill=SURFACE, background=background, radius=18, padding=(16, 12), outline=BORDER)
+        self._panel.pack(fill="both", expand=True)
+        inner = self._panel.inner
+        inner.columnconfigure(0, weight=1)
+
+        ttk.Label(inner, text="后台计时状态", style="SectionTitle.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Label(inner, textvariable=self.summary_var, style="Muted.TLabel", wraplength=320).grid(row=1, column=0, sticky="ew", pady=(4, 8))
+        self._toggle_button = PillButton(
+            inner,
+            "展开查看每路",
+            self.toggle,
+            fill=SOFT_SURFACE,
+            foreground=TEXT,
+            active_fill="#eef2ff",
+            height=28,
+        )
+        self._toggle_button.grid(row=2, column=0, sticky="ew")
+
+        self._rows_container: tk.Frame | None = None
+
+    def is_expanded(self) -> bool:
+        return self._expanded
+
+    def toggle(self) -> None:
+        self._expanded = not self._expanded
+        self._toggle_button.set_appearance(
+            text="收起" if self._expanded else "展开查看每路",
+            fill=SOFT_SURFACE,
+            foreground=TEXT,
+            active_fill="#eef2ff",
+        )
+        self._render_rows()
+
+    def update_snapshot(self, snapshot: list[WatchWorkerStatus], summary: str) -> None:
+        self._snapshot = list(snapshot)
+        self.summary_var.set(summary)
+        if self._expanded:
+            self._render_rows()
+
+    def _render_rows(self) -> None:
+        # 折叠态先返回；展开态在 Task 7 实现
+        return
 
 
 class App(tk.Tk):
