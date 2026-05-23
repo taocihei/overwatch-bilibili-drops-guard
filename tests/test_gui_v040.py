@@ -163,5 +163,46 @@ class RediscoverTasksButtonTest(unittest.TestCase):
         fake_watcher.rediscover_tasks_once.assert_not_called()
 
 
+class OnboardingGuideTest(_HiddenRootCase):
+    def test_build_onboarding_guide_creates_toplevel(self) -> None:
+        toplevel = gui.build_onboarding_guide(self.root)
+        try:
+            self.assertIsInstance(toplevel, tk.Toplevel)
+            self.assertEqual(toplevel.title(), "上手指引")
+        finally:
+            toplevel.destroy()
+
+    def test_onboarding_guide_contains_four_step_titles(self) -> None:
+        toplevel = gui.build_onboarding_guide(self.root)
+        try:
+            texts: list[str] = []
+
+            def collect(widget: tk.Misc) -> None:
+                for child in widget.winfo_children():
+                    try:
+                        text = child.cget("text")
+                    except tk.TclError:
+                        text = ""
+                    if isinstance(text, str) and text:
+                        texts.append(text)
+                    collect(child)
+
+            collect(toplevel)
+            combined = "\n".join(texts)
+            self.assertIn("获取 Cookie", combined)
+            self.assertIn("确认直播间", combined)
+            self.assertIn("开始计时", combined)
+            self.assertIn("领取奖励", combined)
+        finally:
+            toplevel.destroy()
+
+    def test_onboarding_guide_can_be_dismissed(self) -> None:
+        toplevel = gui.build_onboarding_guide(self.root)
+
+        toplevel.destroy()
+
+        self.assertFalse(toplevel.winfo_exists())
+
+
 if __name__ == "__main__":
     unittest.main()

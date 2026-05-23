@@ -339,6 +339,41 @@ class WatchStatusCard(tk.Frame):
         return list(getattr(self, "_rendered_rows", []))
 
 
+def build_onboarding_guide(parent: tk.Misc) -> tk.Toplevel:
+    top = tk.Toplevel(parent)
+    top.title("上手指引")
+    top.geometry("540x480")
+    top.configure(bg=APP_BG)
+    try:
+        top.transient(parent)
+        top.grab_set()
+    except tk.TclError:
+        pass
+
+    container = tk.Frame(top, bg=APP_BG, padx=24, pady=20)
+    container.pack(fill="both", expand=True)
+    tk.Label(container, text="上手指引", bg=APP_BG, fg=TEXT, font=("Microsoft YaHei UI", 16, "bold")).pack(anchor="w")
+    tk.Label(container, text="跟着 4 步走就能挂宝。", bg=APP_BG, fg=MUTED, font=("Microsoft YaHei UI", 10)).pack(anchor="w", pady=(2, 14))
+
+    steps = (
+        ("01", "获取 Cookie", "点“自动获取 Cookie”,在弹出的 Edge/Chrome 里登录 B 站即可。"),
+        ("02", "确认直播间", "默认 23612045 即可。要换直播间就粘贴链接，会自动保存成房间号。"),
+        ("03", "开始计时", "点“开始挂宝”。后台计时不会弹直播窗口。可调整“后台观看线程数”加速累计时长。"),
+        ("04", "领取奖励", "“自动领奖”开启时会按顺序领；也可手动点“领取奖励”。看右侧“任务进度”确认状态。"),
+    )
+    for number, title, detail in steps:
+        row = RoundedPanel(container, fill=SURFACE, background=APP_BG, radius=14, padding=(14, 10), outline=BORDER, shadow=False)
+        row.pack(fill="x", pady=(0, 8))
+        inner = row.inner
+        inner.columnconfigure(1, weight=1)
+        tk.Label(inner, text=number, bg=SURFACE, fg=ACCENT, font=("Microsoft YaHei UI", 14, "bold"), width=4).grid(row=0, column=0, rowspan=2, sticky="nw")
+        tk.Label(inner, text=title, bg=SURFACE, fg=TEXT, font=("Microsoft YaHei UI", 11, "bold")).grid(row=0, column=1, sticky="w")
+        tk.Label(inner, text=detail, bg=SURFACE, fg=MUTED, font=("Microsoft YaHei UI", 9), wraplength=420, justify="left").grid(row=1, column=1, sticky="w", pady=(2, 0))
+
+    PillButton(container, "我知道了", top.destroy, fill=ACCENT, active_fill=ACCENT_ACTIVE, height=36, width=120).pack(pady=(10, 0))
+    return top
+
+
 class App(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
@@ -472,16 +507,20 @@ class App(tk.Tk):
             text="本软件完全免费，购买请找商家退款；赞助只是点赞，不会解锁任何功能。",
             style="FreeNoticeTitle.TLabel",
         ).grid(row=0, column=0, sticky="w")
+        free.columnconfigure(3, weight=0)
+        onboarding_label = ttk.Label(free, text="看上手指引", style="FreeNoticeLink.TLabel", cursor="hand2")
+        onboarding_label.grid(row=0, column=1, sticky="e", padx=(14, 0))
+        onboarding_label.bind("<Button-1>", lambda _event: self._show_onboarding_guide())
         source_label = ttk.Label(
             free,
             text="打开开源地址",
             style="FreeNoticeLink.TLabel",
             cursor="hand2",
         )
-        source_label.grid(row=0, column=1, sticky="e", padx=(14, 0))
+        source_label.grid(row=0, column=2, sticky="e", padx=(14, 0))
         source_label.bind("<Button-1>", lambda _event: self._open_source_url())
         copy_label = ttk.Label(free, text="复制地址", style="FreeNoticeLink.TLabel", cursor="hand2")
-        copy_label.grid(row=0, column=2, sticky="e", padx=(14, 0))
+        copy_label.grid(row=0, column=3, sticky="e", padx=(14, 0))
         copy_label.bind("<Button-1>", lambda _event: self._copy_source_url())
 
         guide_panel = RoundedPanel(body, fill=SURFACE, background=APP_BG, radius=18, padding=(14, 10), outline=BORDER)
@@ -857,6 +896,9 @@ class App(tk.Tk):
             "5. 多个任务 ID 用英文逗号分隔，粘贴到本软件“任务 ID”输入框。\n\n"
             "如果找不到 totalv2，也可以在页面源码或网络响应里搜索 taskId。任务 ID 通常像 6ERAcwloghvqrb00 这样的字符串。",
         )
+
+    def _show_onboarding_guide(self) -> tk.Toplevel:
+        return build_onboarding_guide(self)
 
     def _account_names(self) -> list[str]:
         names = [account.name for account in self.config_data.accounts if account.name]
