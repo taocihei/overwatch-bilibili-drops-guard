@@ -276,11 +276,18 @@ class LiveWatcher:
         self.log(f"房间 {room.room_id}：{room.message}｜{room.title}{anchor}｜人气 {room.online}")
 
     def _heartbeat_watch_worker(self, worker_id: int, room: RoomInfo | None) -> None:
+        # 先确定本会话的设备身份并构造客户端，让每个 worker 都有独立 cookie 和 buvid。
         client = BilibiliClient(
             self.options.cookie,
             session_buvid=make_session_buvid(),
             session_device_uuid=make_session_device_uuid(),
         )
+        # 错开启动，每秒只启动一个 worker，避免短时间内大量心跳被 B 站频控拦截。
+        # 这是参考 bilibili-drops-miner 的做法（它每秒启动一个连接 #N）。
+        if worker_id > 1:
+            self._stop.wait(worker_id - 1)
+        if self._stop.is_set():
+            return
         state = HeartbeatState()
         current_room = room
         while not self._stop.is_set():
@@ -364,6 +371,12 @@ class LiveWatcher:
             return max(10, int(fallback or 60))
 
     def _start_heartbeat_session(self, client: BilibiliClient, room: RoomInfo, fallback: HeartbeatState) -> HeartbeatState:
+        # 先注册"进入直播间"动作，B 站才会把后续 x25Kn 心跳算到当前会话上。
+        # 缺这一步是 v0.4.1 多路计时仍然只算一路的关键原因。
+        try:
+            client.room_entry_action(room)
+        except Exception as exc:
+            self.log(f"上报进入直播间失败（不影响心跳）：{self._friendly_error(exc)}")
         data = client.enter_room_heartbeat(room)
         return self._extract_heartbeat_state(data, fallback)
 

@@ -1,6 +1,6 @@
 ﻿# 守望先锋 B 站直播挂宝 / Overwatch Bilibili Live Drops Guard
 
-当前版本：`v0.4.1`
+当前版本：`v0.4.2`
 
 开源地址：<https://github.com/taocihei/overwatch-bilibili-drops-guard>
 
@@ -48,6 +48,12 @@
 - `通知 URL`：可留空。填写后，启动、检测到可领取、领取成功、领取失败、Cookie 获取成功等关键事件会向该地址发送 JSON POST。
 - `任务进度`：优先显示本次可挂的日期和奖励，比如“还差 48 分钟”“已完成，待领取”“已领取”。
 - `运行日志`：只保留辅助记录，主要结果请看任务进度。
+
+## v0.4.2 修复
+
+- **进一步修复多路计时**：v0.4.1 只改了请求体里的 device 字段，但 B 站去重看的是 Cookie header 里的 `buvid3`。本版本同时覆盖 cookie 里的 `buvid3` 让每路 worker 真正成为独立设备。
+- **入房前先调用 `roomEntryAction`**：对照 bilibili-drops-miner-gui 抓到的 API 序列，发现 x25Kn/E 心跳之前还要先调 `https://api.live.bilibili.com/xlive/web-room/v1/index/roomEntryAction` 注册进入直播间动作。缺这一步是观看时长不被计入的关键原因。
+- **错开启动 worker**：从瞬时并行启动改为每秒启动一个（参照竞品做法），避免短时间大量心跳被 B 站频控拦截。20 路启动需要 20 秒。
 
 ## v0.4.1 修复
 
@@ -230,7 +236,7 @@ dist\OverwatchBiliDrops.exe
 
 Project name: **守望先锋 B 站直播挂宝 / Overwatch Bilibili Live Drops Guard**
 
-Version: `v0.4.1`
+Version: `v0.4.2`
 
 Repository: <https://github.com/taocihei/overwatch-bilibili-drops-guard>
 

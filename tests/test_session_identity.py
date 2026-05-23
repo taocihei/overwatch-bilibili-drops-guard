@@ -52,6 +52,17 @@ class BilibiliClientSessionIdentityTest(unittest.TestCase):
 
         self.assertEqual(client._buvid, "SHARED-BUVID-FROM-COOKIE")
 
+    def test_session_buvid_also_overrides_cookie_buvid3_in_http_session(self) -> None:
+        client = BilibiliClient(COOKIE_WITH_BUVID, session_buvid="MY-FRESH-SESSION-BUVID")
+
+        # 关键：HTTP request 用的 cookie 里 buvid3 也得是 session 独立的，B 站去重多半看 cookie。
+        self.assertEqual(client.session.cookies.get("buvid3", domain=".bilibili.com"), "MY-FRESH-SESSION-BUVID")
+
+    def test_without_session_buvid_cookie_buvid3_keeps_original(self) -> None:
+        client = BilibiliClient(COOKIE_WITH_BUVID)
+
+        self.assertEqual(client.session.cookies.get("buvid3", domain=".bilibili.com"), "SHARED-BUVID-FROM-COOKIE")
+
 
 class WatcherHeartbeatWorkerUsesUniqueSessionIdentityTest(unittest.TestCase):
     def test_each_worker_creates_client_with_distinct_buvid(self) -> None:

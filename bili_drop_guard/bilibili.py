@@ -159,6 +159,9 @@ class BilibiliClient:
         )
         for key, value in self.cookies.items():
             self.session.cookies.set(key, value, domain=".bilibili.com")
+        if session_buvid:
+            # 也要覆盖 cookie 里的 buvid3——B 站去重更可能看 Cookie header 而非请求体里的 device 字段
+            self.session.cookies.set("buvid3", session_buvid, domain=".bilibili.com")
 
     @property
     def csrf(self) -> str:
@@ -225,6 +228,25 @@ class BilibiliClient:
             parent_area_id=int(room.get("parent_area_id") or 0),
             area_id=int(room.get("area_id") or 0),
             message="直播中" if int(room.get("live_status") or 0) == 1 else "未开播",
+        )
+
+    def room_entry_action(self, room: RoomInfo) -> Dict[str, Any]:
+        """注册"进入直播间"动作。x25Kn 心跳之前必须先调这个，B 站才会把后续
+        心跳算到当前 (uid, buvid, room) 这个会话上。竞品也是先 entry 再 x25Kn。"""
+
+        if not self.csrf:
+            raise RuntimeError("Cookie 缺少 bili_jct，无法上报进入直播间动作")
+        data = {
+            "room_id": room.room_id,
+            "platform": "pc",
+            "csrf_token": self.csrf,
+            "csrf": self.csrf,
+            "visit_id": "",
+        }
+        return self._post_form(
+            "https://api.live.bilibili.com/xlive/web-room/v1/index/roomEntryAction",
+            room.room_id,
+            data,
         )
 
     def enter_room_heartbeat(self, room: RoomInfo) -> Dict[str, Any]:
