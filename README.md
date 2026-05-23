@@ -1,6 +1,6 @@
 ﻿# 守望先锋 B 站直播挂宝 / Overwatch Bilibili Live Drops Guard
 
-当前版本：`v0.4.0`
+当前版本：`v0.4.1`
 
 开源地址：<https://github.com/taocihei/overwatch-bilibili-drops-guard>
 
@@ -48,6 +48,10 @@
 - `通知 URL`：可留空。填写后，启动、检测到可领取、领取成功、领取失败、Cookie 获取成功等关键事件会向该地址发送 JSON POST。
 - `任务进度`：优先显示本次可挂的日期和奖励，比如“还差 48 分钟”“已完成，待领取”“已领取”。
 - `运行日志`：只保留辅助记录，主要结果请看任务进度。
+
+## v0.4.1 修复
+
+- **多路后台计时实际只算 1 路的 bug**：之前所有后台线程共用 Cookie 里的 `buvid3`，B 站把它们去重成一个会话，导致开 20 路反而比一路浏览器还慢。现在每个 worker 启动时生成独立的 `live_buvid` 和 `device_uuid` 作为该会话的设备身份，B 站会把每路当作独立设备分别累计观看时长。
 
 ## v0.4.0 新增
 
@@ -226,7 +230,7 @@ dist\OverwatchBiliDrops.exe
 
 Project name: **守望先锋 B 站直播挂宝 / Overwatch Bilibili Live Drops Guard**
 
-Version: `v0.4.0`
+Version: `v0.4.1`
 
 Repository: <https://github.com/taocihei/overwatch-bilibili-drops-guard>
 

@@ -12,8 +12,16 @@ from bili_drop_guard.watcher import LiveWatcher, WatchOptions
 class FakeClient:
     """模拟 BilibiliClient 一整轮：心跳成功 → 检测到完成 → 领奖。"""
 
-    def __init__(self, cookie: str = "a=b") -> None:
+    def __init__(
+        self,
+        cookie: str = "a=b",
+        *,
+        session_buvid: str | None = None,
+        session_device_uuid: str | None = None,
+    ) -> None:
         self.cookie = cookie
+        self.session_buvid = session_buvid
+        self.session_device_uuid = session_device_uuid
         self.heartbeat_calls: list[str] = []
         self.claim_calls: list[tuple[int, str | None]] = []
         self._claim_step = {"current": 0, "total": 30}
@@ -77,10 +85,10 @@ class WatcherEndToEndTest(unittest.TestCase):
         watcher_module.CLAIM_RATE_LIMIT_DELAY_SECONDS = 0
         self._client_holder: dict[str, FakeClient] = {}
 
-        def factory(cookie: str) -> FakeClient:
+        def factory(cookie: str, *, session_buvid: str | None = None, session_device_uuid: str | None = None) -> FakeClient:
             client = self._client_holder.get("instance")
             if client is None:
-                client = FakeClient(cookie)
+                client = FakeClient(cookie, session_buvid=session_buvid, session_device_uuid=session_device_uuid)
                 self._client_holder["instance"] = client
             return client
 
@@ -132,8 +140,14 @@ class WatcherEndToEndTest(unittest.TestCase):
         logs: list[str] = []
 
         class RateLimitedClient(FakeClient):
-            def __init__(self, cookie: str = "a=b") -> None:
-                super().__init__(cookie)
+            def __init__(
+                self,
+                cookie: str = "a=b",
+                *,
+                session_buvid: str | None = None,
+                session_device_uuid: str | None = None,
+            ) -> None:
+                super().__init__(cookie, session_buvid=session_buvid, session_device_uuid=session_device_uuid)
                 self._attempts = 0
 
             def claim_user_task_rewards(self, up_id: int, task_id: str | None = None) -> dict:
@@ -142,10 +156,10 @@ class WatcherEndToEndTest(unittest.TestCase):
                     raise RuntimeError("请求频率过高，请稍后再试")
                 return super().claim_user_task_rewards(up_id, task_id)
 
-        def factory(cookie: str) -> RateLimitedClient:
+        def factory(cookie: str, *, session_buvid: str | None = None, session_device_uuid: str | None = None) -> RateLimitedClient:
             client = self._client_holder.get("instance")
             if client is None:
-                client = RateLimitedClient(cookie)
+                client = RateLimitedClient(cookie, session_buvid=session_buvid, session_device_uuid=session_device_uuid)
                 self._client_holder["instance"] = client
             return client
 

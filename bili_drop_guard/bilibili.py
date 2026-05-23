@@ -114,13 +114,40 @@ def calc_heartbeat_sign(data: Dict[str, Any], secret_rule: List[int]) -> str:
     return digest
 
 
+def make_session_buvid() -> str:
+    """生成一个全新的 live_buvid，模仿 B 站 buvid3 的 UUID+infoc 格式。
+
+    后台心跳里每个 worker 都用自己的 live_buvid，B 站才会把它们当作不同设备
+    分别累计观看时长。若所有 worker 共享 Cookie 里的 buvid3，B 站会把它们
+    去重成一个会话，结果 N 路心跳只算一路。
+    """
+
+    return str(uuid4()).upper() + "infoc"
+
+
+def make_session_device_uuid() -> str:
+    return uuid4().hex
+
+
 class BilibiliClient:
-    def __init__(self, cookie_header: str) -> None:
+    def __init__(
+        self,
+        cookie_header: str,
+        *,
+        session_buvid: str | None = None,
+        session_device_uuid: str | None = None,
+    ) -> None:
         self.cookie_header = cookie_header
         self.cookies = parse_cookie_header(cookie_header)
-        self._buvid = self.cookies.get("buvid3") or self.cookies.get("buvid4") or str(uuid4())
-        source = self.cookies.get("DedeUserID") or self._buvid
-        self._device_uuid = str(uuid4()).replace("-", "")[:8] + str(abs(hash(source)))[:8]
+        if session_buvid:
+            self._buvid = session_buvid
+        else:
+            self._buvid = self.cookies.get("buvid3") or self.cookies.get("buvid4") or str(uuid4())
+        if session_device_uuid:
+            self._device_uuid = session_device_uuid
+        else:
+            source = self.cookies.get("DedeUserID") or self._buvid
+            self._device_uuid = str(uuid4()).replace("-", "")[:8] + str(abs(hash(source)))[:8]
         self.session = requests.Session()
         self._wbi_keys: tuple[str, str] | None = None
         self.session.headers.update(

@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Any, Callable, Optional
 
-from .bilibili import BilibiliClient, RoomInfo
+from .bilibili import BilibiliClient, RoomInfo, make_session_buvid, make_session_device_uuid
 from .config import MAX_WATCH_THREADS
 
 
@@ -276,7 +276,11 @@ class LiveWatcher:
         self.log(f"房间 {room.room_id}：{room.message}｜{room.title}{anchor}｜人气 {room.online}")
 
     def _heartbeat_watch_worker(self, worker_id: int, room: RoomInfo | None) -> None:
-        client = BilibiliClient(self.options.cookie)
+        client = BilibiliClient(
+            self.options.cookie,
+            session_buvid=make_session_buvid(),
+            session_device_uuid=make_session_device_uuid(),
+        )
         state = HeartbeatState()
         current_room = room
         while not self._stop.is_set():
