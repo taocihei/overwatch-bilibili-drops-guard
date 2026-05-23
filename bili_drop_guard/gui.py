@@ -13,7 +13,7 @@ from tkinter import messagebox, ttk
 from typing import Callable
 
 from . import __version__
-from .config import APP_DIR, MAX_CHECK_INTERVAL, MAX_WATCH_WINDOWS, MIN_CHECK_INTERVAL, AccountProfile, AppConfig, load_config, sanitize_config, save_config
+from .config import APP_DIR, MAX_CHECK_INTERVAL, MAX_WATCH_THREADS, MIN_CHECK_INTERVAL, AccountProfile, AppConfig, load_config, sanitize_config, save_config
 from .cookie_capture import capture_bilibili_cookie, open_bilibili_login_page
 from .notifier import send_notification
 from .watcher import LiveWatcher, WatchOptions
@@ -501,10 +501,10 @@ class App(tk.Tk):
         room_entry.grid(row=0, column=0, sticky="ew")
 
         ttk.Label(card, text="检查间隔（秒）", style="Body.TLabel").grid(row=4, column=0, sticky="w")
-        ttk.Label(card, text="后台观看线程数", style="Body.TLabel").grid(row=4, column=1, sticky="w", padx=(14, 0))
+        ttk.Label(card, text=f"后台观看线程数（最多 {MAX_WATCH_THREADS}）", style="Body.TLabel").grid(row=4, column=1, sticky="w", padx=(14, 0))
 
         NumberInput(card, self.interval_var, minimum=MIN_CHECK_INTERVAL, maximum=MAX_CHECK_INTERVAL).grid(row=5, column=0, sticky="ew", pady=(6, 6))
-        NumberInput(card, self.watch_threads_var, minimum=1, maximum=MAX_WATCH_WINDOWS).grid(row=5, column=1, sticky="ew", padx=(14, 0), pady=(6, 6))
+        NumberInput(card, self.watch_threads_var, minimum=1, maximum=MAX_WATCH_THREADS).grid(row=5, column=1, sticky="ew", padx=(14, 0), pady=(6, 6))
         ttk.Label(card, text="自动领奖", style="Body.TLabel").grid(row=6, column=0, sticky="w", pady=(4, 0))
         self.auto_claim_button = PillButton(card, "已开启", self._toggle_auto_claim, fill=SUCCESS, active_fill=SUCCESS_ACTIVE)
         self.auto_claim_button.grid(row=6, column=1, sticky="ew", padx=(14, 0), pady=(2, 8))
@@ -798,6 +798,7 @@ class App(tk.Tk):
         self._log("配置已保存")
 
     def _start(self) -> None:
+        requested_watch_threads = self._safe_int_var(self.watch_threads_var, 1)
         config = self._current_config()
         if not config.cookie:
             messagebox.showwarning("缺少 Cookie", "请先粘贴 B 站 Cookie。")
@@ -807,8 +808,8 @@ class App(tk.Tk):
             return
 
         self._save()
-        if config.watch_threads >= MAX_WATCH_WINDOWS:
-            self._log(f"后台观看线程数已限制为 {MAX_WATCH_WINDOWS}，避免请求过多导致账号或网络异常")
+        if requested_watch_threads != config.watch_threads:
+            self._log(f"后台观看线程数已调整为 {config.watch_threads}，当前版本最多支持 {MAX_WATCH_THREADS} 路")
         if self.watcher and self.watcher.running:
             self._log("当前已经在运行")
             return

@@ -8,6 +8,7 @@ from datetime import date
 from typing import Any, Callable, Optional
 
 from .bilibili import BilibiliClient, RoomInfo
+from .config import MAX_WATCH_THREADS
 
 
 LogSink = Callable[[str], None]
@@ -53,7 +54,7 @@ class LiveWatcher:
         self._last_up_id: int | None = None
         self._watch_status_lock = threading.Lock()
         self._watch_statuses: dict[int, dict[str, Any]] = {}
-        self._watch_worker_count = max(1, int(self.options.watch_threads or 1))
+        self._watch_worker_count = self._normalize_watch_threads(self.options.watch_threads)
         self._last_watch_status_summary = ""
 
     @property
@@ -115,7 +116,7 @@ class LiveWatcher:
         self.log("守护已停止")
 
     def _start_watch_threads(self, room: RoomInfo | None = None) -> None:
-        worker_count = max(1, int(self.options.watch_threads or 1))
+        worker_count = self._normalize_watch_threads(self.options.watch_threads)
         self._watch_worker_count = worker_count
         self._watch_threads = []
         with self._watch_status_lock:
@@ -134,6 +135,13 @@ class LiveWatcher:
 
     def _watch_detail_enabled(self) -> bool:
         return self._watch_worker_count <= 5
+
+    def _normalize_watch_threads(self, value: int) -> int:
+        try:
+            number = int(value or 1)
+        except (TypeError, ValueError):
+            number = 1
+        return min(max(number, 1), MAX_WATCH_THREADS)
 
     def _set_watch_status(self, worker_id: int, state: str, *, interval: int | None = None, message: str = "") -> None:
         with self._watch_status_lock:

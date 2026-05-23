@@ -53,6 +53,17 @@ class LiveWatcherTest(unittest.TestCase):
         self.assertIn("20/20 正常", summary)
         self.assertIn("下一次约 60 秒后", summary)
 
+    def test_watch_threads_allow_one_hundred_workers(self) -> None:
+        live_watcher = RecordingWatcher(WatchOptions(cookie="a=b", room_id="1", watch_threads=100))
+
+        live_watcher._start_watch_threads(RoomInfo(room_id=1, live_status=1))
+        for thread in live_watcher._watch_threads:
+            thread.join(timeout=2)
+
+        self.assertEqual(len(live_watcher.started_workers), 100)
+        self.assertEqual(live_watcher.started_workers[0], 1)
+        self.assertEqual(live_watcher.started_workers[-1], 100)
+
     def test_extract_heartbeat_state_keeps_fallback_values(self) -> None:
         live_watcher = LiveWatcher(WatchOptions(cookie="a=b", room_id="1"), lambda _message: None)
 

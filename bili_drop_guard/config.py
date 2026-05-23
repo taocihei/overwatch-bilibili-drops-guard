@@ -19,6 +19,7 @@ DEFAULT_ROOM_ID = "23612045"
 MIN_CHECK_INTERVAL = 10
 MAX_CHECK_INTERVAL = 600
 MAX_WATCH_WINDOWS = 20
+MAX_WATCH_THREADS = 100
 DEFAULT_CHECK_INTERVAL = 10
 LEGACY_DEFAULT_CHECK_INTERVAL = 60
 CONFIG_VERSION = 3
@@ -91,7 +92,7 @@ def sanitize_config(config: AppConfig) -> AppConfig:
         check_interval=_coerce_int(config.check_interval, DEFAULT_CHECK_INTERVAL, MIN_CHECK_INTERVAL, MAX_CHECK_INTERVAL),
         auto_claim=_coerce_bool(config.auto_claim, True),
         task_ids=str(config.task_ids or ""),
-        watch_threads=_coerce_int(config.watch_threads, 1, 1, MAX_WATCH_WINDOWS),
+        watch_threads=_coerce_int(config.watch_threads, 1, 1, MAX_WATCH_THREADS),
         notify_url=str(config.notify_url or "").strip(),
         config_version=CONFIG_VERSION,
     )

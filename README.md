@@ -1,6 +1,6 @@
 ﻿# 守望先锋 B 站直播挂宝 / Overwatch Bilibili Live Drops Guard
 
-当前版本：`v0.3.5`
+当前版本：`v0.3.6`
 
 开源地址：<https://github.com/taocihei/overwatch-bilibili-drops-guard>
 
@@ -42,7 +42,7 @@
 - `当前账号 / 账号名称`：用来切换多个 B 站账号。获取 Cookie 后点“保存账号”，下次可直接从下拉框切换。
 - `直播间号或链接`：默认 `23612045`。也可以粘贴完整直播间链接，保存后会自动变成数字房间号。
 - `检查间隔`：多久检查一次任务进度。默认 10 秒。
-- `后台观看线程数`：用来加速累计观看时长。B 站允许多个直播窗口同时计时，所以这里可以并行计时。不要设置过大，避免账号或网络异常。
+- `后台观看线程数`：用来加速累计观看时长。当前最多支持 `100` 路后台计时；软件不会打开 100 个直播窗口，而是提交后台观看计时请求。不要设置过大，避免账号或网络异常。
 - `自动领奖`：开启后，任务满足条件会自动领取。领奖固定只用 1 个线程，避免请求太快失败。
 - `任务 ID`：通常留空。程序会自动从活动页读取任务，不需要用户手填。自动识别失败时，可以按下面“手动获取直播间号和任务 ID”填写。
 - `通知 URL`：可留空。填写后，启动、检测到可领取、领取成功、领取失败、Cookie 获取成功等关键事件会向该地址发送 JSON POST。
@@ -219,7 +219,7 @@ dist\OverwatchBiliDrops.exe
 
 Project name: **守望先锋 B 站直播挂宝 / Overwatch Bilibili Live Drops Guard**
 
-Version: `v0.3.5`
+Version: `v0.3.6`
 
 Repository: <https://github.com/taocihei/overwatch-bilibili-drops-guard>
 

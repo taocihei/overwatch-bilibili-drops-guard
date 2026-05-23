@@ -48,7 +48,7 @@ class ConfigTest(unittest.TestCase):
 
         self.assertEqual(loaded.check_interval, config.DEFAULT_CHECK_INTERVAL)
         self.assertFalse(loaded.auto_claim)
-        self.assertEqual(loaded.watch_threads, config.MAX_WATCH_WINDOWS)
+        self.assertEqual(loaded.watch_threads, config.MAX_WATCH_THREADS)
         self.assertEqual(loaded.cookie, "")
         self.assertEqual(loaded.room_id, config.DEFAULT_ROOM_ID)
 
