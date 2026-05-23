@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import threading
 import time
 from dataclasses import dataclass
@@ -572,6 +573,9 @@ class LiveWatcher:
         text_parts: list[str] = []
         nodes = sorted(self._iter_task_nodes(progress), key=self._task_sort_key)
         nodes, group_label, hidden_count = self._focus_task_nodes(nodes)
+        compact_summary = self._summarize_task_steps(nodes, group_label, hidden_count)
+        if compact_summary:
+            return compact_summary
         for node in nodes:
             if self._skip_task_summary_node(node):
                 continue
@@ -590,6 +594,70 @@ class LiveWatcher:
             header = f"当前可挂：{group_label}，共 {len(text_parts)} 个奖励{hidden_note}"
             return "\n".join([header, *text_parts])
         return "\n".join(text_parts)
+
+    def _summarize_task_steps(self, nodes: list[dict[str, Any]], group_label: str, hidden_count: int) -> str:
+        step_nodes: list[tuple[dict[str, Any], float, float]] = []
+        base_names: list[str] = []
+        for node in nodes:
+            if self._skip_task_summary_node(node):
+                continue
+            current, target = self._task_progress_values(node)
+            try:
+                current_value = float(current)
+                target_value = float(target)
+            except (TypeError, ValueError):
+                return ""
+            if target_value <= 0:
+                return ""
+            base_name = self._task_base_name(node)
+            if not base_name:
+                return ""
+            step_nodes.append((node, current_value, target_value))
+            base_names.append(base_name)
+
+        if len(step_nodes) < 3 or len(set(base_names)) != 1:
+            return ""
+
+        step_nodes.sort(key=lambda item: item[2])
+        max_current = max(current_value for _node, current_value, _target in step_nodes)
+        max_target = max(target for _node, _current, target in step_nodes)
+        header_parts: list[str] = []
+        if group_label:
+            hidden_note = f"，已隐藏其他日期 {hidden_count} 个任务" if hidden_count else ""
+            header_parts.append(f"当前可挂：{group_label}，共 {len(step_nodes)} 个奖励{hidden_note}")
+        header_parts.append(f"{base_names[0]}（当前：{self._format_progress_value(max_current)} 分钟）")
+
+        lines = [*header_parts]
+        for node, current_value, target_value in step_nodes:
+            bar = self._task_progress_bar(current_value, target_value, max_target=max_target)
+            target_text = self._format_progress_value(target_value).rjust(4)
+            state = self._task_step_state_text(node, current_value, target_value)
+            lines.append(f"  {bar} {target_text} 分钟  {state}")
+        return "\n".join(lines)
+
+    def _task_base_name(self, node: dict[str, Any]) -> str:
+        raw_name = str(node.get("name") or node.get("task_name") or node.get("title") or "").strip()
+        if not raw_name:
+            return ""
+        name = re.sub(r"\s*\d+(?:\.\d+)?\s*分钟\s*$", "", raw_name).strip()
+        return name or raw_name
+
+    def _task_progress_bar(self, current: float, target: float, *, max_target: float, width: int = 20) -> str:
+        if target <= 0 or max_target <= 0:
+            return "░" * width
+        ratio = min(max(current / target, 0.0), 1.0)
+        filled = int(round(width * ratio))
+        return "█" * filled + "░" * (width - filled)
+
+    def _task_step_state_text(self, node: dict[str, Any], current: float, target: float) -> str:
+        if self._node_received(node):
+            return "✓ 已领取"
+        if self._node_claimable(node):
+            return "✓ 待领取"
+        remaining = max(0.0, target - current)
+        if remaining <= 0:
+            return "✓ 已完成"
+        return f"还差 {self._format_progress_value(remaining)} 分钟"
 
     def _focus_task_nodes(self, nodes: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], str, int]:
         groups: dict[tuple[int, str], list[dict[str, Any]]] = {}
