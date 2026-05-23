@@ -64,6 +64,8 @@ class LiveWatcher:
         self._watch_statuses: dict[int, dict[str, Any]] = {}
         self._watch_worker_count = self._normalize_watch_threads(self.options.watch_threads)
         self._last_watch_status_summary = ""
+        self._manual_refresh_thread: Optional[threading.Thread] = None
+        self._rediscover_thread: Optional[threading.Thread] = None
 
     @property
     def running(self) -> bool:
@@ -90,6 +92,26 @@ class LiveWatcher:
             return
         self._claim_thread = threading.Thread(target=self._claim_completed_worker, daemon=True)
         self._claim_thread.start()
+
+    def refresh_progress_once(self) -> None:
+        if self._manual_refresh_thread and self._manual_refresh_thread.is_alive():
+            self.log("手动刷新正在进行中")
+            return
+        up_id = self._last_up_id
+        if not up_id:
+            self.log("尚未开始挂宝，暂时无法刷新进度")
+            return
+        self._manual_refresh_thread = threading.Thread(
+            target=self._manual_refresh_worker, args=(up_id,), daemon=True
+        )
+        self._manual_refresh_thread.start()
+
+    def _manual_refresh_worker(self, up_id: int) -> None:
+        self.log("手动刷新进度")
+        try:
+            self._refresh_claimable_tasks(up_id)
+        except Exception as exc:
+            self.log(f"手动刷新失败：{self._friendly_error(exc)}")
 
     def _run(self) -> None:
         client = BilibiliClient(self.options.cookie)

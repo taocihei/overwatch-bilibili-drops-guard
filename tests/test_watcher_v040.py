@@ -74,5 +74,57 @@ class GetWatchStatusSnapshotTest(unittest.TestCase):
                 thread.join(timeout=1)
 
 
+class RefreshProgressOnceTest(unittest.TestCase):
+    def test_refresh_progress_once_invokes_refresh_in_background_thread(self) -> None:
+        watcher = LiveWatcher(WatchOptions(cookie="a=b", room_id="1"), lambda _m: None)
+        watcher._last_up_id = 100
+        call_count = {"n": 0}
+        finished = threading.Event()
+
+        def fake_refresh(up_id: int) -> None:
+            call_count["n"] += 1
+            finished.set()
+
+        watcher._refresh_claimable_tasks = fake_refresh  # type: ignore[method-assign]
+
+        watcher.refresh_progress_once()
+
+        self.assertTrue(finished.wait(timeout=2), "refresh worker did not run")
+        self.assertEqual(call_count["n"], 1)
+
+    def test_refresh_progress_once_skips_when_already_running(self) -> None:
+        watcher = LiveWatcher(WatchOptions(cookie="a=b", room_id="1"), lambda _m: None)
+        watcher._last_up_id = 100
+        gate = threading.Event()
+        release = threading.Event()
+        calls: list[int] = []
+
+        def slow_refresh(up_id: int) -> None:
+            gate.set()
+            release.wait(timeout=2)
+            calls.append(up_id)
+
+        watcher._refresh_claimable_tasks = slow_refresh  # type: ignore[method-assign]
+
+        watcher.refresh_progress_once()
+        self.assertTrue(gate.wait(timeout=2))
+        watcher.refresh_progress_once()  # second call should skip
+        release.set()
+        watcher._manual_refresh_thread.join(timeout=2)
+
+        self.assertEqual(calls, [100])
+
+    def test_refresh_progress_once_logs_when_no_up_id(self) -> None:
+        logs: list[str] = []
+        watcher = LiveWatcher(WatchOptions(cookie="a=b", room_id="1"), logs.append)
+        watcher._last_up_id = None
+
+        watcher.refresh_progress_once()
+        if watcher._manual_refresh_thread is not None:
+            watcher._manual_refresh_thread.join(timeout=2)
+
+        self.assertTrue(any("尚未开始挂宝" in message or "暂时无法刷新" in message for message in logs))
+
+
 if __name__ == "__main__":
     unittest.main()
