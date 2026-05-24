@@ -175,3 +175,66 @@ class MultiAccountDelegationTest(unittest.TestCase):
         self.assertEqual(sorted(claimed), ["主号", "小号"])
         self.assertEqual(sorted(refreshed), ["主号", "小号"])
         self.assertEqual(sorted(rediscovered), ["主号", "小号"])
+
+    def test_one_child_failure_does_not_block_others(self) -> None:
+        # 单账号刷新抛异常时，其余账号仍应被调用（失败隔离）。
+        refreshed: list[str] = []
+
+        def make(name, boom):
+            class W:
+                def __init__(self, options, log):
+                    self.running = True
+                def start(self): ...
+                def stop(self): self.running = False
+                def refresh_progress_once(self):
+                    if boom:
+                        raise RuntimeError("网络炸了")
+                    refreshed.append(name)
+            return W
+
+        pairs = [("坏号", WatchOptions(cookie="a", room_id="1")),
+                 ("好号", WatchOptions(cookie="b", room_id="1"))]
+        specs = iter([("坏号", True), ("好号", False)])
+        logs: list[str] = []
+        mw = MultiAccountWatcher(
+            pairs, log=logs.append,
+            watcher_factory=lambda o, l: make(*next(specs))(o, l),
+            stagger_seconds=0,
+        )
+        mw.refresh_progress_once()
+        self.assertEqual(refreshed, ["好号"])
+        self.assertTrue(any("坏号" in m and "失败" in m for m in logs))
+
+
+class MultiAccountEdgeCaseTest(unittest.TestCase):
+    def test_empty_accounts_running_false_and_zero_summary(self) -> None:
+        mw = MultiAccountWatcher([], log=lambda _m: None, stagger_seconds=0)
+        self.assertFalse(mw.running)
+        rows, summary = mw.get_watch_status_snapshot()
+        self.assertEqual(rows, [])
+        self.assertIn("0/0", summary)
+
+    def test_stop_aborts_staggered_claim(self) -> None:
+        # 已请求停止后，错峰领取不应再对子账号发起领取。
+        claimed: list[str] = []
+
+        def make(name):
+            class W:
+                def __init__(self, options, log):
+                    self.running = True
+                def start(self): ...
+                def stop(self): self.running = False
+                def claim_completed_tasks(self): claimed.append(name)
+            return W
+
+        pairs = [("主号", WatchOptions(cookie="a", room_id="1")),
+                 ("小号", WatchOptions(cookie="b", room_id="1"))]
+        names = iter(["主号", "小号"])
+        mw = MultiAccountWatcher(
+            pairs, log=lambda _m: None,
+            watcher_factory=lambda o, l: make(next(names))(o, l),
+            stagger_seconds=0,
+        )
+        mw.stop()  # 先请求停止
+        mw._staggered_claim()  # 直接同步调用，验证停止后不领取
+        self.assertEqual(claimed, [])

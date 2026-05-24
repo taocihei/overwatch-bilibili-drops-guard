@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import re
 import threading
-import time
 from typing import Callable
 
 from .config import AppConfig
@@ -53,7 +52,10 @@ class MultiAccountWatcher:
         self._stagger_seconds = stagger_seconds
         self._watcher_factory = watcher_factory
         self._stop = threading.Event()
+        self._lifecycle_lock = threading.Lock()
+        self._claim_lock = threading.Lock()
         self._start_thread: threading.Thread | None = None
+        self._claim_thread: threading.Thread | None = None
         self._children: list[tuple[str, object]] = []
         for name, options in account_options:
             child = watcher_factory(options, self._make_child_log(name))
@@ -63,12 +65,13 @@ class MultiAccountWatcher:
         return lambda message, _name=name: self._log(f"[{_name}] {message}")
 
     def start(self) -> None:
-        if self.running:
-            self._log("已经在运行中")
-            return
-        self._stop.clear()
-        self._start_thread = threading.Thread(target=self._staggered_start, daemon=True)
-        self._start_thread.start()
+        with self._lifecycle_lock:
+            if self.running or (self._start_thread is not None and self._start_thread.is_alive()):
+                self._log("已经在运行中")
+                return
+            self._stop.clear()
+            self._start_thread = threading.Thread(target=self._staggered_start, daemon=True)
+            self._start_thread.start()
 
     def _staggered_start(self) -> None:
         for index, (name, child) in enumerate(self._children):
@@ -112,6 +115,8 @@ class MultiAccountWatcher:
                     child_state = "计时中"
                 elif any(r.state == "等待开播" for r in child_rows):
                     child_state = "等待开播"
+                elif any(r.state in {"启动中", "计时中"} for r in child_rows):
+                    child_state = "计时中"
                 elif total:
                     child_state = "暂时失败"
                 intervals = [r.interval for r in child_rows if r.interval is not None]
@@ -130,39 +135,41 @@ class MultiAccountWatcher:
         return rows, summary
 
     def claim_completed_tasks(self) -> None:
-        if self._claim_thread_alive():
-            self._log("领取线程正在运行中")
-            return
-        self._claim_thread = threading.Thread(target=self._staggered_claim, daemon=True)
-        self._claim_thread.start()
-
-    _claim_thread: threading.Thread | None = None
-
-    def _claim_thread_alive(self) -> bool:
-        thread = getattr(self, "_claim_thread", None)
-        return thread is not None and thread.is_alive()
+        with self._claim_lock:
+            if self._claim_thread is not None and self._claim_thread.is_alive():
+                self._log("领取线程正在运行中")
+                return
+            self._claim_thread = threading.Thread(target=self._staggered_claim, daemon=True)
+            self._claim_thread.start()
 
     def _staggered_claim(self) -> None:
         for index, (name, child) in enumerate(self._children):
+            if self._stop.is_set():
+                return
             if index > 0 and self._stagger_seconds > 0:
                 self._stop.wait(self._stagger_seconds)
-            claim = getattr(child, "claim_completed_tasks", None)
-            if callable(claim):
-                claim()
+                if self._stop.is_set():
+                    return
+            self._delegate_to_child(child, name, "claim_completed_tasks", "领取触发")
 
     def _await_claim_for_test(self) -> None:
-        thread = getattr(self, "_claim_thread", None)
-        if thread is not None:
-            thread.join(timeout=5)
+        if self._claim_thread is not None:
+            self._claim_thread.join(timeout=5)
 
     def refresh_progress_once(self) -> None:
-        for _name, child in self._children:
-            fn = getattr(child, "refresh_progress_once", None)
-            if callable(fn):
-                fn()
+        for name, child in self._children:
+            self._delegate_to_child(child, name, "refresh_progress_once", "刷新进度")
 
     def rediscover_tasks_once(self) -> None:
-        for _name, child in self._children:
-            fn = getattr(child, "rediscover_tasks_once", None)
-            if callable(fn):
-                fn()
+        for name, child in self._children:
+            self._delegate_to_child(child, name, "rediscover_tasks_once", "重新识别任务")
+
+    def _delegate_to_child(self, child: object, name: str, method: str, action: str) -> None:
+        """对单个子账号调用某方法；单账号失败只记日志、不影响其他账号。"""
+        fn = getattr(child, method, None)
+        if not callable(fn):
+            return
+        try:
+            fn()
+        except Exception as exc:
+            self._log(f"[{name}] {action}失败：{exc}")
