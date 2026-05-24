@@ -91,3 +91,25 @@ class MultiAccountWatcherLifecycleTest(unittest.TestCase):
         mw.stop()
         self.assertTrue(all(w.stopped for w in FakeWatcher.instances))
         self.assertFalse(mw.running)
+
+
+class MultiAccountWatcherLogTest(unittest.TestCase):
+    def test_child_logs_are_prefixed_with_account_name(self) -> None:
+        logs: list[str] = []
+
+        class LoggingWatcher:
+            def __init__(self, options, log):
+                self.log = log
+                self.running = False
+            def start(self):
+                self.running = True
+                self.log("首次计时请求已提交")
+            def stop(self):
+                self.running = False
+
+        pairs = [("主号", WatchOptions(cookie="a", room_id="1"))]
+        mw = MultiAccountWatcher(pairs, log=logs.append,
+                                 watcher_factory=LoggingWatcher, stagger_seconds=0)
+        mw.start()
+        mw._await_start_for_test()
+        self.assertIn("[主号] 首次计时请求已提交", logs)
