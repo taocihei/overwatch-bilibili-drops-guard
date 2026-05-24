@@ -665,8 +665,10 @@ class LiveWatcher:
         return "请求频率过高" in text or "频率" in text or "稍后再试" in text
 
     def _is_already_claimed_error(self, exc: Exception) -> bool:
+        # 只认 B 站“已经领取/重复领取”这类明确文案；不要用裸“已领取”，
+        # 否则像“请确认是否已领取”这种失败文案会被误判成已领取而丢弃任务。
         text = str(exc)
-        return "已经领取" in text or "已领取" in text or "重复领取" in text or "202031" in text
+        return "已经领取" in text or "重复领取" in text
 
     def _friendly_error(self, exc: Exception) -> str:
         text = str(exc)

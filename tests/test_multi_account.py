@@ -214,6 +214,44 @@ class MultiAccountEdgeCaseTest(unittest.TestCase):
         self.assertEqual(rows, [])
         self.assertIn("0/0", summary)
 
+    def test_snapshot_isolates_failing_child(self) -> None:
+        # 某账号状态读取抛异常时，聚合快照不应崩溃，其余账号照常显示。
+        class GoodWatcher:
+            def __init__(self, options, log):
+                self.running = True
+            def start(self): ...
+            def stop(self): self.running = False
+            def get_watch_status_snapshot(self):
+                return ([WatchWorkerStatus(worker_id=1, state="正常", interval=60, message="")],
+                        "后台计时状态：1/1 正常")
+
+        class BadWatcher(GoodWatcher):
+            def get_watch_status_snapshot(self):
+                raise RuntimeError("boom")
+
+        pairs = [("坏号", WatchOptions(cookie="a", room_id="1")),
+                 ("好号", WatchOptions(cookie="b", room_id="1"))]
+        factories = iter([BadWatcher, GoodWatcher])
+        mw = MultiAccountWatcher(
+            pairs, log=lambda _m: None,
+            watcher_factory=lambda o, l: next(factories)(o, l),
+            stagger_seconds=0,
+        )
+        rows, summary = mw.get_watch_status_snapshot()
+        self.assertEqual(len(rows), 2)
+
+    def test_staggered_start_does_not_start_after_stop(self) -> None:
+        # 已请求停止后，错峰启动不应再拉起任何账号。
+        FakeWatcher.instances = []
+        mw = MultiAccountWatcher(
+            [("主号", WatchOptions(cookie="a", room_id="1")),
+             ("小号", WatchOptions(cookie="b", room_id="1"))],
+            log=lambda _m: None, watcher_factory=FakeWatcher, stagger_seconds=0,
+        )
+        mw.stop()
+        mw._staggered_start()
+        self.assertTrue(all(not w.started for w in FakeWatcher.instances))
+
     def test_stop_aborts_staggered_claim(self) -> None:
         # 已请求停止后，错峰领取不应再对子账号发起领取。
         claimed: list[str] = []

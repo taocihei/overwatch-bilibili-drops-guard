@@ -1016,14 +1016,25 @@ class App(tk.Tk):
         if hasattr(self, "_account_check_frame"):
             self._build_account_checklist()
 
-    def _on_account_clicked(self, name: str) -> None:
-        # 勾选切换的同时，把该账号设为“当前编辑账号”并回填其 Cookie，便于编辑/删除。
-        self.account_name_var.set(name)
+    def _saved_cookie_for(self, name: str) -> str:
         for account in self.config_data.accounts:
             if account.name == name:
-                self.cookie_text.delete("1.0", "end")
-                self.cookie_text.insert("1.0", account.cookie)
-                break
+                return account.cookie
+        return ""
+
+    def _on_account_clicked(self, name: str) -> None:
+        # 勾选切换的同时，把该账号设为“当前编辑账号”并回填其 Cookie，便于编辑/删除。
+        # 但若当前编辑框里有未保存的改动，则不覆盖，避免丢失刚粘贴/编辑的 Cookie。
+        current = self.account_name_var.get().strip()
+        editor = self.cookie_text.get("1.0", "end").strip()
+        if name == current:
+            return
+        if current and editor and editor != self._saved_cookie_for(current):
+            self._log(f"“{current}”的 Cookie 有未保存改动，已保留；如需切到“{name}”请先保存账号")
+            return
+        self.account_name_var.set(name)
+        self.cookie_text.delete("1.0", "end")
+        self.cookie_text.insert("1.0", self._saved_cookie_for(name))
         self._log(f"当前编辑账号：{name}")
 
     def _save_account(self) -> None:
@@ -1037,6 +1048,8 @@ class App(tk.Tk):
             self._log("没有可删除的账号")
             return
         next_account = accounts[0] if accounts else AccountProfile()
+        surviving = {account.name for account in accounts}
+        active_accounts = [n for n, var in self.account_checks.items() if var.get() and n in surviving]
         config = sanitize_config(AppConfig(
             cookie=next_account.cookie,
             account_name=next_account.name,
@@ -1047,6 +1060,7 @@ class App(tk.Tk):
             task_ids=self.task_ids_text.get("1.0", "end").strip(),
             watch_threads=self._safe_int_var(self.watch_threads_var, 1),
             notify_url=self.notify_url_var.get().strip(),
+            active_accounts=active_accounts,
         ))
         save_config(config)
         self.config_data = config
@@ -1077,6 +1091,9 @@ class App(tk.Tk):
         if not config.room_id:
             messagebox.showwarning("缺少直播间号", "请先填写直播间号或直播间链接。")
             return
+        if self.account_checks and not any(var.get() for var in self.account_checks.values()):
+            messagebox.showwarning("没有勾选账号", "请至少勾选一个要挂的账号（不勾选则不会挂机）。")
+            return
 
         self._save()
         if requested_watch_threads != config.watch_threads:
@@ -1095,6 +1112,9 @@ class App(tk.Tk):
                 f"提示：当前共 {len(account_options)} 个账号 × 每账号 {config.watch_threads} 路 = {total_threads} 路，"
                 f"单 IP 下路数过多可能触发 B 站风控，必要时减少账号或每账号路数"
             )
+        if self.watcher:
+            # 停掉上一个协调器（例如此前只点过“领取”而临时建的那个），避免线程泄漏
+            self.watcher.stop()
         self.watcher = MultiAccountWatcher(account_options, self._thread_log)
         self.watcher.start()
         self._set_status("运行中")
@@ -1109,6 +1129,8 @@ class App(tk.Tk):
     def _stop(self) -> None:
         if self.watcher:
             self.watcher.stop()
+            # 置空，避免之后“领取”复用已停止的协调器（其停止标志已置位会导致领取空转）
+            self.watcher = None
         self._set_status("未运行")
 
     def _capture_cookie(self) -> None:
@@ -1150,6 +1172,9 @@ class App(tk.Tk):
                 return
             if not config.room_id:
                 messagebox.showwarning("缺少直播间号", "请先填写直播间号才能领取奖励。")
+                return
+            if self.account_checks and not any(var.get() for var in self.account_checks.values()):
+                messagebox.showwarning("没有勾选账号", "请至少勾选一个要领奖的账号。")
                 return
             account_options = build_account_options(config)
             if not account_options:
@@ -1220,6 +1245,7 @@ class App(tk.Tk):
         return message.startswith((
             "Cookie 获取成功",
             "已启动：",
+            "已启动 ",
             "检测到 ",
             "开始领取奖励",
             "已领取：",

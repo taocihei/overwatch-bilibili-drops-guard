@@ -123,6 +123,11 @@ class GuiMessageRoutingTest(unittest.TestCase):
         self.assertTrue(app._is_notification_message("已领取：电竞补给"))
         self.assertFalse(app._is_notification_message("[默认账号] 房间 23612045：直播中"))
 
+    def test_parallel_start_message_is_notification(self) -> None:
+        # 多账号启动消息以「已启动 」(空格) 开头，必须能触发通知。
+        app = self._app()
+        self.assertTrue(app._is_notification_message("已启动 5 个账号并行：房间 23612045，每账号 1 路，自动领奖=开启"))
+
 
 if __name__ == "__main__":
     unittest.main()

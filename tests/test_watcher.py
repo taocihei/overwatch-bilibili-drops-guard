@@ -369,6 +369,14 @@ class LiveWatcherTest(unittest.TestCase):
         self.assertNotIn("activity-a", live_watcher._claimable_task_ids)
         self.assertIn("100:activity-a", live_watcher._claimed_markers)
 
+    def test_already_claimed_error_matches_only_specific_messages(self) -> None:
+        live_watcher = LiveWatcher(WatchOptions(cookie="a=b", room_id="1"), lambda _message: None)
+        self.assertTrue(live_watcher._is_already_claimed_error(RuntimeError("任务奖励已经领取")))
+        self.assertTrue(live_watcher._is_already_claimed_error(RuntimeError("请勿重复领取")))
+        # 含“已领取”但语义是失败/未领取的消息，不应被当成已领取成功
+        self.assertFalse(live_watcher._is_already_claimed_error(RuntimeError("请确认任务是否已领取")))
+        self.assertFalse(live_watcher._is_already_claimed_error(RuntimeError("网络超时")))
+
     def test_auto_discovers_task_ids_from_progress(self) -> None:
         logs: list[str] = []
         live_watcher = LiveWatcher(WatchOptions(cookie="a=b", room_id="1", task_ids=[]), logs.append)

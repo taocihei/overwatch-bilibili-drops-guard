@@ -75,22 +75,28 @@ class MultiAccountWatcher:
 
     def _staggered_start(self) -> None:
         for index, (name, child) in enumerate(self._children):
-            if self._stop.is_set():
-                return
             if index > 0 and self._stagger_seconds > 0:
                 self._stop.wait(self._stagger_seconds)
+            # 「检查是否已停止」和「启动子账号」必须原子完成：否则 stop() 可能恰好插在
+            # 两者之间，而 LiveWatcher.start() 会清掉它自己的停止标志，导致这一路计时
+            # 永远停不下来（线程泄漏、持续打 B 站接口）。用 _lifecycle_lock 串起来，
+            # 并保证只在锁外做错峰等待，避免长时间持锁。
+            with self._lifecycle_lock:
                 if self._stop.is_set():
                     return
-            child.start()
+                child.start()
 
     def _await_start_for_test(self) -> None:
         if self._start_thread is not None:
             self._start_thread.join(timeout=5)
 
     def stop(self) -> None:
-        self._stop.set()
-        for _name, child in self._children:
-            child.stop()
+        # 持锁设置停止标志并停掉所有子账号，与 _staggered_start 的「检查+启动」互斥，
+        # 确保停止后不会再有账号被启动，已启动的也都会被停掉。
+        with self._lifecycle_lock:
+            self._stop.set()
+            for _name, child in self._children:
+                child.stop()
         self._log("已请求停止全部账号")
 
     @property
@@ -106,21 +112,27 @@ class MultiAccountWatcher:
             child_interval = None
             getter = getattr(child, "get_watch_status_snapshot", None)
             if callable(getter):
-                child_rows, child_summary = getter()
-                normal = sum(1 for r in child_rows if r.state == "正常")
-                total = len(child_rows)
-                if normal and normal == total:
-                    child_state = "正常"
-                elif normal:
-                    child_state = "计时中"
-                elif any(r.state == "等待开播" for r in child_rows):
-                    child_state = "等待开播"
-                elif any(r.state in {"启动中", "计时中"} for r in child_rows):
-                    child_state = "计时中"
-                elif total:
-                    child_state = "暂时失败"
-                intervals = [r.interval for r in child_rows if r.interval is not None]
-                child_interval = min(intervals) if intervals else None
+                try:
+                    child_rows, child_summary = getter()
+                    normal = sum(1 for r in child_rows if r.state == "正常")
+                    total = len(child_rows)
+                    if normal and normal == total:
+                        child_state = "正常"
+                    elif normal:
+                        child_state = "计时中"
+                    elif any(r.state == "等待开播" for r in child_rows):
+                        child_state = "等待开播"
+                    elif any(r.state in {"启动中", "计时中"} for r in child_rows):
+                        child_state = "计时中"
+                    elif total:
+                        child_state = "暂时失败"
+                    intervals = [r.interval for r in child_rows if r.interval is not None]
+                    child_interval = min(intervals) if intervals else None
+                except Exception:
+                    # 单账号状态读取异常不应拖垮整体状态展示
+                    child_state = "启动中"
+                    child_summary = ""
+                    child_interval = None
             if child_state == "正常":
                 normal_accounts += 1
             detail = child_summary.replace("后台计时状态：", "").strip()
