@@ -6,6 +6,7 @@ import unittest
 from pathlib import Path
 
 from bili_drop_guard import config
+from bili_drop_guard.config import AppConfig, AccountProfile, sanitize_config
 
 
 class ConfigTest(unittest.TestCase):
@@ -135,6 +136,22 @@ class ConfigTest(unittest.TestCase):
         sanitized = config.sanitize_config(config.AppConfig(room_id=room_url))
 
         self.assertEqual(sanitized.room_id, "23612045")
+
+    def test_active_accounts_defaults_to_empty(self) -> None:
+        cfg = AppConfig()
+        self.assertEqual(cfg.active_accounts, [])
+
+    def test_sanitize_keeps_only_known_active_accounts(self) -> None:
+        cfg = AppConfig(
+            cookie="SESSDATA=a",
+            account_name="主号",
+            accounts=[AccountProfile(name="主号", cookie="SESSDATA=a"),
+                      AccountProfile(name="小号", cookie="SESSDATA=b")],
+            active_accounts=["小号", "不存在的号"],
+        )
+        cleaned = sanitize_config(cfg)
+        # 只保留确实存在的账号名，过滤无效项
+        self.assertEqual(cleaned.active_accounts, ["小号"])
 
 
 if __name__ == "__main__":

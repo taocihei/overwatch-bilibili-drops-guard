@@ -42,6 +42,7 @@ class AppConfig:
     task_ids: str = DEFAULT_TASK_IDS
     watch_threads: int = 1
     notify_url: str = ""
+    active_accounts: list[str] = field(default_factory=list)
     config_version: int = CONFIG_VERSION
 
 
@@ -84,6 +85,11 @@ def sanitize_config(config: AppConfig) -> AppConfig:
         if account.name == account_name:
             active_cookie = account.cookie
             break
+    known_names = {account.name for account in accounts}
+    active_accounts = [
+        name for name in (config.active_accounts or [])
+        if isinstance(name, str) and name in known_names
+    ]
     return AppConfig(
         cookie=active_cookie,
         account_name=account_name,
@@ -94,6 +100,7 @@ def sanitize_config(config: AppConfig) -> AppConfig:
         task_ids=str(config.task_ids or ""),
         watch_threads=_coerce_int(config.watch_threads, 1, 1, MAX_WATCH_THREADS),
         notify_url=str(config.notify_url or "").strip(),
+        active_accounts=active_accounts,
         config_version=CONFIG_VERSION,
     )
 
