@@ -17,6 +17,7 @@ from .config import APP_DIR, MAX_CHECK_INTERVAL, MAX_WATCH_THREADS, MIN_CHECK_IN
 from .cookie_capture import capture_bilibili_cookie, open_bilibili_login_page
 from .notifier import send_notification
 from .watcher import LiveWatcher, WatchOptions, WatchWorkerStatus
+from .multi_account import MultiAccountWatcher, build_account_options
 
 
 SOURCE_URL = "https://github.com/taocihei/overwatch-bilibili-drops-guard"
@@ -438,7 +439,7 @@ class App(tk.Tk):
 
         self.config_data = load_config()
         self.log_queue: "queue.Queue[str]" = queue.Queue()
-        self.watcher: LiveWatcher | None = None
+        self.watcher: LiveWatcher | MultiAccountWatcher | None = None
         self.cookie_capture_thread: threading.Thread | None = None
         self.progress_events: list[str] = []
         self.progress_snapshot = ""
@@ -449,6 +450,7 @@ class App(tk.Tk):
         self.cookie_var = tk.StringVar(value=self.config_data.cookie)
         self.selected_account_var = tk.StringVar(value=self.config_data.account_name)
         self.account_name_var = tk.StringVar(value=self.config_data.account_name)
+        self.account_checks: dict[str, tk.BooleanVar] = {}
         self.notify_url_var = tk.StringVar(value=self.config_data.notify_url)
         self.room_var = tk.StringVar(value=self.config_data.room_id)
         self.interval_var = tk.IntVar(value=self.config_data.check_interval)
@@ -638,13 +640,13 @@ class App(tk.Tk):
         card.columnconfigure(1, weight=1)
         card.rowconfigure(7, weight=1)
 
-        ttk.Label(card, text="当前账号", style="Body.TLabel").grid(row=2, column=0, sticky="w", pady=(10, 0))
-        ttk.Label(card, text="账号名称", style="Body.TLabel").grid(row=2, column=1, sticky="w", padx=(8, 0), pady=(10, 0))
-        self.account_combo = ttk.Combobox(card, textvariable=self.selected_account_var, values=self._account_names(), state="readonly", height=6)
-        self.account_combo.grid(row=3, column=0, sticky="ew", pady=(6, 8), padx=(0, 8))
-        self.account_combo.bind("<<ComboboxSelected>>", self._on_account_selected)
+        ttk.Label(card, text="并行账号（勾选要挂的）", style="Body.TLabel").grid(row=2, column=0, sticky="w", pady=(10, 0))
+        ttk.Label(card, text="账号名称（点账号可编辑）", style="Body.TLabel").grid(row=2, column=1, sticky="w", padx=(8, 0), pady=(10, 0))
+        self._account_check_frame = tk.Frame(card, bg=SURFACE)
+        self._account_check_frame.grid(row=3, column=0, sticky="new", pady=(6, 8), padx=(0, 8))
+        self._build_account_checklist()
         account_entry = tk.Entry(card, textvariable=self.account_name_var, borderwidth=0, relief="flat", bg=SOFT_SURFACE, fg=TEXT, insertbackground=TEXT, font=("Microsoft YaHei UI", 10))
-        account_entry.grid(row=3, column=1, sticky="ew", pady=(6, 8), padx=(8, 0))
+        account_entry.grid(row=3, column=1, sticky="new", pady=(6, 8), padx=(8, 0))
 
         PillButton(card, "保存账号", self._save_account, fill=SOFT_SURFACE, foreground=TEXT, active_fill="#eef2ff", height=34).grid(row=4, column=0, sticky="ew", pady=(0, 10), padx=(0, 8))
         PillButton(card, "删除账号", self._delete_account, fill=DANGER_BG, foreground=DANGER, active_fill="#ffe4e6", height=34).grid(row=4, column=1, sticky="ew", pady=(0, 10), padx=(8, 0))
@@ -894,6 +896,11 @@ class App(tk.Tk):
         return card
 
     def _current_config(self) -> AppConfig:
+        active_accounts = [name for name, var in self.account_checks.items() if var.get()]
+        editing = self.account_name_var.get().strip()
+        if editing and editing not in self.account_checks:
+            # 新保存的账号默认参与并行
+            active_accounts.append(editing)
         return sanitize_config(AppConfig(
             cookie=self.cookie_text.get("1.0", "end").strip(),
             account_name=self.account_name_var.get().strip() or "默认账号",
@@ -904,6 +911,7 @@ class App(tk.Tk):
             task_ids=self.task_ids_text.get("1.0", "end").strip(),
             watch_threads=self._safe_int_var(self.watch_threads_var, 1),
             notify_url=self.notify_url_var.get().strip(),
+            active_accounts=active_accounts,
         ))
 
     def _clear_initial_focus(self) -> None:
@@ -978,26 +986,52 @@ class App(tk.Tk):
             accounts.insert(0, AccountProfile(name=account_name, cookie=cookie))
         return accounts
 
-    def _refresh_account_selector(self) -> None:
-        if hasattr(self, "account_combo"):
-            self.account_combo.configure(values=self._account_names())
+    def _build_account_checklist(self) -> None:
+        frame = self._account_check_frame
+        for child in frame.winfo_children():
+            child.destroy()
+        self.account_checks = {}
+        active = set(self.config_data.active_accounts or [])
+        for name in self._account_names():
+            checked = (not active) or (name in active)
+            var = tk.BooleanVar(value=checked)
+            self.account_checks[name] = var
+            tk.Checkbutton(
+                frame,
+                text=name,
+                variable=var,
+                command=lambda n=name: self._on_account_clicked(n),
+                bg=SURFACE,
+                fg=TEXT,
+                selectcolor=SOFT_SURFACE,
+                activebackground=SURFACE,
+                activeforeground=TEXT,
+                anchor="w",
+                highlightthickness=0,
+                bd=0,
+                font=("Microsoft YaHei UI", 10),
+            ).pack(fill="x", anchor="w")
 
-    def _on_account_selected(self, _event: tk.Event | None = None) -> None:
-        name = self.selected_account_var.get().strip()
+    def _refresh_account_selector(self) -> None:
+        if hasattr(self, "_account_check_frame"):
+            self._build_account_checklist()
+
+    def _on_account_clicked(self, name: str) -> None:
+        # 勾选切换的同时，把该账号设为“当前编辑账号”并回填其 Cookie，便于编辑/删除。
+        self.account_name_var.set(name)
         for account in self.config_data.accounts:
             if account.name == name:
-                self.account_name_var.set(name)
                 self.cookie_text.delete("1.0", "end")
                 self.cookie_text.insert("1.0", account.cookie)
-                self._log(f"已切换账号：{name}")
-                return
+                break
+        self._log(f"当前编辑账号：{name}")
 
     def _save_account(self) -> None:
         self._save()
         self._log(f"账号已保存：{self.config_data.account_name}")
 
     def _delete_account(self) -> None:
-        name = self.account_name_var.get().strip() or self.selected_account_var.get().strip()
+        name = self.account_name_var.get().strip()
         accounts = [account for account in self.config_data.accounts if account.name != name]
         if len(accounts) == len(self.config_data.accounts):
             self._log("没有可删除的账号")
@@ -1051,28 +1085,26 @@ class App(tk.Tk):
             self._log("当前已经在运行")
             return
 
-        options = WatchOptions(
-            cookie=config.cookie,
-            room_id=config.room_id,
-            check_interval=config.check_interval,
-            auto_claim=config.auto_claim,
-            task_ids=self._parse_task_ids(config.task_ids),
-            watch_threads=config.watch_threads,
-        )
-        self.watcher = LiveWatcher(options, self._thread_log)
+        account_options = build_account_options(config)
+        if not account_options:
+            messagebox.showwarning("没有可用账号", "请至少勾选一个已保存且含 Cookie 的账号。")
+            return
+        total_threads = len(account_options) * config.watch_threads
+        if total_threads > 20:
+            self._log(
+                f"提示：当前共 {len(account_options)} 个账号 × 每账号 {config.watch_threads} 路 = {total_threads} 路，"
+                f"单 IP 下路数过多可能触发 B 站风控，必要时减少账号或每账号路数"
+            )
+        self.watcher = MultiAccountWatcher(account_options, self._thread_log)
         self.watcher.start()
         self._set_status("运行中")
         start_message = (
-            f"已启动：房间 {config.room_id}，后台计时 {config.watch_threads} 路，"
-            f"检查间隔 {config.check_interval} 秒，自动领奖={'开启' if config.auto_claim else '关闭'}"
-        )
-        progress_start_message = (
-            f"已启动：房间 {config.room_id}，后台计时 {config.watch_threads} 路，"
-            f"每 {config.check_interval} 秒刷新一次，自动领奖={'开启' if config.auto_claim else '关闭'}"
+            f"已启动 {len(account_options)} 个账号并行：房间 {config.room_id}，"
+            f"每账号 {config.watch_threads} 路，自动领奖={'开启' if config.auto_claim else '关闭'}"
         )
         self._notify_from_message(start_message)
         self._log(start_message)
-        self._progress_log(progress_start_message)
+        self._progress_log(start_message)
 
     def _stop(self) -> None:
         if self.watcher:
@@ -1109,8 +1141,8 @@ class App(tk.Tk):
         self._thread_log(f"{result.browser} Cookie 获取成功")
 
     def _claim(self) -> None:
-        # 如果还没开始挂宝，也允许用户单独点击领取奖励：临时构造一个 LiveWatcher
-        # 只用来跑领取流程（不会启动心跳 worker，因为我们没调用 .start()）。
+        # 还没开始挂宝时，也允许单独点击领取：临时构造一个协调器，对勾选账号各领一次
+        # （不会启动心跳 worker，因为没调用 .start()）。
         if not self.watcher:
             config = self._current_config()
             if not config.cookie:
@@ -1119,16 +1151,12 @@ class App(tk.Tk):
             if not config.room_id:
                 messagebox.showwarning("缺少直播间号", "请先填写直播间号才能领取奖励。")
                 return
-            options = WatchOptions(
-                cookie=config.cookie,
-                room_id=config.room_id,
-                check_interval=config.check_interval,
-                auto_claim=False,
-                task_ids=self._parse_task_ids(config.task_ids),
-                watch_threads=1,
-            )
-            self.watcher = LiveWatcher(options, self._thread_log)
-            self._log("尚未挂宝，临时获取一次任务进度并领取已完成奖励")
+            account_options = build_account_options(config)
+            if not account_options:
+                messagebox.showwarning("没有可用账号", "请至少勾选一个已保存且含 Cookie 的账号。")
+                return
+            self.watcher = MultiAccountWatcher(account_options, self._thread_log)
+            self._log("尚未挂宝，临时对勾选账号各领取一次已完成奖励")
         self.watcher.claim_completed_tasks()
 
     def _thread_log(self, message: str) -> None:
