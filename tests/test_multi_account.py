@@ -113,3 +113,31 @@ class MultiAccountWatcherLogTest(unittest.TestCase):
         mw.start()
         mw._await_start_for_test()
         self.assertIn("[主号] 首次计时请求已提交", logs)
+
+
+class MultiAccountStatusTest(unittest.TestCase):
+    def test_snapshot_has_one_row_per_account_with_name(self) -> None:
+        class StatusWatcher:
+            def __init__(self, options, log, summary):
+                self.running = True
+                self._summary = summary
+            def start(self): ...
+            def stop(self): self.running = False
+            def get_watch_status_snapshot(self):
+                return ([WatchWorkerStatus(worker_id=1, state="正常", interval=60, message="")], self._summary)
+
+        pairs = [("主号", WatchOptions(cookie="a", room_id="1")),
+                 ("小号", WatchOptions(cookie="b", room_id="1"))]
+        # 用偏函数给两个账号不同 summary
+        summaries = iter(["后台计时状态：1/1 正常", "后台计时状态：0/1 正常，1 路等待开播"])
+        mw = MultiAccountWatcher(
+            pairs, log=lambda _m: None,
+            watcher_factory=lambda o, l: StatusWatcher(o, l, next(summaries)),
+            stagger_seconds=0,
+        )
+        rows, summary = mw.get_watch_status_snapshot()
+        self.assertEqual(len(rows), 2)
+        self.assertEqual([r.worker_id for r in rows], [1, 2])
+        self.assertTrue(any("主号" in r.message for r in rows))
+        self.assertTrue(any("小号" in r.message for r in rows))
+        self.assertIn("账号", summary)
