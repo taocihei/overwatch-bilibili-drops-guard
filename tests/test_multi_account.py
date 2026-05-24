@@ -141,3 +141,37 @@ class MultiAccountStatusTest(unittest.TestCase):
         self.assertTrue(any("主号" in r.message for r in rows))
         self.assertTrue(any("小号" in r.message for r in rows))
         self.assertIn("账号", summary)
+
+
+class MultiAccountDelegationTest(unittest.TestCase):
+    def test_claim_triggers_all_children(self) -> None:
+        claimed: list[str] = []
+        refreshed: list[str] = []
+        rediscovered: list[str] = []
+
+        def make(name):
+            class W:
+                def __init__(self, options, log):
+                    self.running = True
+                def start(self): ...
+                def stop(self): self.running = False
+                def claim_completed_tasks(self): claimed.append(name)
+                def refresh_progress_once(self): refreshed.append(name)
+                def rediscover_tasks_once(self): rediscovered.append(name)
+            return W
+
+        pairs = [("主号", WatchOptions(cookie="a", room_id="1")),
+                 ("小号", WatchOptions(cookie="b", room_id="1"))]
+        names = iter(["主号", "小号"])
+        mw = MultiAccountWatcher(
+            pairs, log=lambda _m: None,
+            watcher_factory=lambda o, l: make(next(names))(o, l),
+            stagger_seconds=0,
+        )
+        mw.claim_completed_tasks()
+        mw._await_claim_for_test()
+        mw.refresh_progress_once()
+        mw.rediscover_tasks_once()
+        self.assertEqual(sorted(claimed), ["主号", "小号"])
+        self.assertEqual(sorted(refreshed), ["主号", "小号"])
+        self.assertEqual(sorted(rediscovered), ["主号", "小号"])
