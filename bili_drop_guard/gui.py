@@ -1206,7 +1206,17 @@ class App(tk.Tk):
         finally:
             self.notification_pending.discard(key)
 
+    @staticmethod
+    def _split_account_prefix(message: str) -> tuple[str, str]:
+        # 多账号会把子账号日志加上「[账号名] 」前缀。分流/通知判定要忽略它，
+        # 但展示时保留前缀，让用户看清是哪个账号。
+        match = re.match(r"^\[[^\]]+\]\s*", message)
+        if match:
+            return message[:match.end()].strip(), message[match.end():]
+        return "", message
+
     def _is_notification_message(self, message: str) -> bool:
+        _prefix, message = self._split_account_prefix(message)
         return message.startswith((
             "Cookie 获取成功",
             "已启动：",
@@ -1267,6 +1277,7 @@ class App(tk.Tk):
         self.progress_text.configure(state="disabled")
 
     def _is_progress_message(self, message: str) -> bool:
+        _prefix, message = self._split_account_prefix(message)
         return message.startswith((
             "掉宝任务：",
             "账号登录正常",
@@ -1315,8 +1326,12 @@ class App(tk.Tk):
                 messagebox.showerror("Cookie 获取失败", detail)
                 continue
             self._notify_from_message(message)
-            if message.startswith("掉宝任务："):
-                self._progress_snapshot_log(message.removeprefix("掉宝任务：").strip())
+            account_prefix, body = self._split_account_prefix(message)
+            if body.startswith("掉宝任务："):
+                snapshot = body.removeprefix("掉宝任务：").strip()
+                if account_prefix:
+                    snapshot = f"{account_prefix}\n{snapshot}"
+                self._progress_snapshot_log(snapshot)
                 continue
             if self._is_progress_message(message):
                 self._progress_log(message)

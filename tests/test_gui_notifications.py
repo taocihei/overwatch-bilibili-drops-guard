@@ -98,5 +98,31 @@ class GuiNotificationTest(unittest.TestCase):
         self.assertIn("通知发送失败：webhook error", app.log_queue.get_nowait())
 
 
+class GuiMessageRoutingTest(unittest.TestCase):
+    """多账号会给日志加 [账号名] 前缀，分流逻辑必须忽略该前缀。"""
+
+    def _app(self) -> gui.App:
+        return object.__new__(gui.App)
+
+    def test_split_account_prefix(self) -> None:
+        app = self._app()
+        self.assertEqual(app._split_account_prefix("[默认账号] 掉宝任务：x"), ("[默认账号]", "掉宝任务：x"))
+        self.assertEqual(app._split_account_prefix("掉宝任务：x"), ("", "掉宝任务：x"))
+
+    def test_progress_message_recognized_with_account_prefix(self) -> None:
+        app = self._app()
+        self.assertTrue(app._is_progress_message("[默认账号] 掉宝任务：当前可挂"))
+        self.assertTrue(app._is_progress_message("[默认账号] 房间 23612045：直播中"))
+        self.assertTrue(app._is_progress_message("[小号] 后台计时状态：40/40 正常"))
+        self.assertTrue(app._is_progress_message("掉宝任务：x"))
+        self.assertFalse(app._is_progress_message("[默认账号] 上报进入直播间累计失败 1 次"))
+
+    def test_notification_message_recognized_with_account_prefix(self) -> None:
+        app = self._app()
+        self.assertTrue(app._is_notification_message("[默认账号] 已领取：电竞补给"))
+        self.assertTrue(app._is_notification_message("已领取：电竞补给"))
+        self.assertFalse(app._is_notification_message("[默认账号] 房间 23612045：直播中"))
+
+
 if __name__ == "__main__":
     unittest.main()
