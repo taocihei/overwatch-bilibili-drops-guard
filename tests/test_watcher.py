@@ -339,6 +339,36 @@ class LiveWatcherTest(unittest.TestCase):
         self.assertEqual(calls, [(100, "task-a"), (100, "task-a")])
         self.assertEqual(result, "已领取：手动填写的任务")
 
+    def test_claim_treats_already_claimed_as_success(self) -> None:
+        # B 站对已领取的奖励返回“任务奖励已经领取”(code 202031)。这不是失败：
+        # 奖励已经到手，应当当成成功、标记已领、并移出待领队列，避免反复重试和误报失败。
+        calls: list[str] = []
+
+        class FakeClient:
+            def __init__(self, cookie: str) -> None:
+                self.cookie = cookie
+
+            def claim_activity_mission_reward(self, task_id: str) -> dict[str, object]:
+                calls.append(task_id)
+                raise RuntimeError("任务奖励已经领取")
+
+        original_client = watcher.BilibiliClient
+        watcher.BilibiliClient = FakeClient
+        try:
+            live_watcher = LiveWatcher(WatchOptions(cookie="a=b", room_id="1"), lambda _message: None)
+            live_watcher._activity_task_ids.add("activity-a")
+            live_watcher._claimable_task_ids.add("activity-a")
+
+            result = live_watcher._claim_one_task(100, "activity-a")
+        finally:
+            watcher.BilibiliClient = original_client
+
+        self.assertEqual(calls, ["activity-a"])  # 不重试
+        self.assertIn("已领取", result)
+        self.assertNotIn("失败", result)
+        self.assertNotIn("activity-a", live_watcher._claimable_task_ids)
+        self.assertIn("100:activity-a", live_watcher._claimed_markers)
+
     def test_auto_discovers_task_ids_from_progress(self) -> None:
         logs: list[str] = []
         live_watcher = LiveWatcher(WatchOptions(cookie="a=b", room_id="1", task_ids=[]), logs.append)
@@ -663,15 +693,56 @@ class LiveWatcherTest(unittest.TestCase):
         self.assertIn("第二天奖励", summary)
         self.assertNotIn("第一天奖励", summary)
 
+    def test_task_summary_merges_today_groups_split_across_indexes(self) -> None:
+        # B 站把同一天的任务拆进多个 EraTasklistPc 组（组数 > 日期 Tab 数），
+        # 这些组共用同一个日期标签但 group_index 不同。聚焦今天时必须把它们合并，
+        # 否则高档位奖励（在第二个组里）会被整组隐藏。
+        live_watcher = LiveWatcher(WatchOptions(cookie="a=b", room_id="1"), lambda _message: None)
+        today = date.today()
+        today_label = f"{today.month}月{today.day}日"
+        progress = {
+            "list": [
+                {
+                    "task_id": "today-low",
+                    "task_name": "观看守望先锋电竞直播间30分钟",
+                    "award_name": "低档奖励",
+                    "group_label": today_label,
+                    "group_index": 2,
+                    "task_status": 1,
+                    "indicators": [{"cur_value": 0, "limit": 30}],
+                },
+                {
+                    "task_id": "today-high",
+                    "task_name": "观看守望先锋电竞直播间300分钟",
+                    "award_name": "高档奖励",
+                    "group_label": today_label,
+                    "group_index": 3,
+                    "task_status": 1,
+                    "indicators": [{"cur_value": 0, "limit": 300}],
+                },
+            ]
+        }
+
+        summary = live_watcher._summarize_task(progress)
+
+        self.assertIn(f"当前可挂：{today_label}", summary)
+        self.assertIn("低档奖励", summary)
+        self.assertIn("高档奖励", summary)
+
     def test_task_summary_falls_back_to_active_group_when_today_missing(self) -> None:
         live_watcher = LiveWatcher(WatchOptions(cookie="a=b", room_id="1"), lambda _message: None)
+        # 用相对的过去日期，确保两个标签都不是“今天”，否则今天恰好等于硬编码日期时
+        # 会走进 today 分支，测不到这里要验证的回退逻辑。
+        today = date.today()
+        older_label = f"{(today - timedelta(days=3)).month}月{(today - timedelta(days=3)).day}日"
+        newer_label = f"{(today - timedelta(days=2)).month}月{(today - timedelta(days=2)).day}日"
         progress = {
             "list": [
                 {
                     "task_id": "day-a-30",
                     "task_name": "观看守望先锋电竞直播间30分钟",
                     "award_name": "第一天奖励",
-                    "group_label": "5月22日",
+                    "group_label": older_label,
                     "group_index": 0,
                     "task_status": 1,
                     "indicators": [{"cur_value": 12, "limit": 30}],
@@ -680,7 +751,7 @@ class LiveWatcherTest(unittest.TestCase):
                     "task_id": "day-b-30",
                     "task_name": "观看守望先锋电竞直播间30分钟",
                     "award_name": "第二天奖励",
-                    "group_label": "5月24日",
+                    "group_label": newer_label,
                     "group_index": 1,
                     "task_status": 1,
                     "indicators": [{"cur_value": 0, "limit": 30}],
@@ -690,7 +761,7 @@ class LiveWatcherTest(unittest.TestCase):
 
         summary = live_watcher._summarize_task(progress)
 
-        self.assertIn("当前可挂：5月22日", summary)
+        self.assertIn(f"当前可挂：{older_label}", summary)
         self.assertIn("第一天奖励", summary)
         self.assertNotIn("第二天奖励", summary)
 

@@ -627,13 +627,24 @@ class LiveWatcher:
             return f"已跳过：{self._claim_task_label(task_id)} 已经领取过"
         client = BilibiliClient(self.options.cookie)
         label = self._claim_task_label(task_id)
-        if is_activity_task:
-            self._claim_with_retry(lambda: client.claim_activity_mission_reward(task_id), label)
-        else:
-            self._claim_with_retry(lambda: client.claim_user_task_rewards(up_id, task_id=task_id), label)
+        already_received = False
+        try:
+            if is_activity_task:
+                self._claim_with_retry(lambda: client.claim_activity_mission_reward(task_id), label)
+            else:
+                self._claim_with_retry(lambda: client.claim_user_task_rewards(up_id, task_id=task_id), label)
+        except Exception as exc:
+            # B 站对已领取的奖励返回“任务奖励已经领取”(code 202031)。totalv2 偶尔仍把
+            # 这种奖励报成“可领取”，于是我们会重复发起领取。这不是失败：奖励已经到手，
+            # 当成成功并标记已领，避免反复重试、避免把“已领取”误报成“领取失败”。
+            if not self._is_already_claimed_error(exc):
+                raise
+            already_received = True
         with self._claim_lock:
             self._claimed_markers.add(marker)
             self._claimable_task_ids.discard(task_id)
+        if already_received:
+            return f"已领取：{label}（此前已领取）"
         return f"已领取：{label}"
 
     def _claim_with_retry(self, submit: Callable[[], Any], label: str) -> None:
@@ -652,6 +663,10 @@ class LiveWatcher:
     def _is_rate_limited_error(self, exc: Exception) -> bool:
         text = str(exc)
         return "请求频率过高" in text or "频率" in text or "稍后再试" in text
+
+    def _is_already_claimed_error(self, exc: Exception) -> bool:
+        text = str(exc)
+        return "已经领取" in text or "已领取" in text or "重复领取" in text or "202031" in text
 
     def _friendly_error(self, exc: Exception) -> str:
         text = str(exc)
@@ -825,9 +840,19 @@ class LiveWatcher:
             unfinished_keys = [key for key, group_nodes in groups.items() if any(not self._node_received(node) for node in group_nodes)]
             chosen_key = sorted(unfinished_keys or groups.keys())[0]
 
-        focused = [*groups[chosen_key], *ungrouped]
+        # B 站可能把同一天的任务拆进多个 EraTasklistPc 组（组数 > 日期 Tab 数时，
+        # 后面的组会复用最后一个日期标签）。这些组共用同一个日期标签但 group_index
+        # 不同，必须按标签合并，否则高档位奖励所在的那个组会被整组当成“其他日期”隐藏。
+        chosen_label = chosen_key[1]
+        focused_nodes = [
+            node
+            for key, group_nodes in groups.items()
+            if key[1] == chosen_label
+            for node in group_nodes
+        ]
+        focused = [*focused_nodes, *ungrouped]
         hidden_count = max(0, len(nodes) - len(focused))
-        return focused, chosen_key[1], hidden_count
+        return focused, chosen_label, hidden_count
 
     def _today_task_group_key(self, groups: dict[tuple[int, str], list[dict[str, Any]]]) -> tuple[int, str] | None:
         today = date.today()
