@@ -62,19 +62,47 @@ class RoundedPanel(tk.Canvas):
         self.pad_x, self.pad_y = padding
         self.min_height = min_height
         self.auto_height = auto_height
-        if min_height:
-            self.configure(height=min_height)
+        # Canvas 自带一个很大的默认高度；未指定 min_height 的自适应卡片如果沿用它，
+        # 会把说明区撑出大片空白，并挤压下面的主要功能区。
+        self.configure(height=max(1, min_height))
         self.inner = tk.Frame(self, bg=fill, highlightthickness=0, borderwidth=0)
         self._window = self.create_window(self.pad_x, self.pad_y, anchor="nw", window=self.inner)
         self.bind("<Configure>", self._redraw)
         self.inner.bind("<Configure>", self._sync_height)
+        if self.auto_height:
+            self.after_idle(self._sync_height)
 
-    def _sync_height(self, _event: tk.Event) -> None:
+    def _sync_height(self, _event: tk.Event | None = None) -> None:
         if not self.auto_height:
             return
-        requested = self.inner.winfo_reqheight() + self.pad_y * 2
+        requested = max(self.inner.winfo_reqheight(), self._children_reqheight()) + self.pad_y * 2
         if requested > 1:
             self.configure(height=max(self.min_height, requested))
+
+    def _children_reqheight(self) -> int:
+        children = [child for child in self.inner.winfo_children() if child.winfo_manager()]
+        if not children:
+            return 0
+        for child in children:
+            if isinstance(child, RoundedPanel):
+                child._sync_height()
+
+        managers = {child.winfo_manager() for child in children}
+        if "grid" in managers:
+            row_heights: dict[int, int] = {}
+            for child in children:
+                if child.winfo_manager() != "grid":
+                    continue
+                info = child.grid_info()
+                try:
+                    row = int(info.get("row", 0))
+                except (TypeError, ValueError):
+                    row = 0
+                row_heights[row] = max(row_heights.get(row, 0), child.winfo_reqheight())
+            return sum(row_heights.values())
+        if "pack" in managers:
+            return sum(child.winfo_reqheight() for child in children if child.winfo_manager() == "pack")
+        return max(child.winfo_reqheight() for child in children)
 
     def _redraw(self, _event: tk.Event | None = None) -> None:
         self.delete("panel")
@@ -87,7 +115,12 @@ class RoundedPanel(tk.Canvas):
         self.tag_lower("shadow")
         self.tag_lower("panel")
         self.coords(self._window, self.pad_x, self.pad_y)
-        self.itemconfigure(self._window, width=max(1, width - self.pad_x * 2), height=max(1, height - self.pad_y * 2))
+        window_options: dict[str, int] = {"width": max(1, width - self.pad_x * 2)}
+        if not self.auto_height:
+            window_options["height"] = max(1, height - self.pad_y * 2)
+        self.itemconfigure(self._window, **window_options)
+        if self.auto_height:
+            self.after_idle(self._sync_height)
 
     def _rounded_rect(self, x1: int, y1: int, x2: int, y2: int, radius: int, **kwargs: object) -> None:
         points = [

@@ -23,6 +23,19 @@ class _HiddenRootCase(unittest.TestCase):
         self.root.destroy()
 
 
+class RoundedPanelLayoutTest(_HiddenRootCase):
+    def test_auto_height_panel_does_not_keep_canvas_default_height(self) -> None:
+        panel = gui.RoundedPanel(self.root, fill=gui.SURFACE, background=gui.APP_BG, padding=(14, 10))
+        panel.pack(fill="x")
+        tk.Label(panel.inner, text="使用说明", bg=gui.SURFACE).pack()
+
+        self.root.update_idletasks()
+
+        configured_height = int(panel.cget("height"))
+        self.assertGreater(configured_height, 30)
+        self.assertLess(configured_height, 80)
+
+
 class WatchStatusCardCollapsedTest(_HiddenRootCase):
     def test_collapsed_card_shows_summary_text(self) -> None:
         card = gui.WatchStatusCard(self.root)
