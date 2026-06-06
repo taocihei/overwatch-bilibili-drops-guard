@@ -61,6 +61,97 @@ class BilibiliRoomTest(unittest.TestCase):
         self.assertEqual(_group_label_for_index(labels, 2), "5月24日")
         self.assertEqual(_group_label_for_index(labels, 3), "5月24日")
 
+    def test_discover_live_activity_tasks_reads_eva_page_data(self) -> None:
+        html = """
+        <script>
+        window.__initialState = {"BaseInfo":{"title":"小的页面状态"}};
+        window.__BILIACT_PAGEINFO__ = {"activity_id":"activity-a"};
+        window.__BILIACT_EVAPAGEDATA__ = {
+            "layerTree": [
+                {
+                    "type": "Component",
+                    "name": "EvaPage",
+                    "slots": [
+                        {
+                            "children": [
+                                {
+                                    "type": "Component",
+                                    "name": "EraTasklistPc",
+                                    "props": {
+                                        "tasklist": [
+                                            {
+                                                "taskId": "task-30",
+                                                "taskName": "观看守望先锋电竞直播间30分钟",
+                                                "awardName": "战令等级直升",
+                                                "taskStatus": 1,
+                                                "counter": "counter-a",
+                                                "indicators": [{"cur_value": 12, "limit": 30}]
+                                            }
+                                        ]
+                                    },
+                                    "slots": []
+                                }
+                            ]
+                        }
+                    ]
+                }
+            ]
+        };
+        </script>
+        """
+        response = requests.Response()
+        response.status_code = 200
+        response.url = "https://live.bilibili.com/23612045"
+        response._content = html.encode("utf-8")
+        client = BilibiliClient("")
+        client.session.get = lambda *_args, **_kwargs: response  # type: ignore[method-assign]
+
+        result = client.discover_live_activity_tasks("23612045")
+
+        self.assertEqual(len(result["tasks"]), 1)
+        task = result["tasks"][0]
+        self.assertEqual(task["task_id"], "task-30")
+        self.assertEqual(task["task_name"], "观看守望先锋电竞直播间30分钟")
+        self.assertEqual(task["award_name"], "战令等级直升")
+        self.assertEqual(task["current"], 12)
+        self.assertEqual(task["target"], 30)
+
+    def test_discover_live_activity_tasks_keeps_old_initial_state_shape(self) -> None:
+        html = """
+        <script>
+        window.__initialState = {
+            "EvaTabs.Panel": [
+                {"tabItem": {"tabItemProps": {"textContent": {"content": "6月6日"}}}}
+            ],
+            "EraTasklistPc": [
+                {
+                    "tasklist": [
+                        {
+                            "taskId": "task-60",
+                            "taskName": "观看守望先锋电竞直播间60分钟",
+                            "awardName": "电竞补给",
+                            "checkpoints": [{"alias": "观看 60 分钟", "awardname": "电竞补给", "list": [{"cur_value": 60, "limit": 60}]}]
+                        }
+                    ]
+                }
+            ]
+        };
+        window.__BILIACT_PAGEINFO__ = {"activity_id":"activity-a"};
+        </script>
+        """
+        response = requests.Response()
+        response.status_code = 200
+        response.url = "https://live.bilibili.com/23612045"
+        response._content = html.encode("utf-8")
+        client = BilibiliClient("")
+        client.session.get = lambda *_args, **_kwargs: response  # type: ignore[method-assign]
+
+        result = client.discover_live_activity_tasks("23612045")
+
+        self.assertEqual(result["tasks"][0]["task_id"], "task-60")
+        self.assertEqual(result["tasks"][0]["group_label"], "6月6日")
+        self.assertEqual(result["tasks"][0]["target"], 60)
+
     def test_activity_mission_claim_payload_includes_csrf(self) -> None:
         client = BilibiliClient("SESSDATA=abc; bili_jct=csrf-token")
         captured: dict[str, object] = {}

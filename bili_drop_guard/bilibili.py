@@ -314,50 +314,31 @@ class BilibiliClient:
 
         response = self.session.get(f"https://live.bilibili.com/{normalized_room_id}", timeout=15)
         response.raise_for_status()
-        match = re.search(
-            r"window\.__initialState\s*=\s*(\{.*?\})\s*;\s*window\.__BILIACT_PAGEINFO__",
-            response.text,
-            re.S,
-        )
-        if not match:
+        states = _extract_live_activity_states(response.text)
+        if not states:
             raise RuntimeError("直播页没有找到活动任务配置")
 
-        state = json.loads(match.group(1))
         tasks: list[dict[str, Any]] = []
         seen: set[str] = set()
-        tab_labels = _extract_tab_labels(state)
-        task_groups = state.get("EraTasklistPc") or []
-        for group_index, group in enumerate(task_groups):
-            if not isinstance(group, dict):
-                continue
-            group_label = _group_label_for_index(tab_labels, group_index)
-            for task in group.get("tasklist") or []:
-                if not isinstance(task, dict):
-                    continue
-                task_id = str(task.get("taskId") or task.get("task_id") or "").strip()
-                if not task_id or task_id in seen:
-                    continue
-                seen.add(task_id)
-                indicator = _first_dict(task.get("indicators"))
-                checkpoint = _first_dict(task.get("checkpoints"))
-                checkpoint_progress = _first_dict(checkpoint.get("list") if checkpoint else None)
-                progress_source = indicator or checkpoint_progress or {}
-                task_name = task.get("taskName") or task.get("task_name") or checkpoint.get("alias") or task_id
-                award_name = task.get("awardName") or checkpoint.get("awardname") or ""
-                tasks.append(
-                    {
-                        "task_id": task_id,
-                        "task_name": task_name,
-                        "award_name": award_name,
-                        "current": progress_source.get("cur_value"),
-                        "target": progress_source.get("limit"),
-                        "task_status": task.get("taskStatus"),
-                        "counter": task.get("counter"),
-                        "group_label": group_label,
-                        "group_index": group_index,
-                    }
-                )
-        return {"tasks": tasks, "groups": [{"label": label, "index": index} for index, label in enumerate(tab_labels)]}
+        group_records: list[dict[str, Any]] = []
+        for state in states:
+            tab_labels = _extract_tab_labels(state)
+            for group_index, group in enumerate(_extract_era_task_groups(state)):
+                group_label = _task_group_label(group, tab_labels, group_index)
+                if group_label and not any(record["label"] == group_label for record in group_records):
+                    group_records.append({"label": group_label, "index": len(group_records)})
+                for task in group.get("tasklist") or []:
+                    if not isinstance(task, dict):
+                        continue
+                    task_id = str(task.get("taskId") or task.get("task_id") or "").strip()
+                    if not task_id or task_id in seen:
+                        continue
+                    seen.add(task_id)
+                    tasks.append(_activity_task_from_page_task(task, task_id, group_label, group_index))
+
+        if not tasks:
+            raise RuntimeError("直播页没有找到活动任务 ID，请确认直播间页面有本次掉宝任务")
+        return {"tasks": tasks, "groups": group_records}
 
     def get_activity_task_progress(self, task_ids: list[str]) -> Dict[str, Any]:
         normalized_task_ids = [str(task_id).strip() for task_id in task_ids if str(task_id).strip()]
@@ -505,6 +486,143 @@ def _decode_json_response(response: requests.Response) -> Dict[str, Any]:
     if not isinstance(payload, dict):
         raise RuntimeError("接口返回格式异常：JSON 根节点不是对象")
     return payload
+
+
+def _extract_live_activity_states(html: str) -> list[dict[str, Any]]:
+    states: list[dict[str, Any]] = []
+    seen_raw: set[str] = set()
+    for marker in ("window.__BILIACT_EVAPAGEDATA__", "window.__initialState"):
+        for raw in _extract_json_assignments(html, marker):
+            if raw in seen_raw:
+                continue
+            seen_raw.add(raw)
+            try:
+                value = json.loads(raw)
+            except ValueError:
+                continue
+            if isinstance(value, dict):
+                states.append(value)
+    return states
+
+
+def _extract_json_assignments(text: str, marker: str) -> list[str]:
+    values: list[str] = []
+    start = 0
+    while True:
+        marker_index = text.find(marker, start)
+        if marker_index < 0:
+            break
+        cursor = marker_index + len(marker)
+        while cursor < len(text) and text[cursor].isspace():
+            cursor += 1
+        if cursor >= len(text) or text[cursor] != "=":
+            start = cursor
+            continue
+        equal_index = cursor
+        brace_index = text.find("{", equal_index + 1)
+        if brace_index < 0:
+            start = equal_index + 1
+            continue
+        end_index = _find_json_object_end(text, brace_index)
+        if end_index < 0:
+            start = brace_index + 1
+            continue
+        values.append(text[brace_index:end_index])
+        start = end_index
+    return values
+
+
+def _find_json_object_end(text: str, start: int) -> int:
+    depth = 0
+    in_string = False
+    escape = False
+    for index in range(start, len(text)):
+        char = text[index]
+        if in_string:
+            if escape:
+                escape = False
+            elif char == "\\":
+                escape = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+        elif char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return index + 1
+    return -1
+
+
+def _activity_task_from_page_task(task: dict[str, Any], task_id: str, group_label: str, group_index: int) -> dict[str, Any]:
+    checkpoint = _first_dict(task.get("checkpoints"))
+    checkpoint_progress = _first_dict(checkpoint.get("list") if checkpoint else None)
+    indicator = _first_dict(task.get("indicators"))
+    progress_source = indicator or checkpoint_progress or {}
+    task_name = task.get("taskName") or task.get("task_name") or checkpoint.get("alias") or task_id
+    award_name = task.get("awardName") or task.get("award_name") or checkpoint.get("awardname") or ""
+    return {
+        "task_id": task_id,
+        "task_name": task_name,
+        "award_name": award_name,
+        "current": progress_source.get("cur_value"),
+        "target": progress_source.get("limit"),
+        "task_status": task.get("taskStatus") or task.get("task_status"),
+        "counter": task.get("counter"),
+        "group_label": group_label,
+        "group_index": group_index,
+    }
+
+
+def _extract_era_task_groups(state: dict[str, Any]) -> list[dict[str, Any]]:
+    groups: list[dict[str, Any]] = []
+    top_level_groups = state.get("EraTasklistPc")
+    if isinstance(top_level_groups, dict):
+        top_level_groups = [top_level_groups]
+    if isinstance(top_level_groups, list):
+        for group in top_level_groups:
+            if _is_task_group(group):
+                groups.append(group)
+
+    for node in _iter_nested_dicts(state):
+        if node.get("name") != "EraTasklistPc":
+            continue
+        props = node.get("props") if isinstance(node.get("props"), dict) else {}
+        if _is_task_group(props):
+            groups.append(props)
+    return groups
+
+
+def _iter_nested_dicts(value: Any) -> list[dict[str, Any]]:
+    nodes: list[dict[str, Any]] = []
+    if isinstance(value, dict):
+        nodes.append(value)
+        for child in value.values():
+            nodes.extend(_iter_nested_dicts(child))
+    elif isinstance(value, list):
+        for child in value:
+            nodes.extend(_iter_nested_dicts(child))
+    return nodes
+
+
+def _is_task_group(value: Any) -> bool:
+    if not isinstance(value, dict):
+        return False
+    tasklist = value.get("tasklist")
+    if not isinstance(tasklist, list):
+        return False
+    return any(isinstance(task, dict) and (task.get("taskId") or task.get("task_id")) for task in tasklist)
+
+
+def _task_group_label(group: dict[str, Any], tab_labels: list[str], index: int) -> str:
+    for key in ("group_label", "tabName", "tab_name", "date", "day", "title"):
+        label = str(group.get(key) or "").strip()
+        if label:
+            return label
+    return _group_label_for_index(tab_labels, index)
 
 
 def _first_dict(value: Any) -> dict[str, Any]:
