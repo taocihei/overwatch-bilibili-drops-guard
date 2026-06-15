@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
@@ -97,12 +98,20 @@ def sanitize_config(config: AppConfig) -> AppConfig:
         room_id=room_id,
         check_interval=_coerce_int(config.check_interval, DEFAULT_CHECK_INTERVAL, MIN_CHECK_INTERVAL, MAX_CHECK_INTERVAL),
         auto_claim=_coerce_bool(config.auto_claim, True),
-        task_ids=str(config.task_ids or ""),
+        task_ids=normalize_task_ids(str(config.task_ids or "")),
         watch_threads=_coerce_int(config.watch_threads, 1, 1, MAX_WATCH_THREADS),
         notify_url=str(config.notify_url or "").strip(),
         active_accounts=active_accounts,
         config_version=CONFIG_VERSION,
     )
+
+
+def parse_task_ids(value: str) -> list[str]:
+    return [item for item in re.split(r"[\s,，;；]+", (value or "").strip()) if item]
+
+
+def normalize_task_ids(value: str) -> str:
+    return ",".join(parse_task_ids(value))
 
 
 def _sanitize_accounts(value: object, fallback_cookie: str, fallback_name: str) -> list[AccountProfile]:

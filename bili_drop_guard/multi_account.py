@@ -1,19 +1,14 @@
 from __future__ import annotations
 
-import re
 import threading
 from typing import Callable
 
-from .config import AppConfig
+from .config import AppConfig, parse_task_ids
 from .watcher import LiveWatcher, WatchOptions, WatchWorkerStatus
 
 
 LogSink = Callable[[str], None]
 ACCOUNT_START_STAGGER_SECONDS = 2.0
-
-
-def _parse_task_ids(value: str) -> list[str]:
-    return [item for item in re.split(r"[\s,，;；]+", (value or "").strip()) if item]
 
 
 def build_account_options(config: AppConfig) -> list[tuple[str, WatchOptions]]:
@@ -30,7 +25,7 @@ def build_account_options(config: AppConfig) -> list[tuple[str, WatchOptions]]:
             room_id=config.room_id,
             check_interval=config.check_interval,
             auto_claim=config.auto_claim,
-            task_ids=_parse_task_ids(config.task_ids),
+            task_ids=parse_task_ids(config.task_ids),
             watch_threads=config.watch_threads,
         )
         pairs.append((account.name, options))

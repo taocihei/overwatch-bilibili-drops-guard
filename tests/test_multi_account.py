@@ -37,6 +37,15 @@ class BuildAccountOptionsTest(unittest.TestCase):
         self.assertEqual(opts.room_id, "23612045")
         self.assertEqual(opts.watch_threads, 2)
 
+    def test_task_ids_accept_chinese_commas_and_other_separators(self) -> None:
+        cfg = self._config(["主号"])
+        cfg.task_ids = "task-a，task-b, task-c；task-d\n task-e"
+
+        pairs = build_account_options(cfg)
+        _name, opts = pairs[0]
+
+        self.assertEqual(opts.task_ids, ["task-a", "task-b", "task-c", "task-d", "task-e"])
+
 
 class FakeWatcher:
     instances: list["FakeWatcher"] = []

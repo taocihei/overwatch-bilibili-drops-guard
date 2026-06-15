@@ -137,6 +137,12 @@ class ConfigTest(unittest.TestCase):
 
         self.assertEqual(sanitized.room_id, "23612045")
 
+    def test_sanitize_config_normalizes_task_id_separators(self) -> None:
+        sanitized = config.sanitize_config(config.AppConfig(task_ids="task-a，task-b, task-c；task-d\n task-e"))
+
+        self.assertEqual(sanitized.task_ids, "task-a,task-b,task-c,task-d,task-e")
+        self.assertEqual(config.parse_task_ids(sanitized.task_ids), ["task-a", "task-b", "task-c", "task-d", "task-e"])
+
     def test_active_accounts_defaults_to_empty(self) -> None:
         cfg = AppConfig()
         self.assertEqual(cfg.active_accounts, [])
