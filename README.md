@@ -1,6 +1,6 @@
 ﻿# 守望先锋 B 站直播挂宝 / Overwatch Bilibili Live Drops Guard
 
-当前版本：`v0.4.3`
+当前版本：`v0.4.4`
 
 开源地址：<https://github.com/taocihei/overwatch-bilibili-drops-guard>
 
@@ -24,7 +24,7 @@
 
 1. 打开项目页面：<https://github.com/taocihei/overwatch-bilibili-drops-guard>
 2. 进入右侧或页面中的 `Releases`。
-3. 下载 `OverwatchBiliDrops-v0.4.3.exe`。
+3. 下载 `OverwatchBiliDrops-v0.4.4.exe`。
 4. 双击运行。
 5. 如果 Windows 提示“未知发布者”或“Windows 已保护你的电脑”，点击“更多信息”，再点“仍要运行”。这是个人开源软件常见提示，不代表一定有病毒。
 6. 第一次使用先点“自动获取 Cookie”，在弹出的独立 Edge/Chrome 窗口里登录 B 站。
@@ -48,7 +48,7 @@
 - `观看进度`：优先显示本次观看进度，比如“还差 48 分钟”“已完成，待领取”“已领取”。
 - `运行日志`：保留登录、计时、任务识别和领取记录，适合排查异常。
 
-## v0.4.3 修复
+## v0.4.4 修复
 
 - **修复手动任务 ID 分隔符问题**：现在任务 ID 支持英文逗号、中文逗号、分号、空格和换行混合输入，保存后会统一整理为英文逗号。
 - **优化主界面布局**：默认直播间号、任务 ID 自动获取、登录凭据流程、观看进度、运行状态和运行日志的位置更清楚。
@@ -230,7 +230,7 @@ dist\OverwatchBiliDrops.exe
 发布时会同时生成带版本号的文件，例如：
 
 ```text
-dist\OverwatchBiliDrops-v0.4.3.exe
+dist\OverwatchBiliDrops-v0.4.4.exe
 ```
 ## 赞助
 
@@ -248,7 +248,7 @@ dist\OverwatchBiliDrops-v0.4.3.exe
 
 Project name: **守望先锋 B 站直播挂宝 / Overwatch Bilibili Live Drops Guard**
 
-Version: `v0.4.3`
+Version: `v0.4.4`
 
 Repository: <https://github.com/taocihei/overwatch-bilibili-drops-guard>
 
@@ -268,7 +268,7 @@ Default room: `23612045`.
 
 1. Open the repository page: <https://github.com/taocihei/overwatch-bilibili-drops-guard>
 2. Open `Releases`.
-3. Download `OverwatchBiliDrops-v0.4.3.exe`.
+3. Download `OverwatchBiliDrops-v0.4.4.exe`.
 4. Double-click to run it.
 5. If Windows shows an unknown-publisher warning, click `More info`, then `Run anyway`.
 6. Click `自动获取 Cookie`, then sign in to Bilibili in the independent Edge/Chrome window opened by the app.
@@ -312,5 +312,6 @@ dist\OverwatchBiliDrops.exe
 Release builds are also copied with a versioned file name, for example:
 
 ```text
-dist\OverwatchBiliDrops-v0.4.3.exe
+dist\OverwatchBiliDrops-v0.4.4.exe
 ```
+
