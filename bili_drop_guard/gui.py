@@ -1182,76 +1182,67 @@ class App(tk.Tk):
     def _build_settings_workspace(self, parent: ttk.Frame) -> None:
         parent.columnconfigure(0, weight=1)
 
-        credential_panel = RoundedPanel(parent, fill=GLASS, background=APP_BG, radius=18, padding=(24, 22), min_height=742, outline=SUBTLE_OUTLINE, shadow=True, auto_height=False)
+        credential_panel = RoundedPanel(parent, fill=GLASS, background=APP_BG, radius=18, padding=(24, 18), min_height=742, outline=SUBTLE_OUTLINE, shadow=True, auto_height=False)
         credential_panel.grid(row=0, column=0, sticky="nsew")
         cookie = credential_panel.inner
         cookie.columnconfigure(0, weight=1)
         cookie.rowconfigure(3, weight=1)
 
         self._section_title(cookie, "登录凭据", "credential").grid(row=0, column=0, sticky="w")
-        tk.Label(cookie, text="默认房间已填；任务 ID 按房间自动获取。先选择账号，再完成登录凭据。", bg=GLASS, fg=MUTED, font=("Microsoft YaHei UI", 9), wraplength=390, justify="left").grid(row=1, column=0, sticky="w", pady=(6, 10))
+        tk.Label(cookie, text="选择账号，获取或粘贴登录 Cookie。", bg=GLASS, fg=MUTED, font=("Microsoft YaHei UI", 9), wraplength=390, justify="left").grid(row=1, column=0, sticky="w", pady=(4, 8))
 
-        account_panel = RoundedPanel(cookie, fill=FIELD_BG, background=GLASS, radius=14, padding=(14, 10), min_height=102, outline=SUBTLE_OUTLINE, shadow=False, auto_height=False)
-        account_panel.grid(row=2, column=0, sticky="ew", pady=(0, 12))
+        account_panel = RoundedPanel(cookie, fill=FIELD_BG, background=GLASS, radius=14, padding=(14, 10), min_height=150, outline=SUBTLE_OUTLINE, shadow=False, auto_height=True)
+        account_panel.grid(row=2, column=0, sticky="ew", pady=(0, 8))
         account = account_panel.inner
-        account.columnconfigure(0, weight=1, minsize=174)
-        account.columnconfigure(1, weight=1, minsize=174)
-        tk.Label(account, text="账号与并行", bg=FIELD_BG, fg=TEXT, font=("Microsoft YaHei UI", 10, "bold")).grid(row=0, column=0, columnspan=2, sticky="w")
-        tk.Label(account, text="勾选要挂的账号；右侧为当前账号名。", bg=FIELD_BG, fg=MUTED, font=("Microsoft YaHei UI", 8), wraplength=340, justify="left").grid(row=1, column=0, columnspan=2, sticky="w", pady=(2, 0))
+        account.columnconfigure(0, weight=1)
+
+        list_header = tk.Frame(account, bg=FIELD_BG, highlightthickness=0, borderwidth=0)
+        list_header.grid(row=0, column=0, sticky="ew")
+        list_header.columnconfigure(0, weight=1)
+        tk.Label(list_header, text="参与挂机账号", bg=FIELD_BG, fg=TEXT, font=("Microsoft YaHei UI", 11, "bold")).grid(row=0, column=0, sticky="w")
+        tk.Label(list_header, text="勾选要挂的账号", bg=FIELD_BG, fg=MUTED, font=("Microsoft YaHei UI", 8)).grid(row=0, column=1, sticky="e")
         self._account_check_frame = tk.Frame(account, bg=FIELD_BG, highlightthickness=0, borderwidth=0)
-        self._account_check_frame.grid(row=2, column=0, sticky="nsew", pady=(7, 0), padx=(0, 10))
+        self._account_check_frame.grid(row=1, column=0, sticky="ew", pady=(8, 0))
         self._build_account_checklist()
-        account_editor = tk.Frame(account, bg=FIELD_BG, highlightthickness=0, borderwidth=0)
-        account_editor.grid(row=2, column=1, sticky="nsew", pady=(7, 0))
-        account_editor.columnconfigure(0, weight=1)
-        account_entry_box = RoundedPanel(account_editor, fill=FIELD_BG, background=FIELD_BG, radius=8, padding=(0, 5), min_height=32, outline="", shadow=False, auto_height=False)
-        account_entry_box.grid(row=0, column=0, sticky="ew")
+
+        tk.Frame(account, bg="#e6edf4", height=1, highlightthickness=0, borderwidth=0).grid(row=2, column=0, sticky="ew", pady=(12, 10))
+
+        tk.Label(account, text="当前编辑账号", bg=FIELD_BG, fg=MUTED, font=("Microsoft YaHei UI", 9, "bold")).grid(row=3, column=0, sticky="w")
+        account_entry_box = RoundedPanel(account, fill=SURFACE, background=FIELD_BG, radius=10, padding=(12, 8), min_height=36, outline=SUBTLE_OUTLINE, shadow=False, auto_height=False)
+        account_entry_box.grid(row=4, column=0, sticky="ew", pady=(6, 0))
         account_entry_box.inner.columnconfigure(0, weight=1)
-        tk.Entry(account_entry_box.inner, textvariable=self.account_name_var, borderwidth=0, relief="flat", bg=FIELD_BG, fg=TEXT, insertbackground=TEXT, font=("Microsoft YaHei UI", 9)).grid(row=0, column=0, sticky="ew")
+        tk.Entry(account_entry_box.inner, textvariable=self.account_name_var, borderwidth=0, relief="flat", bg=SURFACE, fg=TEXT, insertbackground=TEXT, font=("Microsoft YaHei UI", 10)).grid(row=0, column=0, sticky="ew")
 
         flow = tk.Frame(cookie, bg=GLASS, highlightthickness=0, borderwidth=0)
         flow.grid(row=3, column=0, sticky="nsew")
         flow.columnconfigure(0, weight=1)
         flow.rowconfigure(11, weight=1)
 
-        steps = tk.Frame(flow, bg=GLASS, highlightthickness=0, borderwidth=0)
-        steps.grid(row=0, column=0, sticky="ew", pady=(0, 12))
-        steps.columnconfigure((0, 2, 4), weight=1, uniform="credential_steps")
-        self._credential_step_chip(steps, 0, "1", "登录页", active=True).grid(row=0, column=0, sticky="ew")
-        tk.Frame(steps, bg="#edf2f8", height=1, highlightthickness=0, borderwidth=0).grid(row=0, column=1, sticky="ew", padx=8)
-        self._credential_step_chip(steps, 2, "2", "获取凭据", active=False).grid(row=0, column=2, sticky="ew")
-        tk.Frame(steps, bg="#edf2f8", height=1, highlightthickness=0, borderwidth=0).grid(row=0, column=3, sticky="ew", padx=8)
-        self._credential_step_chip(steps, 4, "3", "写 Cookie", active=False).grid(row=0, column=4, sticky="ew")
+        capture_header = tk.Frame(flow, bg=GLASS, highlightthickness=0, borderwidth=0)
+        capture_header.grid(row=0, column=0, sticky="ew")
+        capture_header.columnconfigure(0, weight=1)
+        tk.Label(capture_header, text="主要操作", bg=GLASS, fg=TEXT, font=("Microsoft YaHei UI", 12, "bold")).grid(row=0, column=0, sticky="w")
+        tk.Label(capture_header, text="推荐", bg=GLASS, fg=ACCENT, font=("Microsoft YaHei UI", 8, "bold")).grid(row=0, column=1, sticky="e")
+        tk.Label(flow, text="打开独立自动获取窗口；登录后会自动写入下方 Cookie。", bg=GLASS, fg=MUTED, font=("Microsoft YaHei UI", 9), wraplength=360, justify="left").grid(row=1, column=0, sticky="w", pady=(3, 7))
+        LabelButton(flow, "自动获取 Cookie", self._capture_cookie, fill=ACCENT, foreground="#ffffff", active_fill=ACCENT_ACTIVE, height=40, font=("Microsoft YaHei UI", 10, "bold"), radius=13, shadow=True).grid(row=2, column=0, sticky="ew")
 
         login_header = tk.Frame(flow, bg=GLASS, highlightthickness=0, borderwidth=0)
-        login_header.grid(row=1, column=0, sticky="ew")
+        login_header.grid(row=3, column=0, sticky="ew", pady=(9, 0))
         login_header.columnconfigure(0, weight=1)
-        tk.Label(login_header, text="打开登录页", bg=GLASS, fg=TEXT, font=("Microsoft YaHei UI", 12, "bold")).grid(row=0, column=0, sticky="w")
-        tk.Label(login_header, text="待登录", bg=GLASS, fg=FAINT, font=("Microsoft YaHei UI", 8, "bold")).grid(row=0, column=1, sticky="e")
-        tk.Label(flow, text="在默认浏览器中打开 B站登录页，完成扫码或密码登录。", bg=GLASS, fg=MUTED, font=("Microsoft YaHei UI", 9), wraplength=360, justify="left").grid(row=2, column=0, sticky="w", pady=(5, 8))
-        LabelButton(flow, "打开 B站登录页", self._open_cookie_login_page, fill=SURFACE, foreground=TEXT, active_fill=SECONDARY_ACTIVE, height=40, font=("Microsoft YaHei UI", 9, "bold"), radius=13, outline=BUTTON_OUTLINE).grid(row=3, column=0, sticky="ew")
+        tk.Label(login_header, text="备用方式", bg=GLASS, fg=MUTED, font=("Microsoft YaHei UI", 9, "bold")).grid(row=0, column=0, sticky="w")
+        LabelButton(flow, "只打开登录页（手动）", self._open_cookie_login_page, fill=SURFACE, foreground=TEXT, active_fill=SECONDARY_ACTIVE, height=34, font=("Microsoft YaHei UI", 9, "bold"), radius=11, outline=BUTTON_OUTLINE).grid(row=4, column=0, sticky="ew", pady=(6, 0))
 
-        self._soft_divider(flow).grid(row=4, column=0, sticky="ew", pady=8)
-
-        capture_header = tk.Frame(flow, bg=GLASS, highlightthickness=0, borderwidth=0)
-        capture_header.grid(row=5, column=0, sticky="ew")
-        capture_header.columnconfigure(0, weight=1)
-        tk.Label(capture_header, text="获取凭据", bg=GLASS, fg=TEXT, font=("Microsoft YaHei UI", 12, "bold")).grid(row=0, column=0, sticky="w")
-        tk.Label(capture_header, text="未读取", bg=GLASS, fg=FAINT, font=("Microsoft YaHei UI", 8, "bold")).grid(row=0, column=1, sticky="e")
-        tk.Label(flow, text="从本机浏览器读取登录凭据，成功后自动写入下方 Cookie。", bg=GLASS, fg=MUTED, font=("Microsoft YaHei UI", 9), wraplength=360, justify="left").grid(row=6, column=0, sticky="w", pady=(5, 8))
-        LabelButton(flow, "获取凭据（本机模式）", self._capture_cookie, fill=SURFACE, foreground=ACCENT_ACTIVE, active_fill=SECONDARY_ACTIVE, height=40, font=("Microsoft YaHei UI", 9, "bold"), radius=13, outline=BUTTON_OUTLINE).grid(row=7, column=0, sticky="ew")
-
-        self._soft_divider(flow).grid(row=8, column=0, sticky="ew", pady=8)
+        self._soft_divider(flow).grid(row=5, column=0, sticky="ew", pady=8)
 
         cookie_header = tk.Frame(flow, bg=GLASS, highlightthickness=0, borderwidth=0)
-        cookie_header.grid(row=9, column=0, sticky="ew")
+        cookie_header.grid(row=6, column=0, sticky="ew")
         cookie_header.columnconfigure(0, weight=1)
         tk.Label(cookie_header, text="Cookie 内容", bg=GLASS, fg=TEXT, font=("Microsoft YaHei UI", 12, "bold")).grid(row=0, column=0, sticky="w")
         tk.Label(cookie_header, textvariable=self.cookie_validation_var, bg=GLASS, fg=MUTED, font=("Microsoft YaHei UI", 8, "bold")).grid(row=0, column=1, sticky="e")
-        tk.Label(flow, text="读取成功后自动填入，可手动修改。", bg=GLASS, fg=MUTED, font=("Microsoft YaHei UI", 9)).grid(row=10, column=0, sticky="w", pady=(5, 8))
+        tk.Label(flow, text="读取成功后自动填入，可手动修改。", bg=GLASS, fg=MUTED, font=("Microsoft YaHei UI", 9)).grid(row=7, column=0, sticky="w", pady=(3, 6))
 
         cookie_box = RoundedPanel(flow, fill=FIELD_BG, background=GLASS, radius=14, padding=(5, 5), min_height=112, outline=SUBTLE_OUTLINE, shadow=False, auto_height=False)
-        cookie_box.grid(row=11, column=0, sticky="nsew")
+        cookie_box.grid(row=8, column=0, sticky="ew")
         cookie_box.inner.columnconfigure(0, weight=1)
         cookie_box.inner.rowconfigure(0, weight=1)
         self.cookie_text = tk.Text(cookie_box.inner, height=4, wrap="word", undo=True, borderwidth=0, relief="flat", bg=FIELD_BG, fg=TEXT, insertbackground=TEXT, highlightthickness=0, padx=12, pady=8, font=("Consolas", 9))
@@ -1264,11 +1255,13 @@ class App(tk.Tk):
         self.after_idle(self._refresh_cookie_placeholder)
 
         cookie_actions = tk.Frame(flow, bg=GLASS, highlightthickness=0, borderwidth=0)
-        cookie_actions.grid(row=12, column=0, sticky="ew", pady=(10, 0))
-        cookie_actions.columnconfigure(3, weight=1)
-        LabelButton(cookie_actions, "清空", self._clear_cookie_text, fill=GLASS, foreground=MUTED, active_fill=SECONDARY_ACTIVE, height=28, width=62, font=("Microsoft YaHei UI", 8), radius=10, outline="").grid(row=0, column=0, sticky="w", padx=(0, 8))
-        LabelButton(cookie_actions, "验证 Cookie", self._validate_cookie_text, fill=GLASS, foreground=TEXT, active_fill=SECONDARY_ACTIVE, height=28, width=92, font=("Microsoft YaHei UI", 8, "bold"), radius=10, outline="").grid(row=0, column=1, sticky="w", padx=(0, 8))
-        LabelButton(cookie_actions, "保存账号", self._save_account, fill=GLASS, foreground=TEXT, active_fill=SECONDARY_ACTIVE, height=28, width=82, font=("Microsoft YaHei UI", 8, "bold"), radius=10, outline="").grid(row=0, column=2, sticky="w")
+        cookie_actions.grid(row=9, column=0, sticky="ew", pady=(10, 0))
+        cookie_actions.columnconfigure((0, 1), weight=1, uniform="cookie_actions")
+        cookie_actions.columnconfigure((2, 3), weight=0)
+        LabelButton(cookie_actions, "保存账号", self._save_account, fill=SECONDARY, foreground=TEXT, active_fill=SECONDARY_ACTIVE, height=34, font=("Microsoft YaHei UI", 9, "bold"), radius=11, outline=SUBTLE_OUTLINE).grid(row=0, column=0, sticky="ew", padx=(0, 8))
+        LabelButton(cookie_actions, "新增账号", self._new_account, fill=ACCENT_SOFT, foreground=ACCENT, active_fill=ACCENT_SOFT_ACTIVE, height=34, font=("Microsoft YaHei UI", 9, "bold"), radius=11, outline="").grid(row=0, column=1, sticky="ew", padx=(0, 8))
+        LabelButton(cookie_actions, "验证", self._validate_cookie_text, fill=GLASS, foreground=MUTED, active_fill=SECONDARY_ACTIVE, height=34, width=58, font=("Microsoft YaHei UI", 8, "bold"), radius=11, outline="").grid(row=0, column=2, sticky="e", padx=(0, 4))
+        LabelButton(cookie_actions, "清空", self._clear_cookie_text, fill=GLASS, foreground=MUTED, active_fill=SECONDARY_ACTIVE, height=34, width=58, font=("Microsoft YaHei UI", 8, "bold"), radius=11, outline="").grid(row=0, column=3, sticky="e")
 
         notice = RoundedPanel(cookie, fill=WARNING_BG, background=GLASS, radius=12, padding=(12, 8), min_height=38, outline=WARNING_BORDER, shadow=False, auto_height=False)
         notice.grid(row=4, column=0, sticky="ew", pady=(14, 0))
@@ -1847,7 +1840,6 @@ class App(tk.Tk):
             tk.Label(status_grid, textvariable=variable, bg=SURFACE, fg=MUTED, font=("Microsoft YaHei UI", 8, "bold")).grid(row=index, column=2, sticky="e", pady=3)
         self.watch_status_card = WatchStatusCard(status_pane, background=SURFACE)
         self.watch_status_card.grid(row=2, column=0, sticky="ew", pady=(8, 0))
-        self.watch_status_card.grid_remove()
 
         reward_cell = RoundedPanel(overview, fill=SURFACE, background=GLASS, radius=16, padding=(18, 16), min_height=194, outline=SUBTLE_OUTLINE, shadow=False, auto_height=False)
         reward_cell.grid(row=0, column=2, sticky="nsew", padx=(12, 0))
@@ -1871,26 +1863,18 @@ class App(tk.Tk):
         tk.Label(title_group, text="实时记录程序运行与任务处理情况", bg=GLASS, fg=MUTED, font=("Microsoft YaHei UI", 9)).grid(row=1, column=0, sticky="w", pady=(5, 0))
         tools = tk.Frame(log_head, bg=GLASS, highlightthickness=0, borderwidth=0)
         tools.grid(row=0, column=1, sticky="e")
-        LabelButton(tools, "清空日志", self._clear_log, fill=SECONDARY, foreground=MUTED, active_fill=SECONDARY_ACTIVE, height=34, width=88, font=("Microsoft YaHei UI", 8, "bold"), radius=11, outline=SUBTLE_OUTLINE).pack(side="left", padx=(0, 10))
-        LabelButton(tools, "复制日志", self._copy_log, fill=SECONDARY, foreground=MUTED, active_fill=SECONDARY_ACTIVE, height=34, width=88, font=("Microsoft YaHei UI", 8, "bold"), radius=11, outline=SUBTLE_OUTLINE).pack(side="left", padx=(0, 18))
-        auto_group = tk.Frame(tools, bg=GLASS, highlightthickness=0, borderwidth=0)
-        auto_group.pack(side="left")
-        self.auto_scroll_check = tk.Checkbutton(
-            auto_group,
-            text="自动滚到最新",
-            variable=self.auto_scroll_var,
-            command=self._toggle_auto_scroll,
-            bg=GLASS,
-            fg=TEXT,
-            selectcolor=SURFACE,
-            activebackground=GLASS,
-            activeforeground=TEXT,
-            font=("Microsoft YaHei UI", 8),
-            borderwidth=0,
-            highlightthickness=0,
-            cursor="hand2",
+        self.auto_scroll_button = ToggleSwitch(
+            tools,
+            "自动滚动",
+            self._toggle_auto_scroll,
+            checked=bool(self.auto_scroll_var.get()),
+            background=GLASS,
+            width=106,
+            height=30,
         )
-        self.auto_scroll_check.pack(side="left")
+        self.auto_scroll_button.pack(side="left", padx=(0, 12))
+        LabelButton(tools, "清空日志", self._clear_log, fill=SECONDARY, foreground=MUTED, active_fill=SECONDARY_ACTIVE, height=34, width=88, font=("Microsoft YaHei UI", 8, "bold"), radius=11, outline=SUBTLE_OUTLINE).pack(side="left", padx=(0, 10))
+        LabelButton(tools, "复制日志", self._copy_log, fill=SECONDARY, foreground=MUTED, active_fill=SECONDARY_ACTIVE, height=34, width=88, font=("Microsoft YaHei UI", 8, "bold"), radius=11, outline=SUBTLE_OUTLINE).pack(side="left")
 
         log_wrap = RoundedPanel(log_pane, fill=FIELD_BG, background=GLASS, radius=14, padding=(5, 5), min_height=452, outline=SUBTLE_OUTLINE, shadow=False, auto_height=False)
         log_wrap.grid(row=1, column=0, sticky="nsew")
@@ -2144,7 +2128,7 @@ class App(tk.Tk):
         if hasattr(self, "auto_scroll_button"):
             self.auto_scroll_var.set(not bool(self.auto_scroll_var.get()))
             checked = bool(self.auto_scroll_var.get())
-            self.auto_scroll_button.set_checked(checked, "开启" if checked else "关闭")
+            self.auto_scroll_button.set_checked(checked, "自动滚动" if checked else "手动滚动")
 
     def _refresh_auto_claim_button(self) -> None:
         if bool(self.auto_claim_var.get()):
@@ -2379,15 +2363,20 @@ class App(tk.Tk):
             child.destroy()
         self.account_checks = {}
         active = set(self.config_data.active_accounts or [])
+        has_saved_accounts = bool(self.config_data.accounts)
+        default_editing_account = self.config_data.account_name or "默认账号"
         for name in self._account_names():
-            checked = (not active) or (name in active)
+            checked = (name in active) or (not has_saved_accounts and name == default_editing_account)
             var = tk.BooleanVar(value=checked)
             self.account_checks[name] = var
+            row = tk.Frame(frame, bg=frame_bg, highlightthickness=0, borderwidth=0)
+            row.columnconfigure(0, weight=1)
+            row.pack(fill="x", anchor="w")
             tk.Checkbutton(
-                frame,
+                row,
                 text=name,
                 variable=var,
-                command=lambda n=name: self._on_account_clicked(n),
+                command=lambda n=name: self._on_account_check_toggled(n),
                 bg=frame_bg,
                 fg=TEXT,
                 selectcolor=SOFT_SURFACE,
@@ -2397,7 +2386,20 @@ class App(tk.Tk):
                 highlightthickness=0,
                 bd=0,
                 font=("Microsoft YaHei UI", 10),
-            ).pack(fill="x", anchor="w")
+            ).grid(row=0, column=0, sticky="ew")
+            LabelButton(
+                row,
+                "编辑",
+                lambda n=name: self._select_account_for_edit(n),
+                fill=SURFACE,
+                foreground=ACCENT,
+                active_fill=SECONDARY_ACTIVE,
+                height=24,
+                width=50,
+                font=("Microsoft YaHei UI", 8, "bold"),
+                radius=9,
+                outline=SUBTLE_OUTLINE,
+            ).grid(row=0, column=1, sticky="e", padx=(8, 0))
 
     def _refresh_account_selector(self) -> None:
         if hasattr(self, "_account_check_frame"):
@@ -2409,9 +2411,20 @@ class App(tk.Tk):
                 return account.cookie
         return ""
 
-    def _on_account_clicked(self, name: str) -> None:
-        # 勾选切换的同时，把该账号设为“当前编辑账号”并回填其 Cookie，便于编辑/删除。
-        # 但若当前编辑框里有未保存的改动，则不覆盖，避免丢失刚粘贴/编辑的 Cookie。
+    def _next_account_name(self) -> str:
+        existing = {name for name in self._account_names() if name}
+        index = 2 if existing else 1
+        while True:
+            name = f"账号 {index}"
+            if name not in existing:
+                return name
+            index += 1
+
+    def _on_account_check_toggled(self, name: str) -> None:
+        checked = bool(self.account_checks.get(name) and self.account_checks[name].get())
+        self._log(f"{'已勾选' if checked else '已取消'}账号参与挂机：{name}")
+
+    def _select_account_for_edit(self, name: str) -> None:
         current = self.account_name_var.get().strip()
         editor = self.cookie_text.get("1.0", "end").strip()
         if name == current:
@@ -2423,6 +2436,21 @@ class App(tk.Tk):
         self.cookie_text.delete("1.0", "end")
         self.cookie_text.insert("1.0", self._saved_cookie_for(name))
         self._log(f"当前编辑账号：{name}")
+
+    def _new_account(self) -> None:
+        current = self.account_name_var.get().strip()
+        editor = self.cookie_text.get("1.0", "end").strip()
+        if current and editor and editor != self._saved_cookie_for(current):
+            saved = self._save()
+            self._log(f"已先保存当前账号：{saved.account_name}")
+        name = self._next_account_name()
+        self.account_name_var.set(name)
+        self.cookie_text.delete("1.0", "end")
+        if hasattr(self, "cookie_validation_var"):
+            self.cookie_validation_var.set("Cookie 未验证")
+        self._refresh_cookie_placeholder()
+        self._refresh_summary_bar()
+        self._log(f"已新建账号编辑位：{name}；请获取或粘贴 Cookie 后点击保存账号")
 
     def _save_account(self) -> None:
         self._save()
@@ -2458,7 +2486,7 @@ class App(tk.Tk):
         self._refresh_account_selector()
         self._log(f"已删除账号：{name}")
 
-    def _save(self) -> None:
+    def _save(self) -> AppConfig:
         config = self._current_config()
         save_config(config)
         self.config_data = config
@@ -2472,6 +2500,7 @@ class App(tk.Tk):
         self._refresh_account_selector()
         self._refresh_summary_bar()
         self._log("配置已保存")
+        return config
 
     def _start(self) -> None:
         requested_watch_threads = self._safe_int_var(self.watch_threads_var, 1)
@@ -2486,7 +2515,7 @@ class App(tk.Tk):
             messagebox.showwarning("没有勾选账号", "请至少勾选一个要挂的账号（不勾选则不会挂机）。")
             return
 
-        self._save()
+        config = self._save()
         if requested_watch_threads != config.watch_threads:
             self._log(f"后台观看线程数已调整为 {config.watch_threads}，当前版本最多支持 {MAX_WATCH_THREADS} 路")
         if self.watcher and self.watcher.running:
@@ -2509,7 +2538,12 @@ class App(tk.Tk):
         self.watcher = MultiAccountWatcher(account_options, self._thread_log)
         self.watcher.start()
         self.started_at = datetime.now()
-        self._refresh_backend_summary()
+        try:
+            snapshot, summary = self.watcher.get_watch_status_snapshot()
+        except Exception:
+            snapshot, summary = [], "后台计时状态：启动中"
+        self.watch_status_card.update_snapshot(snapshot, summary)
+        self._refresh_backend_summary(snapshot)
         self._set_status("运行中")
         self.elapsed_status_var.set("计时：运行中")
         self.reward_status_var.set("领奖：等待任务")
@@ -2553,7 +2587,7 @@ class App(tk.Tk):
             messagebox.showerror("打开失败", f"无法打开 B 站登录页：{exc}")
             self._log(f"打开 B 站登录页失败：{exc}")
             return
-        self._log(f"已打开 {browser_name}。如果自动获取失败，可以在此页面登录后再尝试自动获取。")
+        self._log(f"已打开 {browser_name} 登录页。手动模式不会自动读取 Cookie；需要自动读取请点击“自动获取 Cookie”。")
 
     def _capture_cookie_worker(self) -> None:
         try:
@@ -2580,12 +2614,17 @@ class App(tk.Tk):
             if self.account_checks and not any(var.get() for var in self.account_checks.values()):
                 messagebox.showwarning("没有勾选账号", "请至少勾选一个要领奖的账号。")
                 return
+            config = self._save()
             account_options = build_account_options(config)
             if not account_options:
                 messagebox.showwarning("没有可用账号", "请至少勾选一个已保存且含 Cookie 的账号。")
                 return
             self.watcher = MultiAccountWatcher(account_options, self._thread_log)
             self._log("尚未挂宝，临时对勾选账号各领取一次已完成奖励")
+        self.reward_status_var.set("领奖：领取中")
+        self.reward_title_var.set("领取中")
+        self.reward_detail_var.set("正在刷新任务进度并提交领取请求")
+        self._progress_log("开始领取奖励")
         self.watcher.claim_completed_tasks()
 
     def _thread_log(self, message: str) -> None:
@@ -2595,7 +2634,7 @@ class App(tk.Tk):
         return parse_task_ids(value)
 
     def _log(self, message: str) -> None:
-        timestamp = datetime.now().strftime("%H:%M:%S")
+        entry = self._format_log_entry(message)
         if hasattr(self, "log_empty_canvas"):
             self.log_empty_canvas.place_forget()
         if hasattr(self, "log_empty_label"):
@@ -2603,10 +2642,19 @@ class App(tk.Tk):
         if hasattr(self, "log_empty_detail_label"):
             self.log_empty_detail_label.place_forget()
         self.log_text.configure(state="normal")
-        self.log_text.insert("end", f"[{timestamp}] {message}\n")
+        self.log_text.insert("end", entry)
         if not hasattr(self, "auto_scroll_var") or bool(self.auto_scroll_var.get()):
             self.log_text.see("end")
         self.log_text.configure(state="disabled")
+
+    def _format_log_entry(self, message: str) -> str:
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        lines = str(message).splitlines() or [""]
+        first = f"[{timestamp}] {lines[0]}"
+        if len(lines) == 1:
+            return first + "\n"
+        continuation = "\n".join(f"           {line}" for line in lines[1:])
+        return f"{first}\n{continuation}\n\n"
 
     def _set_status(self, message: str) -> None:
         self.status_var.set(message)
@@ -2751,7 +2799,44 @@ class App(tk.Tk):
             self.reward_detail_var.set("领取结果已写入运行日志")
             self.reward_status_var.set("领奖：已完成")
             return
-        if "领取失败" in text or "失败" in text:
+        if "开始领取奖励" in text or "正在领取" in text or "领取前刷新任务进度" in text:
+            self.progress_ring.set_state(text="领取", caption="提交中", value=0.86, color=ACCENT)
+            self.progress_title_var.set("领取中")
+            self.progress_detail_var.set("正在刷新任务进度并提交领取请求。")
+            self.reward_title_var.set("领取中")
+            self.reward_detail_var.set("正在刷新任务进度并提交领取请求")
+            self.reward_status_var.set("领奖：领取中")
+            return
+        if "未检测到可领取任务" in text or "暂时无法领取" in text or "缺少主播 UID" in text:
+            self.progress_ring.set_state(text="计时", caption="暂无可领", value=0.38, color=ACCENT)
+            self.progress_title_var.set("暂无可领取")
+            self.progress_detail_var.set("继续累计观看时长，或稍后手动刷新进度。")
+            self.reward_title_var.set("暂无可领")
+            self.reward_detail_var.set("没有检测到已完成奖励")
+            self.reward_status_var.set("领奖：暂无可领")
+            return
+        if "未登录" in text or "登录状态失效" in text or "Cookie 未登录" in text:
+            self.progress_ring.set_state(text="失效", caption="重新获取", value=0.1, color=DANGER)
+            self.progress_title_var.set("账号未登录")
+            self.progress_detail_var.set("请重新自动获取 Cookie 后再开始挂宝。")
+            self.reward_title_var.set("不可领取")
+            self.reward_detail_var.set("账号未登录或 Cookie 已过期")
+            self.reward_status_var.set("领奖：账号未登录")
+            return
+        if "没有读到活动任务列表" in text or "暂时没有读到可跟踪的掉宝任务" in text or "任务进度检查失败" in text:
+            self.progress_ring.set_state(text="等待", caption="任务列表", value=0.16, color=ACCENT)
+            self.progress_title_var.set("等待任务进度")
+            self.progress_detail_var.set("暂时没有读到任务列表，程序会自动重试。")
+            if hasattr(self, "reward_title_var") and self.reward_title_var.get() in {"待检查", "检查中", "等待同步", "--"}:
+                self.reward_title_var.set("待同步")
+                self.reward_detail_var.set("等待 B 站返回任务列表")
+            return
+        if "后台计时" in text and ("暂时失败" in text or "稍后重试" in text):
+            self.progress_ring.set_state(text="计时", caption="重试中", value=0.24, color=ACCENT)
+            self.progress_title_var.set("后台重试中")
+            self.progress_detail_var.set("单路计时暂时失败，后台会自动重试。")
+            return
+        if "领取失败" in text or "守护循环异常" in text:
             self.progress_ring.set_state(text="异常", caption="需要查看", value=0.18, color=DANGER)
             self.progress_title_var.set("需要处理")
             self.progress_detail_var.set("查看运行日志里的失败原因。")
@@ -2784,10 +2869,13 @@ class App(tk.Tk):
         if self.progress_snapshot:
             parts.append("")
             parts.append(self.progress_snapshot)
+        current_content = self.progress_text.get("1.0", "end").strip() if hasattr(self, "progress_text") else ""
+        next_content = "\n".join(parts).strip()
+        if current_content == next_content:
+            return
         self.progress_text.configure(state="normal")
         self.progress_text.delete("1.0", "end")
-        self.progress_text.insert("1.0", "\n".join(parts).strip() + "\n")
-        self.progress_text.yview_moveto(0)
+        self.progress_text.insert("1.0", next_content + "\n")
         self.progress_text.configure(state="disabled")
 
     def _is_progress_message(self, message: str) -> bool:
@@ -2799,6 +2887,8 @@ class App(tk.Tk):
             "已启动 ",
             "已启动：",
             "后台计时",
+            "掉宝任务进度检查失败",
+            "活动任务进度检查失败",
             "开始领取奖励",
             "检测到任务已完成",
             "检测到 ",
@@ -2807,12 +2897,15 @@ class App(tk.Tk):
             "已领取：",
             "已跳过：",
             "领取失败：",
+            "缺少主播 UID",
             "B 站提示操作太快",
             "已有 ",
             "已找到本次活动任务",
             "活动任务已更新",
             "没有读到活动任务列表",
             "当前直播页暂时",
+            "账号未登录",
+            "Cookie 未登录",
             "手动任务",
             "已停止领取",
             "领取前刷新任务进度",
@@ -2848,9 +2941,11 @@ class App(tk.Tk):
                 if account_prefix:
                     snapshot = f"{account_prefix}\n{snapshot}"
                 self._progress_snapshot_log(snapshot)
+                self._log(message)
                 continue
             if self._is_progress_message(message):
                 self._progress_log(message)
+                self._log(message)
                 continue
             self._log(message)
         self.after(200, self._drain_logs)

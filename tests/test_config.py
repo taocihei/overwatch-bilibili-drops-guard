@@ -72,6 +72,32 @@ class ConfigTest(unittest.TestCase):
         self.assertEqual([(item.name, item.cookie) for item in loaded.accounts], [("主账号", "SESSDATA=a;bili_jct=b")])
         self.assertEqual(loaded.config_version, config.CONFIG_VERSION)
 
+    def test_load_config_migrates_missing_active_accounts_to_all_accounts(self) -> None:
+        original_path = config.CONFIG_PATH
+        with tempfile.TemporaryDirectory() as temp_dir:
+            try:
+                config.CONFIG_PATH = Path(temp_dir) / "config.json"
+                config.CONFIG_PATH.write_text(
+                    json.dumps(
+                        {
+                            "accounts": [
+                                {"name": "主账号", "cookie": "SESSDATA=a"},
+                                {"name": "小号", "cookie": "SESSDATA=b"},
+                            ],
+                            "account_name": "主账号",
+                            "config_version": config.CONFIG_VERSION,
+                        },
+                        ensure_ascii=False,
+                    ),
+                    encoding="utf-8",
+                )
+
+                loaded = config.load_config()
+            finally:
+                config.CONFIG_PATH = original_path
+
+        self.assertEqual(loaded.active_accounts, ["主账号", "小号"])
+
     def test_sanitize_config_uses_selected_account_cookie(self) -> None:
         sanitized = config.sanitize_config(
             config.AppConfig(

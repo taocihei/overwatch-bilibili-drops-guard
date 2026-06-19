@@ -64,6 +64,11 @@ class LiveWatcher:
         self._watch_statuses: dict[int, dict[str, Any]] = {}
         self._watch_worker_count = self._normalize_watch_threads(self.options.watch_threads)
         self._last_watch_status_summary = ""
+        self._last_watch_status_log_at = 0.0
+        self._last_room_log_key = ""
+        self._last_room_log_at = 0.0
+        self._last_task_summary = ""
+        self._last_task_summary_at = 0.0
         self._manual_refresh_thread: Optional[threading.Thread] = None
         self._rediscover_thread: Optional[threading.Thread] = None
 
@@ -239,8 +244,10 @@ class LiveWatcher:
         summary, normal_count, problem_count = self._watch_status_summary_info()
         if not force and normal_count < self._watch_worker_count and problem_count == 0:
             return
-        if force or summary != self._last_watch_status_summary:
+        now = time.time()
+        if force or (summary != self._last_watch_status_summary and now - self._last_watch_status_log_at >= 15):
             self._last_watch_status_summary = summary
+            self._last_watch_status_log_at = now
             self.log(summary)
 
     def get_watch_status_snapshot(self) -> tuple[list["WatchWorkerStatus"], str]:
@@ -273,7 +280,13 @@ class LiveWatcher:
             self.log(room.message)
             return
         anchor = f"｜主播 {room.anchor}" if room.anchor else ""
-        self.log(f"房间 {room.room_id}：{room.message}｜{room.title}{anchor}｜人气 {room.online}")
+        message = f"房间 {room.room_id}：{room.message}｜{room.title}{anchor}｜人气 {room.online}"
+        key = f"{room.room_id}|{room.live_status}|{room.title}|{room.anchor}"
+        now = time.time()
+        if key != self._last_room_log_key or now - self._last_room_log_at >= 60:
+            self._last_room_log_key = key
+            self._last_room_log_at = now
+            self.log(message)
 
     def _heartbeat_watch_worker(self, worker_id: int, room: RoomInfo | None) -> None:
         # 先确定本会话的设备身份并构造客户端，让每个 worker 都有独立 cookie 和 buvid。
@@ -512,7 +525,10 @@ class LiveWatcher:
 
     def _record_task_progress(self, progress: dict[str, Any], announce_claimable: bool) -> bool:
         summary = self._summarize_task(progress)
-        if summary:
+        now = time.time()
+        if summary and (summary != self._last_task_summary or now - self._last_task_summary_at >= 60):
+            self._last_task_summary = summary
+            self._last_task_summary_at = now
             self.log(f"掉宝任务：\n{summary}")
 
         discovered_task_ids = self._discover_task_ids(progress)
@@ -776,7 +792,7 @@ class LiveWatcher:
             step_nodes.append((node, current_value, target_value))
             base_names.append(base_name)
 
-        if len(step_nodes) < 3 or len(set(base_names)) != 1:
+        if len(step_nodes) < 2 or len(set(base_names)) != 1:
             return ""
 
         step_nodes.sort(key=lambda item: item[2])
@@ -793,7 +809,9 @@ class LiveWatcher:
             bar = self._task_progress_bar(current_value, target_value, max_target=max_target)
             target_text = self._format_progress_value(target_value).rjust(4)
             state = self._task_step_state_text(node, current_value, target_value)
-            lines.append(f"  {bar} {target_text} 分钟  {state}")
+            award = str(node.get("award_name") or "").strip()
+            award_text = f"  {award}" if award else ""
+            lines.append(f"  {bar} {target_text} 分钟  {state}{award_text}")
         return "\n".join(lines)
 
     def _task_base_name(self, node: dict[str, Any]) -> str:
@@ -882,6 +900,8 @@ class LiveWatcher:
         return sort_index, label
 
     def _task_has_visible_activity(self, node: dict[str, Any]) -> bool:
+        if self._node_received(node):
+            return False
         if self._node_claimable(node):
             return True
         current, _target = self._task_progress_values(node)
@@ -891,6 +911,8 @@ class LiveWatcher:
             return False
 
     def _skip_task_summary_node(self, node: dict[str, Any]) -> bool:
+        if self._node_received(node):
+            return True
         current, target = self._task_progress_values(node)
         try:
             target_value = float(target)

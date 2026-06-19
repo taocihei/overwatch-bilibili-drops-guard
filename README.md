@@ -27,7 +27,7 @@
 3. 下载 `OverwatchBiliDrops-v0.4.3.exe`。
 4. 双击运行。
 5. 如果 Windows 提示“未知发布者”或“Windows 已保护你的电脑”，点击“更多信息”，再点“仍要运行”。这是个人开源软件常见提示，不代表一定有病毒。
-6. 第一次使用先点“获取凭据（本机模式）”，在弹出的独立 Edge/Chrome 窗口里登录 B 站。
+6. 第一次使用先点“自动获取 Cookie”，在弹出的独立 Edge/Chrome 窗口里登录 B 站。
 7. 登录成功后，软件会自动回填 Cookie 并关闭登录窗口。
 8. 可以点“保存账号”保存当前 Cookie，之后用账号下拉切换。
 9. 直播间默认已填好，直接点“开始挂宝”即可。
@@ -37,8 +37,8 @@
 
 ## 界面怎么用
 
-- `打开 B站登录页`：只帮你打开 B 站登录页，不自动读取 Cookie。适合排查浏览器打不开的问题。
-- `获取凭据（本机模式）`：推荐使用。程序会从本机 Edge/Chrome 读取已登录的 B 站凭据并自动回填。
+- `只打开登录页（手动）`：只帮你打开 B 站登录页，不自动读取 Cookie。适合排查浏览器打不开，或手动复制 Cookie。
+- `自动获取 Cookie`：推荐使用。程序会打开独立 Edge/Chrome 自动获取窗口；请在这个窗口登录 B 站，成功后自动回填 Cookie。
 - `账号与并行`：用来选择要挂宝的账号。获取 Cookie 后点“保存账号”，下次可直接勾选多个账号并行。
 - `直播间房号`：默认 `23612045`。也可以粘贴完整直播间链接，保存后会自动变成数字房间号。
 - `观看线程`：用来加速累计观看时长。当前最多支持 `100` 路后台计时；软件不会打开 100 个直播窗口，而是提交后台观看计时请求。不要设置过大，避免账号或网络异常。
@@ -122,15 +122,15 @@ https://api.bilibili.com/x/task/totalv2?task_ids=...
 
 ## 常见问题
 
-### 1. 点“获取凭据（本机模式）”没有读取到 Cookie
+### 1. 点“自动获取 Cookie”没有读取到 Cookie
 
-先点“打开 B站登录页”测试本机 Edge/Chrome 是否能正常打开 B 站。
+先点“只打开登录页（手动）”测试本机 Edge/Chrome 是否能正常打开 B 站。这个手动页面不会自动读取 Cookie。
 
 如果仍然失败，请确认电脑已安装 Edge 或 Chrome，并关闭可能拦截浏览器启动的安全软件。
 
 ### 2. 已经登录 B 站，但软件还是说 Cookie 获取失败
 
-重新点一次“获取凭据（本机模式）”，确认本机 Edge/Chrome 已经登录 B 站后等几秒。
+重新点一次“自动获取 Cookie”，确认是在弹出的独立自动获取窗口里登录 B 站后等几秒。
 
 如果还是失败，可以手动复制 Cookie。Cookie 至少需要包含 `SESSDATA`，领奖通常还需要 `bili_jct`。缺少 `bili_jct` 时，软件会提示重新获取 Cookie。
 
@@ -145,7 +145,7 @@ https://api.bilibili.com/x/task/totalv2?task_ids=...
 每个账号都需要单独获取一次 Cookie。
 
 1. 在“账号名称”里填一个好记的名字，比如 `主账号`。
-2. 点“获取凭据（本机模式）”，读取对应 B 站账号的凭据。
+2. 点“自动获取 Cookie”，在弹出的独立自动获取窗口里登录对应 B 站账号。
 3. 回填成功后点“保存账号”。
 4. 换另一个账号名，重复获取并保存。
 5. 之后在“账号与并行”里勾选要挂宝的账号即可。
@@ -185,7 +185,7 @@ B 站活动页和接口刷新可能有延迟。可以等待 1 到 2 个检查周
 
 这通常表示登录信息过期、不完整，或者 Cookie 里缺少 `bili_jct`。
 
-点“获取凭据（本机模式）”重新登录一次，然后再开始挂宝或点击领取。
+点“自动获取 Cookie”重新登录一次，然后再开始挂宝或点击领取。
 
 ### 9. 领取失败，提示 B 站操作太快
 
@@ -271,7 +271,7 @@ Default room: `23612045`.
 3. Download `OverwatchBiliDrops-v0.4.3.exe`.
 4. Double-click to run it.
 5. If Windows shows an unknown-publisher warning, click `More info`, then `Run anyway`.
-6. Click `获取凭据（本机模式）` after signing in to Bilibili in your local Edge/Chrome browser.
+6. Click `自动获取 Cookie`, then sign in to Bilibili in the independent Edge/Chrome window opened by the app.
 7. The app will fill the Cookie automatically after login.
 8. Click `保存账号` if you want to keep this account profile and switch accounts later.
 9. Keep the default room or enter another live-room ID/URL.
@@ -280,8 +280,8 @@ Default room: `23612045`.
 
 ## Common Problems
 
-- Browser does not open: make sure Edge or Chrome is installed, then try `打开 B站登录页`.
-- Cookie capture fails: sign in again in Edge/Chrome, then click `获取凭据（本机模式）`. Reward claiming usually requires `bili_jct`.
+- Browser does not open: make sure Edge or Chrome is installed, then try `只打开登录页（手动）`.
+- Cookie capture fails: click `自动获取 Cookie` again and sign in inside the independent capture window. Reward claiming usually requires `bili_jct`.
 - Multiple accounts: capture Cookie once for each account, name it, then select accounts in `账号与并行`.
 - Notification URL: optional webhook. The app sends JSON POST messages for important events such as claim success or failure.
 - Progress does not change: wait for one or two check intervals and confirm the live room is active.

@@ -9,7 +9,6 @@ from dataclasses import dataclass
 from importlib import import_module
 from pathlib import Path
 from typing import Any, Callable
-from uuid import uuid4
 
 from .config import APP_DIR
 
@@ -63,11 +62,8 @@ def capture_bilibili_cookie(timeout_seconds: int = 180, log: CookieLog | None = 
         driver = None
         attached_browser: AttachedBrowser | None = None
         try:
-            options = options_factory()
-            options.add_argument("--disable-blink-features=AutomationControlled")
-            options.add_argument("--disable-infobars")
-            options.add_argument("--start-maximized")
-            _log(log, f"正在拉起独立 {browser_name} 登录窗口")
+            options = _new_browser_options(options_factory)
+            _log(log, f"正在拉起独立 {browser_name} 自动获取窗口")
             attached_browser = _launch_browser_for_attach(browser_name, options, log)
             if not attached_browser:
                 raise RuntimeError(f"未找到本机 {browser_name} 浏览器")
@@ -87,9 +83,30 @@ def capture_bilibili_cookie(timeout_seconds: int = 180, log: CookieLog | None = 
             if attached_browser is not None:
                 _close_attached_browser(attached_browser)
 
+        driver = None
+        try:
+            driver_factory = _load_webdriver_class(driver_module)
+            options = _new_browser_options(options_factory)
+            profile_dir = _capture_profile_dir(browser_name)
+            profile_dir.mkdir(parents=True, exist_ok=True)
+            options.add_argument(f"--user-data-dir={profile_dir}")
+            _log(log, f"正在使用 {browser_name} 备用自动获取模式")
+            driver = driver_factory(options=options)
+            return _wait_for_cookie(driver, browser_name, timeout_seconds, log)
+        except WebDriverException as exc:
+            errors.append(f"{browser_name} 备用模式启动失败：{exc.msg or exc}")
+        except Exception as exc:
+            errors.append(f"{browser_name} 备用模式获取失败：{exc}")
+        finally:
+            if driver is not None:
+                try:
+                    driver.quit()
+                except Exception:
+                    pass
+
     try:
         browser_name = open_bilibili_login_page(log)
-        errors.append(f"已为你打开 {browser_name} 登录页，但自动读取 Cookie 失败")
+        errors.append(f"已为你打开 {browser_name} 登录页；该手动页面不会自动读取 Cookie，请手动复制 Cookie 或重试自动获取")
     except Exception as exc:
         errors.append(f"兜底打开浏览器失败：{exc}")
     raise RuntimeError("；".join(errors) or "未能启动 Edge/Chrome 自动获取 Cookie")
@@ -174,15 +191,19 @@ def _launch_browser_for_attach(browser_name: str, options: Any, log: CookieLog |
         return None
 
     port = _find_free_port()
-    profile_dir = APP_DIR / "cookie-browser-profile" / browser_name.lower() / uuid4().hex
+    profile_dir = _capture_profile_dir(browser_name)
     profile_dir.mkdir(parents=True, exist_ok=True)
     process = subprocess.Popen(
         [
             browser,
             f"--remote-debugging-port={port}",
             f"--user-data-dir={profile_dir}",
+            "--remote-allow-origins=*",
+            "--disable-blink-features=AutomationControlled",
+            "--disable-infobars",
             "--no-first-run",
             "--no-default-browser-check",
+            "--start-maximized",
             BILIBILI_LOGIN_URL,
         ],
         stdout=subprocess.DEVNULL,
@@ -197,6 +218,22 @@ def _launch_browser_for_attach(browser_name: str, options: Any, log: CookieLog |
         raise RuntimeError(f"{browser_name} 已启动但调试端口未就绪，请重试或使用“只打开登录页”")
     _log(log, f"已拉起 {browser_name} 的 B 站登录页，正在连接浏览器读取 Cookie")
     return AttachedBrowser(process=process, profile_dir=profile_dir)
+
+
+def _new_browser_options(options_factory: Callable[[], Any]) -> Any:
+    options = options_factory()
+    options.add_argument("--disable-blink-features=AutomationControlled")
+    options.add_argument("--disable-infobars")
+    options.add_argument("--no-first-run")
+    options.add_argument("--no-default-browser-check")
+    options.add_argument("--remote-allow-origins=*")
+    options.add_argument("--start-maximized")
+    return options
+
+
+def _capture_profile_dir(browser_name: str) -> Path:
+    safe_name = "".join(ch for ch in browser_name.lower() if ch.isalnum() or ch in {"-", "_"}) or "browser"
+    return APP_DIR / "cookie-browser-profile" / safe_name / "profile"
 
 
 def _close_attached_browser(attached_browser: AttachedBrowser) -> None:

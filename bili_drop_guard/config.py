@@ -62,6 +62,12 @@ def load_config() -> AppConfig:
             data["check_interval"] = DEFAULT_CHECK_INTERVAL
         if config_version < 3 and data.get("cookie") and not data.get("accounts"):
             data["accounts"] = [{"name": data.get("account_name") or "默认账号", "cookie": data.get("cookie")}]
+        if "active_accounts" not in data and data.get("accounts"):
+            data["active_accounts"] = [
+                str(item.get("name") or "").strip()
+                for item in data.get("accounts", [])
+                if isinstance(item, dict) and str(item.get("name") or "").strip()
+            ]
         data["config_version"] = CONFIG_VERSION
         return sanitize_config(AppConfig(**{**asdict(AppConfig()), **data}))
     except Exception:

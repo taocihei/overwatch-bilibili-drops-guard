@@ -626,8 +626,8 @@ class LiveWatcherTest(unittest.TestCase):
 
         self.assertIn("还差 48 分钟", summary)
         self.assertIn("✓ 待领取", summary)
-        self.assertIn("✓ 已领取", summary)
         self.assertIn("观看守望先锋电竞直播间（当前：90 分钟）", summary)
+        self.assertNotIn("30 分钟  ✓ 已领取", summary)
         self.assertNotIn("状态=", summary)
 
     def test_task_summary_compacts_watch_steps_like_user_progress(self) -> None:
@@ -661,10 +661,45 @@ class LiveWatcherTest(unittest.TestCase):
         summary = live_watcher._summarize_task(progress)
 
         self.assertIn("观看守望先锋电竞直播间（当前：60 分钟）", summary)
-        self.assertIn("30 分钟  ✓ 已领取", summary)
+        self.assertNotIn("30 分钟  ✓ 已领取", summary)
         self.assertIn("60 分钟  ✓ 待领取", summary)
         self.assertIn("90 分钟  还差 48 分钟", summary)
         self.assertNotIn("观看守望先锋电竞直播间30分钟：", summary)
+
+    def test_task_summary_ignores_all_received_watch_steps(self) -> None:
+        live_watcher = LiveWatcher(WatchOptions(cookie="a=b", room_id="1"), lambda _message: None)
+        progress = {
+            "list": [
+                {
+                    "task_id": "activity-30",
+                    "task_name": "观看守望先锋电竞直播间30分钟",
+                    "group_label": "5月23日",
+                    "task_status": 3,
+                    "indicators": [{"cur_value": 30, "limit": 30}],
+                },
+                {
+                    "task_id": "activity-60",
+                    "task_name": "观看守望先锋电竞直播间60分钟",
+                    "group_label": "5月23日",
+                    "task_status": 3,
+                    "indicators": [{"cur_value": 60, "limit": 60}],
+                },
+            ]
+        }
+
+        summary = live_watcher._summarize_task(progress)
+
+        self.assertEqual(summary, "")
+
+    def test_record_task_progress_deduplicates_unchanged_summary(self) -> None:
+        logs: list[str] = []
+        live_watcher = LiveWatcher(WatchOptions(cookie="a=b", room_id="1"), logs.append)
+        progress = {"tasks": [{"task_id": "task-a", "name": "观看 30 分钟", "current": 10, "target": 30}]}
+
+        live_watcher._record_task_progress(progress, announce_claimable=False)
+        live_watcher._record_task_progress(progress, announce_claimable=False)
+
+        self.assertEqual(sum(1 for message in logs if message.startswith("掉宝任务：")), 1)
 
     def test_task_summary_focuses_today_activity_group(self) -> None:
         live_watcher = LiveWatcher(WatchOptions(cookie="a=b", room_id="1"), lambda _message: None)

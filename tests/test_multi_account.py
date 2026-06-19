@@ -20,15 +20,20 @@ class BuildAccountOptionsTest(unittest.TestCase):
             task_ids="",
         )
 
-    def test_empty_active_means_all_accounts(self) -> None:
+    def test_empty_active_means_no_accounts(self) -> None:
         pairs = build_account_options(self._config([]))
         names = [name for name, _opts in pairs]
-        self.assertEqual(names, ["主号", "小号"])
+        self.assertEqual(names, [])
 
     def test_only_selected_accounts_included(self) -> None:
         pairs = build_account_options(self._config(["小号"]))
         names = [name for name, _opts in pairs]
         self.assertEqual(names, ["小号"])
+
+    def test_two_active_accounts_are_both_included(self) -> None:
+        pairs = build_account_options(self._config(["主号", "小号"]))
+        names = [name for name, _opts in pairs]
+        self.assertEqual(names, ["主号", "小号"])
 
     def test_each_option_uses_account_cookie_and_shared_settings(self) -> None:
         pairs = build_account_options(self._config(["主号"]))

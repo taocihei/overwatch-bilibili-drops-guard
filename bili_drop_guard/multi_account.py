@@ -12,11 +12,13 @@ ACCOUNT_START_STAGGER_SECONDS = 2.0
 
 
 def build_account_options(config: AppConfig) -> list[tuple[str, WatchOptions]]:
-    """把配置展开成「每个勾选账号一组 WatchOptions」。active_accounts 为空视为全选。"""
-    active = list(config.active_accounts or [])
+    """把配置展开成「每个勾选账号一组 WatchOptions」。active_accounts 为空表示未选择。"""
+    active = set(config.active_accounts or [])
+    if not active:
+        return []
     pairs: list[tuple[str, WatchOptions]] = []
     for account in config.accounts:
-        if active and account.name not in active:
+        if account.name not in active:
             continue
         if not account.cookie:
             continue
@@ -100,45 +102,38 @@ class MultiAccountWatcher:
 
     def get_watch_status_snapshot(self) -> tuple[list[WatchWorkerStatus], str]:
         rows: list[WatchWorkerStatus] = []
-        normal_accounts = 0
-        for index, (name, child) in enumerate(self._children, start=1):
-            child_summary = ""
-            child_state = "启动中"
-            child_interval = None
+        normal_routes = 0
+        total_routes = 0
+        next_intervals: list[int] = []
+        for _account_index, (name, child) in enumerate(self._children, start=1):
             getter = getattr(child, "get_watch_status_snapshot", None)
             if callable(getter):
                 try:
                     child_rows, child_summary = getter()
-                    normal = sum(1 for r in child_rows if r.state == "正常")
-                    total = len(child_rows)
-                    if normal and normal == total:
-                        child_state = "正常"
-                    elif normal:
-                        child_state = "计时中"
-                    elif any(r.state == "等待开播" for r in child_rows):
-                        child_state = "等待开播"
-                    elif any(r.state in {"启动中", "计时中"} for r in child_rows):
-                        child_state = "计时中"
-                    elif total:
-                        child_state = "暂时失败"
-                    intervals = [r.interval for r in child_rows if r.interval is not None]
-                    child_interval = min(intervals) if intervals else None
+                    del child_summary
                 except Exception:
                     # 单账号状态读取异常不应拖垮整体状态展示
-                    child_state = "启动中"
-                    child_summary = ""
-                    child_interval = None
-            if child_state == "正常":
-                normal_accounts += 1
-            detail = child_summary.replace("后台计时状态：", "").strip()
-            rows.append(WatchWorkerStatus(
-                worker_id=index,
-                state=child_state,
-                interval=child_interval,
-                message=f"{name}：{detail}" if detail else name,
-            ))
-        total_accounts = len(self._children)
-        summary = f"多账号并行：{normal_accounts}/{total_accounts} 账号正常运行"
+                    child_rows = []
+            if not child_rows:
+                child_rows = [WatchWorkerStatus(worker_id=1, state="启动中", interval=None, message=name)]
+            for child_row in child_rows:
+                total_routes += 1
+                if child_row.state == "正常":
+                    normal_routes += 1
+                if child_row.interval is not None:
+                    next_intervals.append(child_row.interval)
+                message_parts = [name]
+                if child_row.message:
+                    message_parts.append(child_row.message)
+                rows.append(WatchWorkerStatus(
+                    worker_id=total_routes,
+                    state=child_row.state,
+                    interval=child_row.interval,
+                    message="：".join(message_parts),
+                ))
+        summary = f"多账号并行：{len(self._children)} 个账号，后台计时状态：{normal_routes}/{total_routes} 路正常"
+        if next_intervals:
+            summary += f"，下一次约 {min(next_intervals)} 秒后"
         return rows, summary
 
     def claim_completed_tasks(self) -> None:
