@@ -535,6 +535,10 @@ class LiveWatcher:
             if self._should_defer_zero_task_summary(progress, claimable_tasks, progress_score, now):
                 self._pending_zero_task_summary = summary
                 self._pending_zero_task_summary_at = self._pending_zero_task_summary_at or now
+                if not self._last_task_summary:
+                    self._last_task_summary = "等待真实进度"
+                    self._last_task_summary_at = now
+                    self.log("活动任务已识别，正在等待 B 站返回真实进度")
             elif summary != self._last_task_summary or now - self._last_task_summary_at >= 60:
                 self._pending_zero_task_summary = ""
                 self._pending_zero_task_summary_at = 0.0

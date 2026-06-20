@@ -219,6 +219,15 @@ class ProgressVisualRoutingTest(unittest.TestCase):
         self.assertEqual(app.reward_title_var.get(), "暂无可领")
         self.assertEqual(app.reward_status_var.get(), "领奖：暂无可领")
 
+    def test_activity_task_detected_updates_progress_card(self) -> None:
+        app = self._app()
+
+        gui.App._sync_progress_visual(app, "活动任务已识别，正在等待 B 站返回真实进度")
+
+        self.assertEqual(app.progress_title_var.get(), "任务已识别")
+        self.assertEqual(app.reward_title_var.get(), "检查中")
+        self.assertEqual(app.reward_status_var.get(), "领奖：检查中")
+
     def test_skipped_claim_updates_reward_card(self) -> None:
         app = self._app()
 

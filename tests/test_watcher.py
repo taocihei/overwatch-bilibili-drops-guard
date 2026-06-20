@@ -724,6 +724,7 @@ class LiveWatcherTest(unittest.TestCase):
         self.assertEqual(len(task_logs), 1)
         self.assertIn("257/300 分钟", task_logs[0])
         self.assertNotIn("0/30 分钟", task_logs[0])
+        self.assertIn("活动任务已识别，正在等待 B 站返回真实进度", logs)
 
     def test_task_summary_focuses_today_activity_group(self) -> None:
         live_watcher = LiveWatcher(WatchOptions(cookie="a=b", room_id="1"), lambda _message: None)
