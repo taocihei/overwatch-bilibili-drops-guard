@@ -202,6 +202,31 @@ class ProgressVisualRoutingTest(unittest.TestCase):
         self.assertEqual(app.reward_title_var.get(), "领取失败")
         self.assertEqual(app.reward_status_var.get(), "领奖：失败")
 
+    def test_claimable_message_updates_reward_card(self) -> None:
+        app = self._app()
+
+        gui.App._sync_progress_visual(app, "检测到 4 个奖励可以领取，正在排队领取")
+
+        self.assertEqual(app.reward_title_var.get(), "4 次")
+        self.assertEqual(app.reward_status_var.get(), "领奖：4 次可领")
+        self.assertEqual(app.progress_title_var.get(), "4 个奖励可领取")
+
+    def test_no_claimable_after_refresh_updates_reward_card(self) -> None:
+        app = self._app()
+
+        gui.App._sync_progress_visual(app, "已刷新任务进度，但仍未检测到可领取任务；如果 B 站页面显示已完成，请稍后再点领取")
+
+        self.assertEqual(app.reward_title_var.get(), "暂无可领")
+        self.assertEqual(app.reward_status_var.get(), "领奖：暂无可领")
+
+    def test_skipped_claim_updates_reward_card(self) -> None:
+        app = self._app()
+
+        gui.App._sync_progress_visual(app, "已跳过：第 1 组｜电竞补给 已经领取过")
+
+        self.assertEqual(app.reward_title_var.get(), "已跳过")
+        self.assertEqual(app.reward_status_var.get(), "领奖：已完成")
+
 
 class LogDrainRoutingTest(unittest.TestCase):
     def _app(self) -> gui.App:

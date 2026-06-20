@@ -69,6 +69,9 @@ class LiveWatcher:
         self._last_room_log_at = 0.0
         self._last_task_summary = ""
         self._last_task_summary_at = 0.0
+        self._last_task_progress_score = 0.0
+        self._pending_zero_task_summary = ""
+        self._pending_zero_task_summary_at = 0.0
         self._manual_refresh_thread: Optional[threading.Thread] = None
         self._rediscover_thread: Optional[threading.Thread] = None
 
@@ -526,10 +529,19 @@ class LiveWatcher:
     def _record_task_progress(self, progress: dict[str, Any], announce_claimable: bool) -> bool:
         summary = self._summarize_task(progress)
         now = time.time()
-        if summary and (summary != self._last_task_summary or now - self._last_task_summary_at >= 60):
-            self._last_task_summary = summary
-            self._last_task_summary_at = now
-            self.log(f"掉宝任务：\n{summary}")
+        claimable_tasks = self._find_claimable_task_refs(progress)
+        if summary:
+            progress_score = self._task_summary_progress_score(progress)
+            if self._should_defer_zero_task_summary(progress, claimable_tasks, progress_score, now):
+                self._pending_zero_task_summary = summary
+                self._pending_zero_task_summary_at = self._pending_zero_task_summary_at or now
+            elif summary != self._last_task_summary or now - self._last_task_summary_at >= 60:
+                self._pending_zero_task_summary = ""
+                self._pending_zero_task_summary_at = 0.0
+                self._last_task_summary = summary
+                self._last_task_summary_at = now
+                self._last_task_progress_score = progress_score
+                self.log(f"掉宝任务：\n{summary}")
 
         discovered_task_ids = self._discover_task_ids(progress)
         if discovered_task_ids:
@@ -539,7 +551,6 @@ class LiveWatcher:
             if new_task_ids:
                 self.log("已自动找到任务列表，无需手动填写")
 
-        claimable_tasks = self._find_claimable_task_refs(progress)
         if not claimable_tasks:
             return False
 
@@ -554,6 +565,44 @@ class LiveWatcher:
         if announce_claimable:
             self.log(f"检测到 {len(named_tasks)} 个奖励可以领取，正在排队领取")
         return True
+
+    def _should_defer_zero_task_summary(
+        self,
+        progress: dict[str, Any],
+        claimable_tasks: list[tuple[str, str]],
+        progress_score: float,
+        now: float,
+    ) -> bool:
+        """Avoid flashing B 站启动期的全 0 任务快照，再等真实进度接口一次。"""
+        if claimable_tasks or progress_score > 0:
+            return False
+        visible_count = self._task_summary_visible_count(progress)
+        if visible_count < 5:
+            return False
+        if self._last_task_progress_score > 0:
+            return True
+        if not self._pending_zero_task_summary_at:
+            return True
+        return now - self._pending_zero_task_summary_at < 20
+
+    def _task_summary_visible_count(self, progress: dict[str, Any]) -> int:
+        nodes = sorted(self._iter_task_nodes(progress), key=self._task_sort_key)
+        nodes, _group_label, _hidden_count = self._focus_task_nodes(nodes)
+        return sum(1 for node in nodes if not self._skip_task_summary_node(node))
+
+    def _task_summary_progress_score(self, progress: dict[str, Any]) -> float:
+        score = 0.0
+        nodes = sorted(self._iter_task_nodes(progress), key=self._task_sort_key)
+        nodes, _group_label, _hidden_count = self._focus_task_nodes(nodes)
+        for node in nodes:
+            if self._skip_task_summary_node(node):
+                continue
+            current, _target = self._task_progress_values(node)
+            try:
+                score = max(score, float(current))
+            except (TypeError, ValueError):
+                continue
+        return score
 
     def _check_explicit_task_ids(self, up_id: int) -> bool:
         with self._claim_lock:

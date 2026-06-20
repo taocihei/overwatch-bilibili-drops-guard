@@ -921,8 +921,8 @@ class App(tk.Tk):
     def __init__(self, *, preview_mode: bool = False) -> None:
         super().__init__()
         self.title(f"守望先锋 B 站直播挂宝 v{__version__}")
-        self.geometry("1360x960")
-        self.minsize(1180, 880)
+        self.geometry("1280x840")
+        self.minsize(980, 720)
         self.configure(bg=APP_BG)
         self._set_window_icon()
 
@@ -1064,12 +1064,12 @@ class App(tk.Tk):
         commandbar = tk.Frame(self, bg=HEADER_BG, height=142, highlightthickness=0, borderwidth=0)
         commandbar.grid(row=0, column=0, sticky="ew")
         commandbar.grid_propagate(False)
-        commandbar.columnconfigure(0, weight=0, minsize=346)
+        commandbar.columnconfigure(0, weight=0, minsize=300)
         commandbar.columnconfigure(1, weight=1)
         commandbar.columnconfigure(2, weight=0)
 
         brand = tk.Frame(commandbar, bg=HEADER_BG, highlightthickness=0, borderwidth=0)
-        brand.grid(row=0, column=0, sticky="w", padx=(28, 22), pady=(24, 0))
+        brand.grid(row=0, column=0, sticky="w", padx=(22, 16), pady=(24, 0))
         logo = tk.Canvas(brand, width=44, height=44, bg=HEADER_BG, highlightthickness=0, borderwidth=0)
         logo.grid(row=0, column=0, rowspan=2, sticky="w", padx=(0, 12))
         self._draw_brand_logo(logo)
@@ -1081,11 +1081,11 @@ class App(tk.Tk):
 
         controls = tk.Frame(commandbar, bg=HEADER_BG, highlightthickness=0, borderwidth=0)
         controls.grid(row=0, column=1, sticky="ew", pady=(22, 0))
-        controls.columnconfigure(0, weight=1, minsize=390)
-        controls.columnconfigure(1, weight=0, minsize=116)
-        controls.columnconfigure(2, weight=0, minsize=96)
-        controls.columnconfigure(3, weight=0, minsize=250)
-        controls.columnconfigure(4, weight=0, minsize=96)
+        controls.columnconfigure(0, weight=1, minsize=300)
+        controls.columnconfigure(1, weight=0, minsize=102)
+        controls.columnconfigure(2, weight=0, minsize=86)
+        controls.columnconfigure(3, weight=0, minsize=220)
+        controls.columnconfigure(4, weight=0, minsize=86)
         controls.rowconfigure(0, minsize=22)
         controls.rowconfigure(1, minsize=46)
 
@@ -1132,16 +1132,16 @@ class App(tk.Tk):
 
         body = tk.Frame(self, bg=APP_BG, highlightthickness=0, borderwidth=0)
         body.grid(row=1, column=0, sticky="nsew")
-        body.columnconfigure(0, weight=0, minsize=470)
-        body.columnconfigure(1, weight=1)
+        body.columnconfigure(0, weight=1, minsize=360)
+        body.columnconfigure(1, weight=2, minsize=560)
         body.rowconfigure(0, weight=1)
 
         side = tk.Frame(body, bg=APP_BG, highlightthickness=0, borderwidth=0)
-        side.grid(row=0, column=0, sticky="nsew", padx=(22, 10), pady=(0, 16))
+        side.grid(row=0, column=0, sticky="nsew", padx=(18, 8), pady=(0, 14))
         side.columnconfigure(0, weight=1)
 
         work = tk.Frame(body, bg=APP_BG, highlightthickness=0, borderwidth=0)
-        work.grid(row=0, column=1, sticky="nsew", padx=(0, 22), pady=(0, 16))
+        work.grid(row=0, column=1, sticky="nsew", padx=(0, 18), pady=(0, 14))
         work.columnconfigure(0, weight=1)
         work.rowconfigure(0, weight=1)
 
@@ -1182,7 +1182,7 @@ class App(tk.Tk):
     def _build_settings_workspace(self, parent: ttk.Frame) -> None:
         parent.columnconfigure(0, weight=1)
 
-        credential_panel = RoundedPanel(parent, fill=GLASS, background=APP_BG, radius=18, padding=(24, 18), min_height=742, outline=SUBTLE_OUTLINE, shadow=True, auto_height=False)
+        credential_panel = RoundedPanel(parent, fill=GLASS, background=APP_BG, radius=18, padding=(20, 16), min_height=640, outline=SUBTLE_OUTLINE, shadow=True, auto_height=False)
         credential_panel.grid(row=0, column=0, sticky="nsew")
         cookie = credential_panel.inner
         cookie.columnconfigure(0, weight=1)
@@ -1791,7 +1791,7 @@ class App(tk.Tk):
         monitor = tk.Frame(parent, bg=APP_BG, highlightthickness=0, borderwidth=0)
         monitor.grid(row=0, column=0, sticky="nsew")
         monitor.columnconfigure(0, weight=1)
-        monitor.rowconfigure(0, weight=0, minsize=242)
+        monitor.rowconfigure(0, weight=0, minsize=214)
         monitor.rowconfigure(1, weight=1)
 
         top = tk.Frame(monitor, bg=APP_BG, highlightthickness=0, borderwidth=0)
@@ -1799,13 +1799,13 @@ class App(tk.Tk):
         top.columnconfigure(0, weight=1)
         top.rowconfigure(0, weight=1)
 
-        overview_panel = RoundedPanel(top, fill=GLASS, background=APP_BG, radius=20, padding=(22, 16), min_height=230, outline=SUBTLE_OUTLINE, shadow=True, auto_height=False)
+        overview_panel = RoundedPanel(top, fill=GLASS, background=APP_BG, radius=20, padding=(18, 14), min_height=204, outline=SUBTLE_OUTLINE, shadow=True, auto_height=False)
         overview_panel.grid(row=0, column=0, sticky="nsew")
         overview = overview_panel.inner
         overview.columnconfigure((0, 1, 2), weight=1, uniform="overview")
         overview.rowconfigure(0, weight=1)
 
-        progress_cell = RoundedPanel(overview, fill=SURFACE, background=GLASS, radius=16, padding=(18, 16), min_height=194, outline=SUBTLE_OUTLINE, shadow=False, auto_height=False)
+        progress_cell = RoundedPanel(overview, fill=SURFACE, background=GLASS, radius=16, padding=(14, 14), min_height=176, outline=SUBTLE_OUTLINE, shadow=False, auto_height=False)
         progress_cell.grid(row=0, column=0, sticky="nsew", padx=(0, 12))
         progress_pane = progress_cell.inner
         progress_pane.columnconfigure(0, weight=1)
@@ -1813,15 +1813,15 @@ class App(tk.Tk):
         progress_body = tk.Frame(progress_pane, bg=SURFACE, highlightthickness=0, borderwidth=0)
         progress_body.grid(row=1, column=0, sticky="nsew", pady=(16, 0))
         progress_body.columnconfigure(1, weight=1)
-        self.progress_ring = ProgressRing(progress_body, text="待启动", caption="点开始挂宝", background=SURFACE, size=100)
-        self.progress_ring.grid(row=0, column=0, rowspan=2, sticky="w", padx=(0, 18))
-        tk.Label(progress_body, textvariable=self.progress_title_var, bg=SURFACE, fg=TEXT, font=("Microsoft YaHei UI", 16, "bold")).grid(row=0, column=1, sticky="sw", pady=(8, 6))
-        tk.Label(progress_body, textvariable=self.progress_detail_var, bg=SURFACE, fg=MUTED, font=("Microsoft YaHei UI", 9), wraplength=150, justify="left").grid(row=1, column=1, sticky="nw")
+        self.progress_ring = ProgressRing(progress_body, text="待启动", caption="点开始挂宝", background=SURFACE, size=86)
+        self.progress_ring.grid(row=0, column=0, rowspan=2, sticky="w", padx=(0, 14))
+        tk.Label(progress_body, textvariable=self.progress_title_var, bg=SURFACE, fg=TEXT, font=("Microsoft YaHei UI", 15, "bold")).grid(row=0, column=1, sticky="sw", pady=(6, 5))
+        tk.Label(progress_body, textvariable=self.progress_detail_var, bg=SURFACE, fg=MUTED, font=("Microsoft YaHei UI", 9), wraplength=135, justify="left").grid(row=1, column=1, sticky="nw")
         self.progress_text = tk.Text(progress_pane, height=1, wrap="word", state="disabled", borderwidth=0, relief="flat", bg=SURFACE, fg=SURFACE, insertbackground=SURFACE, highlightthickness=0, font=("Microsoft YaHei UI", 1))
         self.progress_text.grid(row=2, column=0, sticky="ew")
         self._progress_log("等待任务检查。开始挂宝后，这里会显示本次可挂任务、剩余分钟和领取状态。")
 
-        status_cell = RoundedPanel(overview, fill=SURFACE, background=GLASS, radius=16, padding=(18, 16), min_height=194, outline=SUBTLE_OUTLINE, shadow=False, auto_height=False)
+        status_cell = RoundedPanel(overview, fill=SURFACE, background=GLASS, radius=16, padding=(14, 14), min_height=176, outline=SUBTLE_OUTLINE, shadow=False, auto_height=False)
         status_cell.grid(row=0, column=1, sticky="nsew", padx=12)
         status_pane = status_cell.inner
         status_pane.columnconfigure(0, weight=1)
@@ -1841,15 +1841,15 @@ class App(tk.Tk):
         self.watch_status_card = WatchStatusCard(status_pane, background=SURFACE)
         self.watch_status_card.grid(row=2, column=0, sticky="ew", pady=(8, 0))
 
-        reward_cell = RoundedPanel(overview, fill=SURFACE, background=GLASS, radius=16, padding=(18, 16), min_height=194, outline=SUBTLE_OUTLINE, shadow=False, auto_height=False)
+        reward_cell = RoundedPanel(overview, fill=SURFACE, background=GLASS, radius=16, padding=(14, 14), min_height=176, outline=SUBTLE_OUTLINE, shadow=False, auto_height=False)
         reward_cell.grid(row=0, column=2, sticky="nsew", padx=(12, 0))
         reward = reward_cell.inner
         reward.columnconfigure(0, weight=1)
         self._section_title(reward, "领取结果", "reward", background=SURFACE).grid(row=0, column=0, sticky="w")
-        tk.Label(reward, textvariable=self.reward_title_var, bg=SURFACE, fg=TEXT, font=("Microsoft YaHei UI", 16, "bold")).grid(row=1, column=0, sticky="ew", pady=(34, 8))
-        tk.Label(reward, textvariable=self.reward_detail_var, bg=SURFACE, fg=MUTED, font=("Microsoft YaHei UI", 9), wraplength=210, justify="center").grid(row=2, column=0, sticky="ew")
+        tk.Label(reward, textvariable=self.reward_title_var, bg=SURFACE, fg=TEXT, font=("Microsoft YaHei UI", 15, "bold")).grid(row=1, column=0, sticky="ew", pady=(26, 8))
+        tk.Label(reward, textvariable=self.reward_detail_var, bg=SURFACE, fg=MUTED, font=("Microsoft YaHei UI", 9), wraplength=180, justify="center").grid(row=2, column=0, sticky="ew")
 
-        log_panel = RoundedPanel(monitor, fill=GLASS, background=APP_BG, radius=18, padding=(24, 20), min_height=532, outline=SUBTLE_OUTLINE, shadow=True, auto_height=False)
+        log_panel = RoundedPanel(monitor, fill=GLASS, background=APP_BG, radius=18, padding=(20, 16), min_height=392, outline=SUBTLE_OUTLINE, shadow=True, auto_height=False)
         log_panel.grid(row=1, column=0, sticky="nsew")
         log_pane = log_panel.inner
         log_pane.columnconfigure(0, weight=1)
@@ -1876,11 +1876,11 @@ class App(tk.Tk):
         LabelButton(tools, "清空日志", self._clear_log, fill=SECONDARY, foreground=MUTED, active_fill=SECONDARY_ACTIVE, height=34, width=88, font=("Microsoft YaHei UI", 8, "bold"), radius=11, outline=SUBTLE_OUTLINE).pack(side="left", padx=(0, 10))
         LabelButton(tools, "复制日志", self._copy_log, fill=SECONDARY, foreground=MUTED, active_fill=SECONDARY_ACTIVE, height=34, width=88, font=("Microsoft YaHei UI", 8, "bold"), radius=11, outline=SUBTLE_OUTLINE).pack(side="left")
 
-        log_wrap = RoundedPanel(log_pane, fill=FIELD_BG, background=GLASS, radius=14, padding=(5, 5), min_height=452, outline=SUBTLE_OUTLINE, shadow=False, auto_height=False)
+        log_wrap = RoundedPanel(log_pane, fill=FIELD_BG, background=GLASS, radius=14, padding=(5, 5), min_height=312, outline=SUBTLE_OUTLINE, shadow=False, auto_height=False)
         log_wrap.grid(row=1, column=0, sticky="nsew")
         log_wrap.inner.columnconfigure(0, weight=1)
         log_wrap.inner.rowconfigure(0, weight=1)
-        self.log_text = tk.Text(log_wrap.inner, height=24, wrap="word", state="disabled", borderwidth=0, relief="flat", bg=FIELD_BG, fg=TEXT, insertbackground=TEXT, highlightthickness=0, padx=18, pady=14, font=("Consolas", 10))
+        self.log_text = tk.Text(log_wrap.inner, height=14, wrap="word", state="disabled", borderwidth=0, relief="flat", bg=FIELD_BG, fg=TEXT, insertbackground=TEXT, highlightthickness=0, padx=16, pady=12, font=("Consolas", 10))
         self.log_text.grid(row=0, column=0, sticky="nsew")
         self.log_scrollbar = ttk.Scrollbar(log_wrap.inner, orient="vertical", command=self.log_text.yview, style="Vertical.TScrollbar")
         self.log_scrollbar.grid(row=0, column=1, sticky="ns", padx=(4, 0))
@@ -2774,6 +2774,10 @@ class App(tk.Tk):
             self.reward_title_var.set(f"{count} 次")
             self.reward_detail_var.set("当前有奖励可领取")
             self.reward_status_var.set(f"领奖：{count} 次可领")
+            self.progress_ring.set_state(text="可领", caption="等待领取", value=1.0, color=SUCCESS)
+            self.progress_title_var.set(f"{count} 个奖励可领取")
+            self.progress_detail_var.set("自动领取开启时会自动提交，也可以手动点击领取。")
+            return
         progress_match = re.search(r"(\d+(?:\.\d+)?)\s*/\s*(\d+(?:\.\d+)?)\s*分钟", text)
         if progress_match:
             current = float(progress_match.group(1))
@@ -2791,13 +2795,27 @@ class App(tk.Tk):
             self.progress_title_var.set(f"还差 {self._format_progress_number(remaining)} 分钟")
             self.progress_detail_var.set("后台正在累计观看时长。")
             return
-        if "已领取" in text or "领取成功" in text:
+        if "已领取" in text or "已跳过" in text or "领取成功" in text:
             self.progress_ring.set_state(text="完成", caption="奖励状态", value=1.0, color=SUCCESS)
-            self.progress_title_var.set("已领取")
-            self.progress_detail_var.set("奖励领取完成，后续日志会继续记录。")
-            self.reward_title_var.set("已领取")
-            self.reward_detail_var.set("领取结果已写入运行日志")
+            if "已跳过" in text:
+                self.progress_title_var.set("已跳过")
+                self.progress_detail_var.set("该奖励已经处理过，后续日志会继续记录。")
+                self.reward_title_var.set("已跳过")
+                self.reward_detail_var.set("该奖励此前已经领取或处理")
+            else:
+                self.progress_title_var.set("已领取")
+                self.progress_detail_var.set("奖励领取完成，后续日志会继续记录。")
+                self.reward_title_var.set("已领取")
+                self.reward_detail_var.set("领取结果已写入运行日志")
             self.reward_status_var.set("领奖：已完成")
+            return
+        if "领取线程正在运行中" in text:
+            self.progress_ring.set_state(text="领取", caption="运行中", value=0.82, color=ACCENT)
+            self.progress_title_var.set("领取中")
+            self.progress_detail_var.set("已有领取任务在执行，请等待日志结果。")
+            self.reward_title_var.set("领取中")
+            self.reward_detail_var.set("已有领取任务在执行")
+            self.reward_status_var.set("领奖：领取中")
             return
         if "开始领取奖励" in text or "正在领取" in text or "领取前刷新任务进度" in text:
             self.progress_ring.set_state(text="领取", caption="提交中", value=0.86, color=ACCENT)

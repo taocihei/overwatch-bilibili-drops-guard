@@ -701,6 +701,30 @@ class LiveWatcherTest(unittest.TestCase):
 
         self.assertEqual(sum(1 for message in logs if message.startswith("掉宝任务：")), 1)
 
+    def test_record_task_progress_suppresses_startup_all_zero_snapshot(self) -> None:
+        logs: list[str] = []
+        live_watcher = LiveWatcher(WatchOptions(cookie="a=b", room_id="1"), logs.append)
+        zero_progress = {
+            "tasks": [
+                {"task_id": f"task-{index}", "name": f"奖励 {index}", "current": 0, "target": minutes}
+                for index, minutes in enumerate((30, 60, 120, 180, 240, 300), start=1)
+            ]
+        }
+        real_progress = {
+            "tasks": [
+                {"task_id": f"task-real-{index}", "name": f"真实奖励 {index}", "current": 257, "target": minutes}
+                for index, minutes in enumerate((300, 360, 420, 480), start=1)
+            ]
+        }
+
+        live_watcher._record_task_progress(zero_progress, announce_claimable=False)
+        live_watcher._record_task_progress(real_progress, announce_claimable=False)
+
+        task_logs = [message for message in logs if message.startswith("掉宝任务：")]
+        self.assertEqual(len(task_logs), 1)
+        self.assertIn("257/300 分钟", task_logs[0])
+        self.assertNotIn("0/30 分钟", task_logs[0])
+
     def test_task_summary_focuses_today_activity_group(self) -> None:
         live_watcher = LiveWatcher(WatchOptions(cookie="a=b", room_id="1"), lambda _message: None)
         today = date.today()
