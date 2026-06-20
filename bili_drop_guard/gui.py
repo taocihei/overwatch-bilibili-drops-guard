@@ -957,7 +957,7 @@ class App(tk.Tk):
         self.room_hint_var = tk.StringVar(value=self._room_hint_text(self.config_data.room_id))
         self.task_id_status_var = tk.StringVar(value="任务 ID：按直播间自动获取")
         self.credential_status_var = tk.StringVar(value=f"凭据：{'已填写' if self.config_data.cookie else '未填写'}")
-        self.cookie_validation_var = tk.StringVar(value=f"Cookie {'未验证' if not self.config_data.cookie else '待验证'}")
+        self.cookie_validation_var = tk.StringVar(value=f"Cookie {'未填写' if not self.config_data.cookie else '已填写'}")
         self.elapsed_status_var = tk.StringVar(value="计时：未开始")
         self.reward_status_var = tk.StringVar(value="领奖：未开始")
         self.status_hint_var = tk.StringVar(value="点击「开始挂宝」启动")
@@ -2188,12 +2188,12 @@ class App(tk.Tk):
         content = self.cookie_text.get("1.0", "end").strip()
         if content:
             self.cookie_empty_label.place_forget()
-            if hasattr(self, "cookie_validation_var") and self.cookie_validation_var.get() == "Cookie 未验证":
-                self.cookie_validation_var.set("Cookie 待验证")
+            if hasattr(self, "cookie_validation_var") and self.cookie_validation_var.get() in {"Cookie 未验证", "Cookie 未填写", "Cookie 待验证"}:
+                self.cookie_validation_var.set("Cookie 已填写")
         else:
             self.cookie_empty_label.place(relx=0.5, rely=0.5, anchor="center")
             if hasattr(self, "cookie_validation_var"):
-                self.cookie_validation_var.set("Cookie 未验证")
+                self.cookie_validation_var.set("Cookie 未填写")
 
     def _refresh_backend_summary(self, snapshot: list[WatchWorkerStatus] | None = None) -> None:
         if self.started_at is None:
@@ -2266,13 +2266,13 @@ class App(tk.Tk):
         self.cookie_text.delete("1.0", "end")
         self._refresh_cookie_placeholder()
         self._refresh_summary_bar()
-        self.cookie_validation_var.set("Cookie 未验证")
+        self.cookie_validation_var.set("Cookie 未填写")
         self._log("Cookie 内容已清空")
 
     def _validate_cookie_text(self) -> None:
         cookie = self.cookie_text.get("1.0", "end").strip()
         if not cookie:
-            self.cookie_validation_var.set("Cookie 未验证")
+            self.cookie_validation_var.set("Cookie 未填写")
             messagebox.showwarning("缺少 Cookie", "请先读取或粘贴 Cookie。")
             return
         required_fields = ("SESSDATA=", "bili_jct=", "DedeUserID=")
@@ -2281,7 +2281,7 @@ class App(tk.Tk):
             self.cookie_validation_var.set("Cookie 缺少字段")
             messagebox.showwarning("Cookie 不完整", "Cookie 缺少必要字段：\n" + "、".join(missing))
             return
-        self.cookie_validation_var.set("Cookie 已验证")
+        self.cookie_validation_var.set("Cookie 格式正常")
         self._log("Cookie 本地格式校验通过")
 
     def _clear_log(self) -> None:
@@ -2447,7 +2447,7 @@ class App(tk.Tk):
         self.account_name_var.set(name)
         self.cookie_text.delete("1.0", "end")
         if hasattr(self, "cookie_validation_var"):
-            self.cookie_validation_var.set("Cookie 未验证")
+            self.cookie_validation_var.set("Cookie 未填写")
         self._refresh_cookie_placeholder()
         self._refresh_summary_bar()
         self._log(f"已新建账号编辑位：{name}；请获取或粘贴 Cookie 后点击保存账号")
@@ -2840,6 +2840,15 @@ class App(tk.Tk):
             self.reward_title_var.set("不可领取")
             self.reward_detail_var.set("账号未登录或 Cookie 已过期")
             self.reward_status_var.set("领奖：账号未登录")
+            if hasattr(self, "cookie_validation_var"):
+                self.cookie_validation_var.set("Cookie 未登录")
+            return
+        if "账号登录正常" in text:
+            self.progress_ring.set_state(text="登录", caption="账号正常", value=0.18, color=ACCENT)
+            self.progress_title_var.set("账号已登录")
+            self.progress_detail_var.set("正在识别直播间和掉宝任务。")
+            if hasattr(self, "cookie_validation_var"):
+                self.cookie_validation_var.set("Cookie 已登录")
             return
         if "没有读到活动任务列表" in text or "暂时没有读到可跟踪的掉宝任务" in text or "任务进度检查失败" in text:
             self.progress_ring.set_state(text="等待", caption="任务列表", value=0.16, color=ACCENT)
@@ -2949,7 +2958,7 @@ class App(tk.Tk):
                 self.cookie_text.delete("1.0", "end")
                 self.cookie_text.insert("1.0", message.removeprefix("__COOKIE__:"))
                 self._refresh_cookie_placeholder()
-                self.cookie_validation_var.set("Cookie 已验证")
+                self.cookie_validation_var.set("Cookie 已登录")
                 self._save()
                 continue
             if message.startswith("__STATUS__:"):

@@ -228,6 +228,14 @@ class ProgressVisualRoutingTest(unittest.TestCase):
         self.assertEqual(app.reward_title_var.get(), "检查中")
         self.assertEqual(app.reward_status_var.get(), "领奖：检查中")
 
+    def test_login_message_updates_cookie_status(self) -> None:
+        app = self._app()
+        app.cookie_validation_var = self.DummyVar("Cookie 已填写")
+
+        gui.App._sync_progress_visual(app, "账号登录正常：圣光____（93693916）")
+
+        self.assertEqual(app.cookie_validation_var.get(), "Cookie 已登录")
+
     def test_skipped_claim_updates_reward_card(self) -> None:
         app = self._app()
 
@@ -317,7 +325,7 @@ class GuiAccountSelectionTest(unittest.TestCase):
 
         self.assertEqual(app.account_name_var.get(), "账号 2")
         self.assertEqual(app.cookie_text.get("1.0", "end"), "")
-        self.assertEqual(app.cookie_validation_var.get(), "Cookie 未验证")
+        self.assertEqual(app.cookie_validation_var.get(), "Cookie 未填写")
 
     def test_accounts_with_current_cookie_adds_new_account_without_overwriting_existing(self) -> None:
         app = object.__new__(gui.App)

@@ -72,6 +72,7 @@ class LiveWatcher:
         self._last_task_progress_score = 0.0
         self._pending_zero_task_summary = ""
         self._pending_zero_task_summary_at = 0.0
+        self._last_task_waiting_log_at = 0.0
         self._manual_refresh_thread: Optional[threading.Thread] = None
         self._rediscover_thread: Optional[threading.Thread] = None
 
@@ -344,7 +345,8 @@ class LiveWatcher:
                     self._stop.wait(state.interval)
             except Exception as exc:
                 self._set_watch_status(worker_id, "暂时失败", message=self._friendly_error(exc))
-                self.log(f"后台计时 {worker_id} 暂时失败：{self._friendly_error(exc)}；稍后重试")
+                if self._watch_detail_enabled():
+                    self.log(f"后台计时 {worker_id} 暂时失败：{self._friendly_error(exc)}；稍后重试")
                 self._log_watch_status_summary()
                 self._stop.wait(15)
 
@@ -458,6 +460,10 @@ class LiveWatcher:
             return False
         self._enrich_activity_progress(progress)
         self._remember_activity_progress_source(progress, task_ids)
+        if not self._summarize_task(progress):
+            self._log_task_waiting_progress(
+                f"活动任务进度接口暂未返回可显示的奖励进度，已识别 {len(task_ids)} 个任务，稍后继续刷新"
+            )
         return self._record_task_progress(progress, announce_claimable=True)
 
     def _remember_activity_progress_source(self, progress: dict[str, Any], queried_task_ids: list[str]) -> None:
@@ -538,7 +544,7 @@ class LiveWatcher:
                 if not self._last_task_summary:
                     self._last_task_summary = "等待真实进度"
                     self._last_task_summary_at = now
-                    self.log("活动任务已识别，正在等待 B 站返回真实进度")
+                    self._log_task_waiting_progress("活动任务已识别，正在等待 B 站返回真实进度")
             elif summary != self._last_task_summary or now - self._last_task_summary_at >= 60:
                 self._pending_zero_task_summary = ""
                 self._pending_zero_task_summary_at = 0.0
@@ -569,6 +575,13 @@ class LiveWatcher:
         if announce_claimable:
             self.log(f"检测到 {len(named_tasks)} 个奖励可以领取，正在排队领取")
         return True
+
+    def _log_task_waiting_progress(self, message: str, *, min_interval: float = 30.0) -> None:
+        now = time.time()
+        if now - self._last_task_waiting_log_at < min_interval:
+            return
+        self._last_task_waiting_log_at = now
+        self.log(message)
 
     def _should_defer_zero_task_summary(
         self,
