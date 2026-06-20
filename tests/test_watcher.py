@@ -486,6 +486,42 @@ class LiveWatcherTest(unittest.TestCase):
         self.assertIn("manual-activity", live_watcher._activity_task_ids)
         self.assertIn("manual-activity", live_watcher._claimable_task_ids)
 
+    def test_activity_progress_falls_back_to_mission_info_when_totalv2_empty(self) -> None:
+        logs: list[str] = []
+
+        class FakeClient:
+            def discover_live_activity_tasks(self, room_id: str) -> dict[str, object]:
+                return {
+                    "tasks": [
+                        {"task_id": "activity-a", "task_name": "观看 300 分钟", "award_name": "补给", "current": 0, "target": 300},
+                    ]
+                }
+
+            def get_activity_task_progress(self, task_ids: list[str]) -> dict[str, object]:
+                return {"list": []}
+
+            def get_activity_mission_progress(self, task_ids: list[str]) -> dict[str, object]:
+                return {
+                    "tasks": [
+                        {
+                            "task_id": "activity-a",
+                            "task_name": "观看 300 分钟",
+                            "award_name": "补给",
+                            "cur_value": 257,
+                            "limit": 300,
+                            "task_status": 1,
+                        }
+                    ]
+                }
+
+        live_watcher = LiveWatcher(WatchOptions(cookie="a=b", room_id="23612045"), logs.append)
+
+        found_claimable = live_watcher._check_activity_task_progress(FakeClient())
+
+        self.assertFalse(found_claimable)
+        self.assertTrue(any("257/300 分钟" in message for message in logs))
+        self.assertFalse(any("暂未返回可显示" in message for message in logs))
+
     def test_manual_claim_refreshes_activity_progress_even_when_live_task_api_fails(self) -> None:
         class FakeClient:
             def __init__(self, cookie: str) -> None:

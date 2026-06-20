@@ -228,6 +228,15 @@ class ProgressVisualRoutingTest(unittest.TestCase):
         self.assertEqual(app.reward_title_var.get(), "检查中")
         self.assertEqual(app.reward_status_var.get(), "领奖：检查中")
 
+    def test_activity_progress_empty_is_waiting_not_failure(self) -> None:
+        app = self._app()
+
+        gui.App._sync_progress_visual(app, "活动任务进度接口暂未返回可显示的奖励进度，已识别 9 个任务，稍后继续刷新")
+
+        self.assertEqual(app.progress_title_var.get(), "等待真实进度")
+        self.assertEqual(app.reward_title_var.get(), "检查中")
+        self.assertEqual(app.reward_status_var.get(), "领奖：检查中")
+
     def test_login_message_updates_cookie_status(self) -> None:
         app = self._app()
         app.cookie_validation_var = self.DummyVar("Cookie 已填写")

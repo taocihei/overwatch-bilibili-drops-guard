@@ -461,10 +461,24 @@ class LiveWatcher:
         self._enrich_activity_progress(progress)
         self._remember_activity_progress_source(progress, task_ids)
         if not self._summarize_task(progress):
+            progress = self._activity_task_progress_fallback(client, task_ids)
+        return self._record_task_progress(progress, announce_claimable=True)
+
+    def _activity_task_progress_fallback(self, client: BilibiliClient, task_ids: list[str]) -> dict[str, Any]:
+        try:
+            progress = client.get_activity_mission_progress(task_ids)
+        except Exception as exc:
+            self._log_task_waiting_progress(
+                f"活动任务进度接口暂未返回可显示的奖励进度，mission/info 兜底也失败：{self._friendly_error(exc)}"
+            )
+            return {"tasks": []}
+        self._enrich_activity_progress(progress)
+        self._remember_activity_progress_source(progress, task_ids)
+        if not self._summarize_task(progress):
             self._log_task_waiting_progress(
                 f"活动任务进度接口暂未返回可显示的奖励进度，已识别 {len(task_ids)} 个任务，稍后继续刷新"
             )
-        return self._record_task_progress(progress, announce_claimable=True)
+        return progress
 
     def _remember_activity_progress_source(self, progress: dict[str, Any], queried_task_ids: list[str]) -> None:
         progress_task_ids = self._discover_task_ids(progress)
@@ -1204,8 +1218,39 @@ class LiveWatcher:
             return False
 
     def _task_progress_values(self, node: dict[str, Any]) -> tuple[Any, Any]:
-        current = self._first_present(node, ("current", "progress", "now", "finish"))
-        target = self._first_present(node, ("target", "total", "require", "max"))
+        current = self._first_present(
+            node,
+            (
+                "current",
+                "progress",
+                "now",
+                "finish",
+                "cur_value",
+                "curValue",
+                "current_value",
+                "currentValue",
+                "finished",
+                "done",
+                "num",
+                "count",
+            ),
+        )
+        target = self._first_present(
+            node,
+            (
+                "target",
+                "total",
+                "require",
+                "max",
+                "limit",
+                "target_value",
+                "targetValue",
+                "require_value",
+                "requireValue",
+                "need",
+                "goal",
+            ),
+        )
         if current is not None or target is not None:
             return current, target
         for key in ("indicators", "list"):

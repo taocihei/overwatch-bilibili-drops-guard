@@ -1,6 +1,6 @@
 ﻿# 守望先锋 B 站直播挂宝 / Overwatch Bilibili Live Drops Guard
 
-当前版本：`v0.4.7`
+当前版本：`v0.4.8`
 
 开源地址：<https://github.com/taocihei/overwatch-bilibili-drops-guard>
 
@@ -24,7 +24,7 @@
 
 1. 打开项目页面：<https://github.com/taocihei/overwatch-bilibili-drops-guard>
 2. 进入右侧或页面中的 `Releases`。
-3. 下载 `OverwatchBiliDrops-v0.4.7.exe`。
+3. 下载 `OverwatchBiliDrops-v0.4.8.exe`。
 4. 双击运行。
 5. 如果 Windows 提示“未知发布者”或“Windows 已保护你的电脑”，点击“更多信息”，再点“仍要运行”。这是个人开源软件常见提示，不代表一定有病毒。
 6. 第一次使用先点“自动获取 Cookie”，在弹出的独立 Edge/Chrome 窗口里登录 B 站。
@@ -47,6 +47,12 @@
 - `通知 URL`：可留空。填写后，启动、检测到可领取、领取成功、领取失败、Cookie 获取成功等关键事件会向该地址发送 JSON POST。
 - `观看进度`：优先显示本次观看进度，比如“还差 48 分钟”“已完成，待领取”“已领取”。
 - `运行日志`：保留登录、计时、任务识别和领取记录，适合排查异常。
+
+## v0.4.8 修复
+
+- **修复活动进度长期空返回**：`x/task/totalv2` 不返回可显示进度时，自动改用 `mission/info` 逐任务兜底读取。
+- **增强任务字段解析**：兼容 `cur_value`、`limit`、`currentValue` 等更多进度字段，避免接口有数据但解析不到。
+- **优化等待状态显示**：活动进度空返回显示为等待同步，不再误导成网络异常。
 
 ## v0.4.7 修复
 
@@ -247,7 +253,7 @@ dist\OverwatchBiliDrops.exe
 发布时会同时生成带版本号的文件，例如：
 
 ```text
-dist\OverwatchBiliDrops-v0.4.7.exe
+dist\OverwatchBiliDrops-v0.4.8.exe
 ```
 ## 赞助
 
@@ -265,7 +271,7 @@ dist\OverwatchBiliDrops-v0.4.7.exe
 
 Project name: **守望先锋 B 站直播挂宝 / Overwatch Bilibili Live Drops Guard**
 
-Version: `v0.4.7`
+Version: `v0.4.8`
 
 Repository: <https://github.com/taocihei/overwatch-bilibili-drops-guard>
 
@@ -329,6 +335,6 @@ dist\OverwatchBiliDrops.exe
 Release builds are also copied with a versioned file name, for example:
 
 ```text
-dist\OverwatchBiliDrops-v0.4.7.exe
+dist\OverwatchBiliDrops-v0.4.8.exe
 ```
 

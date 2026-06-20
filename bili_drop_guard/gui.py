@@ -2858,6 +2858,15 @@ class App(tk.Tk):
                 self.reward_title_var.set("待同步")
                 self.reward_detail_var.set("等待 B 站返回任务列表")
             return
+        if "活动任务进度接口暂未返回可显示的奖励进度" in text:
+            self.progress_ring.set_state(text="同步中", caption="进度接口", value=0.26, color=ACCENT)
+            self.progress_title_var.set("等待真实进度")
+            self.progress_detail_var.set("任务已识别，B 站暂未返回可显示分钟数。")
+            if hasattr(self, "reward_title_var") and self.reward_title_var.get() in {"待检查", "检查中", "待同步", "等待同步", "--"}:
+                self.reward_title_var.set("检查中")
+                self.reward_detail_var.set("等待 B 站返回可领取状态")
+                self.reward_status_var.set("领奖：检查中")
+            return
         if "已找到本次活动任务" in text or "活动任务已识别" in text or "已自动找到任务列表" in text:
             self.progress_ring.set_state(text="已识别", caption="任务列表", value=0.2, color=ACCENT)
             self.progress_title_var.set("任务已识别")

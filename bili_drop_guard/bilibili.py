@@ -356,6 +356,17 @@ class BilibiliClient:
         params = self._wbi_signed_params({"task_id": task_id})
         return self._get_data("https://api.bilibili.com/x/activity_components/mission/info", params=params)
 
+    def get_activity_mission_progress(self, task_ids: list[str]) -> Dict[str, Any]:
+        tasks: list[dict[str, Any]] = []
+        for task_id in [str(item).strip() for item in task_ids if str(item).strip()]:
+            info = dict(self.get_activity_mission_info(task_id))
+            info.setdefault("task_id", task_id)
+            reward = info.get("reward_info") if isinstance(info.get("reward_info"), dict) else {}
+            if reward.get("award_name") and not info.get("award_name"):
+                info["award_name"] = reward.get("award_name")
+            tasks.append(info)
+        return {"tasks": tasks}
+
     def claim_activity_mission_reward(self, task_id: str) -> Dict[str, Any]:
         if not self.csrf:
             raise RuntimeError("Cookie 缺少 bili_jct，无法提交领奖请求")
