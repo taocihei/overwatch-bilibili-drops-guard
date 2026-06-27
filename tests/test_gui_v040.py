@@ -104,6 +104,32 @@ class WatchStatusCardExpandedTest(_HiddenRootCase):
         self.assertIn("网络超时", rendered[1]["detail"])
 
 
+class AccountChecklistTest(_HiddenRootCase):
+    def test_rebuild_preserves_unsaved_checked_accounts(self) -> None:
+        app = object.__new__(gui.App)
+        app._account_check_frame = tk.Frame(self.root)
+        app.config_data = SimpleNamespace(
+            accounts=[
+                gui.AccountProfile(name="主号", cookie="SESSDATA=a"),
+                gui.AccountProfile(name="小号", cookie="SESSDATA=b"),
+            ],
+            account_name="主号",
+            active_accounts=["主号"],
+        )
+        app.account_name_var = tk.StringVar(master=self.root, value="主号")
+        app.account_checks = {
+            "主号": tk.BooleanVar(master=self.root, value=True),
+            "小号": tk.BooleanVar(master=self.root, value=True),
+        }
+        app._on_account_check_toggled = lambda _name: None  # type: ignore[method-assign]
+        app._select_account_for_edit = lambda _name: None  # type: ignore[method-assign]
+
+        gui.App._build_account_checklist(app)
+
+        self.assertTrue(app.account_checks["主号"].get())
+        self.assertTrue(app.account_checks["小号"].get())
+
+
 class ManualRefreshButtonTest(unittest.TestCase):
     def _new_app(self) -> gui.App:
         app = object.__new__(gui.App)

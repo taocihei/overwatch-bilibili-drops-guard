@@ -18,6 +18,7 @@ except Exception:  # Pillow 是界面抗锯齿增强；缺失时回退到 Tk 原
     Image = ImageDraw = ImageFilter = ImageTk = None  # type: ignore[assignment]
 
 from . import __version__
+from .bilibili import normalize_room_id
 from .config import APP_DIR, DEFAULT_ROOM_ID, MAX_CHECK_INTERVAL, MAX_WATCH_THREADS, MIN_CHECK_INTERVAL, AccountProfile, AppConfig, load_config, parse_task_ids, sanitize_config, save_config
 from .cookie_capture import capture_bilibili_cookie, open_bilibili_login_page
 from .notifier import send_notification
@@ -922,7 +923,7 @@ class App(tk.Tk):
         super().__init__()
         self.title(f"守望先锋 B 站直播挂宝 v{__version__}")
         self.geometry("1280x840")
-        self.minsize(980, 720)
+        self.minsize(1180, 760)
         self.configure(bg=APP_BG)
         self._set_window_icon()
 
@@ -964,12 +965,14 @@ class App(tk.Tk):
         self.progress_title_var = tk.StringVar(value="未开始")
         self.progress_detail_var = tk.StringVar(value="开始后显示观看分钟数")
         self.started_at: datetime | None = None
+        self._activity_target_minutes: list[float] = []
+        self._progress_terminal = True
         self.backend_start_var = tk.StringVar(value="启动后更新")
         self.backend_elapsed_var = tk.StringVar(value="启动后更新")
         self.backend_next_var = tk.StringVar(value="启动后更新")
         self.backend_network_var = tk.StringVar(value="未启动")
-        self.reward_title_var = tk.StringVar(value="待检查")
-        self.reward_detail_var = tk.StringVar(value="开始后显示可领取次数")
+        self.reward_title_var = tk.StringVar(value="未开始")
+        self.reward_detail_var = tk.StringVar(value="开始后检查是否有奖励可领取")
         self.advanced_visible_var = tk.BooleanVar(value=True)
         self.version_var = tk.StringVar(value=f"v{__version__}")
         self.status_label: ttk.Label | None = None
@@ -979,6 +982,7 @@ class App(tk.Tk):
         self.after(1000, self._poll_watch_status)
         self.after(100, self._clear_initial_focus)
         self.after(200, self._drain_logs)
+        self.after(1000, self._update_local_progress)
 
     def _set_window_icon(self) -> None:
         icon_path = _resource_path("assets/app.ico")
@@ -1108,7 +1112,9 @@ class App(tk.Tk):
         self.room_entry.bind("<FocusIn>", lambda _event: self._refresh_room_placeholder())
         self.room_entry.bind("<FocusOut>", lambda _event: self._refresh_room_placeholder())
         self.room_var.trace_add("write", lambda *_args: self._refresh_room_placeholder())
-        LabelButton(room_box.inner, "粘贴", self._paste_room_id, fill=SECONDARY, foreground=TEXT, active_fill=SECONDARY_ACTIVE, height=30, width=62, font=("Microsoft YaHei UI", 9, "bold")).grid(row=0, column=1, sticky="e", padx=(10, 0))
+        LabelButton(room_box.inner, "粘贴", self._paste_room_id, fill=SECONDARY, foreground=TEXT, active_fill=SECONDARY_ACTIVE, height=30, width=48, font=("Microsoft YaHei UI", 8, "bold")).grid(row=0, column=1, sticky="e", padx=(8, 0))
+        LabelButton(room_box.inner, "恢复默认", self._reset_room_id, fill=SECONDARY, foreground=TEXT, active_fill=SECONDARY_ACTIVE, height=30, width=66, font=("Microsoft YaHei UI", 8, "bold")).grid(row=0, column=2, sticky="e", padx=(6, 0))
+        LabelButton(room_box.inner, "打开B站", self._open_live_room, fill=ACCENT_SOFT, foreground=ACCENT, active_fill=ACCENT_SOFT_ACTIVE, height=30, width=66, font=("Microsoft YaHei UI", 8, "bold")).grid(row=0, column=3, sticky="e", padx=(6, 0))
         tk.Label(controls, textvariable=self.room_hint_var, bg=HEADER_BG, fg=HEADER_MUTED, font=("Microsoft YaHei UI", 8)).grid(row=2, column=0, sticky="w", padx=(0, 22), pady=(6, 0))
 
         NumberInput(controls, self.watch_threads_var, minimum=1, maximum=MAX_WATCH_THREADS, background=HEADER_BG, width=116).grid(row=1, column=1, sticky="nw", padx=(0, 22))
@@ -1156,8 +1162,7 @@ class App(tk.Tk):
         status_left = tk.Frame(statusbar, bg=HEADER_BG, highlightthickness=0, borderwidth=0)
         status_left.grid(row=0, column=0, sticky="w", padx=28)
         self._computer_icon(status_left, background=HEADER_BG).pack(side="left", padx=(0, 8))
-        tk.Label(status_left, text="本地模式", bg=HEADER_BG, fg=MUTED, font=("Microsoft YaHei UI", 9, "bold")).pack(side="left", padx=(0, 8))
-        self._status_dot(status_left, color=SUCCESS, background=HEADER_BG, size=8).pack(side="left", padx=(0, 16))
+        tk.Label(status_left, text="Cookie 仅本机保存", bg=HEADER_BG, fg=MUTED, font=("Microsoft YaHei UI", 9, "bold")).pack(side="left", padx=(0, 16))
         tk.Label(status_left, textvariable=self.room_status_var, bg=HEADER_BG, fg=MUTED, font=("Microsoft YaHei UI", 9)).pack(side="left", padx=(0, 14))
         tk.Label(status_left, textvariable=self.task_id_status_var, bg=HEADER_BG, fg=MUTED, font=("Microsoft YaHei UI", 9)).pack(side="left", padx=(0, 14))
         tk.Label(status_left, textvariable=self.version_var, bg=HEADER_BG, fg=FAINT, font=("Microsoft YaHei UI", 9)).pack(side="left")
@@ -2098,6 +2103,19 @@ class App(tk.Tk):
             self._refresh_summary_bar()
             self._log("已从剪贴板粘贴直播间房号")
 
+    def _reset_room_id(self) -> None:
+        self.room_var.set(DEFAULT_ROOM_ID)
+        self._refresh_summary_bar()
+        self._log(f"已恢复默认直播间房号：{DEFAULT_ROOM_ID}")
+
+    def _open_live_room(self) -> None:
+        room_id = normalize_room_id(self.room_var.get().strip()) or DEFAULT_ROOM_ID
+        self.room_var.set(room_id)
+        self._refresh_summary_bar()
+        url = f"https://live.bilibili.com/{room_id}"
+        webbrowser.open(url)
+        self._log(f"已打开 B 站直播间：{url}")
+
     def _toggle_run(self) -> None:
         if self.watcher and self.watcher.running:
             self._stop()
@@ -2256,7 +2274,7 @@ class App(tk.Tk):
             "关于守望先锋 B站直播挂宝",
             f"守望先锋 B站直播挂宝\n"
             f"版本：v{__version__}\n"
-            "运行方式：本地模式\n\n"
+            "运行方式：Cookie 仅本机保存\n\n"
             "本软件完全免费，请勿购买；购买请找商家退款。\n"
             "凭据仅保存在本机，不会上传到任何服务器。\n\n"
             f"开源地址：{SOURCE_URL}",
@@ -2359,6 +2377,10 @@ class App(tk.Tk):
             frame_bg = str(frame.cget("bg"))
         except tk.TclError:
             frame_bg = APP_BG
+        previous_checks = {
+            name: bool(var.get())
+            for name, var in getattr(self, "account_checks", {}).items()
+        }
         for child in frame.winfo_children():
             child.destroy()
         self.account_checks = {}
@@ -2366,7 +2388,9 @@ class App(tk.Tk):
         has_saved_accounts = bool(self.config_data.accounts)
         default_editing_account = self.config_data.account_name or "默认账号"
         for name in self._account_names():
-            checked = (name in active) or (not has_saved_accounts and name == default_editing_account)
+            checked = previous_checks.get(name)
+            if checked is None:
+                checked = (name in active) or (not has_saved_accounts and name == default_editing_account)
             var = tk.BooleanVar(value=checked)
             self.account_checks[name] = var
             row = tk.Frame(frame, bg=frame_bg, highlightthickness=0, borderwidth=0)
@@ -2387,15 +2411,16 @@ class App(tk.Tk):
                 bd=0,
                 font=("Microsoft YaHei UI", 10),
             ).grid(row=0, column=0, sticky="ew")
+            is_current = name == self.account_name_var.get().strip()
             LabelButton(
                 row,
-                "编辑",
+                "正在编辑" if is_current else "编辑",
                 lambda n=name: self._select_account_for_edit(n),
                 fill=SURFACE,
                 foreground=ACCENT,
                 active_fill=SECONDARY_ACTIVE,
                 height=24,
-                width=50,
+                width=70 if is_current else 50,
                 font=("Microsoft YaHei UI", 8, "bold"),
                 radius=9,
                 outline=SUBTLE_OUTLINE,
@@ -2428,13 +2453,20 @@ class App(tk.Tk):
         current = self.account_name_var.get().strip()
         editor = self.cookie_text.get("1.0", "end").strip()
         if name == current:
+            self._log(f"正在编辑账号：{name}")
+            self.cookie_text.focus_set()
             return
         if current and editor and editor != self._saved_cookie_for(current):
-            self._log(f"“{current}”的 Cookie 有未保存改动，已保留；如需切到“{name}”请先保存账号")
-            return
+            saved = self._save()
+            self._log(f"已先保存当前账号：{saved.account_name}")
         self.account_name_var.set(name)
         self.cookie_text.delete("1.0", "end")
         self.cookie_text.insert("1.0", self._saved_cookie_for(name))
+        if hasattr(self, "cookie_validation_var"):
+            self.cookie_validation_var.set("Cookie 已填写" if self._saved_cookie_for(name) else "Cookie 未填写")
+        self._refresh_cookie_placeholder()
+        self._refresh_summary_bar()
+        self._refresh_account_selector()
         self._log(f"当前编辑账号：{name}")
 
     def _new_account(self) -> None:
@@ -2538,6 +2570,8 @@ class App(tk.Tk):
         self.watcher = MultiAccountWatcher(account_options, self._thread_log)
         self.watcher.start()
         self.started_at = datetime.now()
+        self._activity_target_minutes = []
+        self._progress_terminal = False
         try:
             snapshot, summary = self.watcher.get_watch_status_snapshot()
         except Exception:
@@ -2546,9 +2580,9 @@ class App(tk.Tk):
         self._refresh_backend_summary(snapshot)
         self._set_status("运行中")
         self.elapsed_status_var.set("计时：运行中")
-        self.reward_status_var.set("领奖：等待任务")
-        self.reward_title_var.set("检查中")
-        self.reward_detail_var.set("正在识别可领取奖励")
+        self.reward_status_var.set("领奖：未到条件")
+        self.reward_title_var.set("未到领取条件")
+        self.reward_detail_var.set("任务完成后这里会显示可领取")
         start_message = (
             f"已启动 {len(account_options)} 个账号并行：房间 {config.room_id}，"
             f"每账号 {config.watch_threads} 路，自动领奖={'开启' if config.auto_claim else '关闭'}"
@@ -2564,6 +2598,7 @@ class App(tk.Tk):
             self.watcher = None
         self._set_status("未运行")
         self.started_at = None
+        self._progress_terminal = True
         self._refresh_backend_summary()
         self.elapsed_status_var.set("计时：已停止")
         if hasattr(self, "progress_ring"):
@@ -2768,6 +2803,8 @@ class App(tk.Tk):
         if not hasattr(self, "progress_ring"):
             return
         text = message.strip()
+        self._remember_activity_targets(text)
+        self._progress_terminal = True
         claimable_match = re.search(r"(?:检测到\s*(\d+)\s*个奖励可以领取|已有\s*(\d+)\s*个任务完成)", text)
         if claimable_match and hasattr(self, "reward_title_var"):
             count = claimable_match.group(1) or claimable_match.group(2)
@@ -2787,13 +2824,24 @@ class App(tk.Tk):
             self.progress_ring.set_state(text=f"{percent}%", caption="当前进度", value=ratio, color=SUCCESS if ratio >= 1 else ACCENT)
             self.progress_title_var.set(f"{self._format_progress_number(current)} / {self._format_progress_number(target)} 分钟")
             self.progress_detail_var.set("任务进度已同步，完成后可领取奖励。")
+            if ratio < 1 and hasattr(self, "reward_title_var"):
+                self.reward_title_var.set("未到领取条件")
+                self.reward_detail_var.set(f"还差 {self._format_progress_number(max(0.0, target - current))} 分钟")
+                self.reward_status_var.set("领奖：未到条件")
             return
         remaining_match = re.search(r"还差\s*(\d+(?:\.\d+)?)\s*分钟", text)
         if remaining_match:
+            self._progress_terminal = False
+            if self._render_local_progress():
+                return
             remaining = float(remaining_match.group(1))
             self.progress_ring.set_state(text="计时中", caption="剩余时长", value=0.32, color=ACCENT)
             self.progress_title_var.set(f"还差 {self._format_progress_number(remaining)} 分钟")
             self.progress_detail_var.set("后台正在累计观看时长。")
+            if hasattr(self, "reward_title_var"):
+                self.reward_title_var.set("未到领取条件")
+                self.reward_detail_var.set(f"还差 {self._format_progress_number(remaining)} 分钟")
+                self.reward_status_var.set("领奖：未到条件")
             return
         if "已领取" in text or "已跳过" in text or "领取成功" in text:
             self.progress_ring.set_state(text="完成", caption="奖励状态", value=1.0, color=SUCCESS)
@@ -2829,9 +2877,9 @@ class App(tk.Tk):
             self.progress_ring.set_state(text="计时", caption="暂无可领", value=0.38, color=ACCENT)
             self.progress_title_var.set("暂无可领取")
             self.progress_detail_var.set("继续累计观看时长，或稍后手动刷新进度。")
-            self.reward_title_var.set("暂无可领")
-            self.reward_detail_var.set("没有检测到已完成奖励")
-            self.reward_status_var.set("领奖：暂无可领")
+            self.reward_title_var.set("未到领取条件")
+            self.reward_detail_var.set("当前没有已完成奖励")
+            self.reward_status_var.set("领奖：未到条件")
             return
         if "未登录" in text or "登录状态失效" in text or "Cookie 未登录" in text:
             self.progress_ring.set_state(text="失效", caption="重新获取", value=0.1, color=DANGER)
@@ -2850,33 +2898,62 @@ class App(tk.Tk):
             if hasattr(self, "cookie_validation_var"):
                 self.cookie_validation_var.set("Cookie 已登录")
             return
-        if "没有读到活动任务列表" in text or "暂时没有读到可跟踪的掉宝任务" in text or "任务进度检查失败" in text:
+        no_activity_task = (
+            "暂时没有读到可跟踪的掉宝任务" in text
+            or "当前直播页没有本次活动任务" in text
+        )
+        if no_activity_task:
+            self._activity_target_minutes = []
+            self.progress_snapshot = ""
+            self._progress_terminal = True
+            self.progress_ring.set_state(text="无任务", caption="直播页", value=0.0, color=FAINT)
+            self.progress_title_var.set("当前直播页暂无掉宝任务")
+            self.progress_detail_var.set("没有可跟踪的任务；换到有掉宝活动的直播间后可重新识别。")
+            if hasattr(self, "reward_title_var"):
+                self.reward_title_var.set("无可领取任务")
+                self.reward_detail_var.set("当前直播页没有可自动跟踪的掉宝任务")
+                self.reward_status_var.set("领奖：无任务")
+            return
+        if "没有读到活动任务列表" in text or "任务进度检查失败" in text:
+            self._progress_terminal = False
+            if self._render_local_progress():
+                return
             self.progress_ring.set_state(text="等待", caption="任务列表", value=0.16, color=ACCENT)
             self.progress_title_var.set("等待任务进度")
             self.progress_detail_var.set("暂时没有读到任务列表，程序会自动重试。")
-            if hasattr(self, "reward_title_var") and self.reward_title_var.get() in {"待检查", "检查中", "等待同步", "--"}:
-                self.reward_title_var.set("待同步")
-                self.reward_detail_var.set("等待 B 站返回任务列表")
+            if hasattr(self, "reward_title_var") and self.reward_title_var.get() in {"未开始", "待检查", "检查中", "等待同步", "--"}:
+                self.reward_title_var.set("未到领取条件")
+                self.reward_detail_var.set("还没拿到任务进度")
+                self.reward_status_var.set("领奖：未到条件")
             return
         if "活动任务进度接口暂未返回可显示的奖励进度" in text:
+            self._progress_terminal = False
+            if self._render_local_progress():
+                return
             self.progress_ring.set_state(text="同步中", caption="进度接口", value=0.26, color=ACCENT)
-            self.progress_title_var.set("等待真实进度")
+            self.progress_title_var.set("等待 B 站同步当前分钟数")
             self.progress_detail_var.set("任务已识别，B 站暂未返回可显示分钟数。")
-            if hasattr(self, "reward_title_var") and self.reward_title_var.get() in {"待检查", "检查中", "待同步", "等待同步", "--"}:
-                self.reward_title_var.set("检查中")
-                self.reward_detail_var.set("等待 B 站返回可领取状态")
-                self.reward_status_var.set("领奖：检查中")
+            if hasattr(self, "reward_title_var") and self.reward_title_var.get() in {"未开始", "待检查", "检查中", "待同步", "等待同步", "--", "未到领取条件"}:
+                self.reward_title_var.set("未到领取条件")
+                self.reward_detail_var.set("B 站还没返回可领取状态")
+                self.reward_status_var.set("领奖：未到条件")
             return
-        if "已找到本次活动任务" in text or "活动任务已识别" in text or "已自动找到任务列表" in text:
+        if "已找到本次活动任务" in text or "活动任务已识别" in text or "任务已识别" in text or "已自动找到任务列表" in text:
+            self._progress_terminal = False
+            if self._render_local_progress():
+                return
             self.progress_ring.set_state(text="已识别", caption="任务列表", value=0.2, color=ACCENT)
             self.progress_title_var.set("任务已识别")
-            self.progress_detail_var.set("正在等待 B 站返回真实奖励进度。")
-            if hasattr(self, "reward_title_var") and self.reward_title_var.get() in {"待检查", "检查中", "待同步", "等待同步", "--"}:
-                self.reward_title_var.set("检查中")
-                self.reward_detail_var.set("正在识别可领取奖励")
-                self.reward_status_var.set("领奖：检查中")
+            self.progress_detail_var.set("正在等待 B 站返回当前奖励进度。")
+            if hasattr(self, "reward_title_var") and self.reward_title_var.get() in {"未开始", "待检查", "检查中", "待同步", "等待同步", "--", "未到领取条件"}:
+                self.reward_title_var.set("未到领取条件")
+                self.reward_detail_var.set("任务已识别，完成后会显示可领取")
+                self.reward_status_var.set("领奖：未到条件")
             return
         if "后台计时" in text and ("暂时失败" in text or "稍后重试" in text):
+            self._progress_terminal = False
+            if self._render_local_progress():
+                return
             self.progress_ring.set_state(text="计时", caption="重试中", value=0.24, color=ACCENT)
             self.progress_title_var.set("后台重试中")
             self.progress_detail_var.set("单路计时暂时失败，后台会自动重试。")
@@ -2890,19 +2967,92 @@ class App(tk.Tk):
             self.reward_status_var.set("领奖：失败")
             return
         if "已启动" in text or "后台计时" in text or "计时" in text:
+            self._progress_terminal = False
+            if self._render_local_progress():
+                return
             self.progress_ring.set_state(text="计时", caption="后台运行", value=0.22, color=ACCENT)
             self.progress_title_var.set("运行中")
             self.progress_detail_var.set("正在等待 B 站返回任务进度。")
-            if hasattr(self, "reward_title_var") and self.reward_title_var.get() in {"待检查", "待同步", "等待同步", "--"}:
-                self.reward_title_var.set("检查中")
-                self.reward_detail_var.set("正在识别可领取奖励")
+            if hasattr(self, "reward_title_var") and self.reward_title_var.get() in {"未开始", "待检查", "待同步", "等待同步", "--"}:
+                self.reward_title_var.set("未到领取条件")
+                self.reward_detail_var.set("任务完成后这里会显示可领取")
+                self.reward_status_var.set("领奖：未到条件")
             return
         if "等待任务检查" in text or "未启动" in text:
             self.progress_ring.set_state(text="待启动", caption="点开始挂宝", value=0.0, color=ACCENT)
             self.progress_title_var.set("未开始")
             self.progress_detail_var.set("开始后显示观看分钟数")
-            self.reward_title_var.set("待检查")
-            self.reward_detail_var.set("开始后显示可领取次数")
+            self.reward_title_var.set("未开始")
+            self.reward_detail_var.set("开始后检查是否有奖励可领取")
+
+    def _remember_activity_targets(self, message: str) -> None:
+        minutes: list[float] = []
+        for raw in re.findall(r"目标\s*(\d+(?:\.\d+)?)\s*分钟", message):
+            minutes.append(float(raw))
+        for _raw_current, raw_target in re.findall(r"(\d+(?:\.\d+)?)\s*/\s*(\d+(?:\.\d+)?)\s*分钟", message):
+            minutes.append(float(raw_target))
+        positive = [value for value in minutes if value > 0]
+        if not positive:
+            return
+        merged = set(self._activity_target_minutes)
+        merged.update(positive)
+        self._activity_target_minutes = sorted(merged)
+
+    def _elapsed_minutes(self) -> float:
+        if self.started_at is None:
+            return 0.0
+        return max(0.0, (datetime.now() - self.started_at).total_seconds() / 60.0)
+
+    def _compute_local_progress_tier(self, elapsed_minutes: float, targets: list[float]) -> tuple[float, float, float, bool] | None:
+        tiers = sorted(value for value in targets if value > 0)
+        if not tiers:
+            return None
+        if elapsed_minutes >= tiers[-1]:
+            return tiers[-1], tiers[-1], 0.0, True
+        target = next(tier for tier in tiers if elapsed_minutes < tier)
+        shown = min(elapsed_minutes, target)
+        remaining = max(0.0, target - elapsed_minutes)
+        return shown, target, remaining, False
+
+    def _render_local_progress(self) -> bool:
+        if not hasattr(self, "progress_ring"):
+            return False
+        tier = self._compute_local_progress_tier(self._elapsed_minutes(), self._activity_target_minutes)
+        if tier is None:
+            return False
+        shown, target, remaining, completed = tier
+        if completed:
+            self.progress_ring.set_state(text="时长足", caption="等待结算", value=1.0, color=SUCCESS)
+            self.progress_title_var.set(f"已挂 {self._format_progress_number(shown)} 分钟")
+            self.progress_detail_var.set("本地时长已达最高档，B 站结算完成后即可领取。")
+            if hasattr(self, "reward_title_var"):
+                self.reward_title_var.set("等待结算")
+                self.reward_detail_var.set("时长已达标，等待 B 站结算后可领取")
+                self.reward_status_var.set("领奖：等待结算")
+            return True
+        ratio = min(max(shown / target, 0.0), 1.0) if target > 0 else 0.0
+        percent = int(round(ratio * 100))
+        self.progress_ring.set_state(text=f"{percent}%", caption="本地计时", value=ratio, color=ACCENT)
+        self.progress_title_var.set(f"{self._format_progress_number(shown)} / {self._format_progress_number(target)} 分钟")
+        self.progress_detail_var.set("按本地挂机时长估算，B 站返回当前分钟数后自动校正。")
+        if hasattr(self, "reward_title_var"):
+            self.reward_title_var.set("未到领取条件")
+            self.reward_detail_var.set(f"还差 {self._format_progress_number(remaining)} 分钟")
+            self.reward_status_var.set("领奖：未到条件")
+        return True
+
+    def _update_local_progress(self) -> None:
+        try:
+            if (
+                self.watcher
+                and getattr(self.watcher, "running", False)
+                and self.started_at is not None
+                and not self._progress_terminal
+                and self._activity_target_minutes
+            ):
+                self._render_local_progress()
+        finally:
+            self.after(1000, self._update_local_progress)
 
     def _format_progress_number(self, value: float) -> str:
         if abs(value - round(value)) < 0.01:
@@ -2949,6 +3099,7 @@ class App(tk.Tk):
             "活动任务已更新",
             "没有读到活动任务列表",
             "当前直播页暂时",
+            "当前直播页没有",
             "账号未登录",
             "Cookie 未登录",
             "手动任务",

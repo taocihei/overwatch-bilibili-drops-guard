@@ -15,6 +15,7 @@ LogSink = Callable[[str], None]
 CLAIM_SUBMIT_DELAY_SECONDS = 3.0
 CLAIM_RATE_LIMIT_DELAY_SECONDS = 12.0
 CLAIM_RATE_LIMIT_ATTEMPTS = 3
+WATCH_START_BATCH_SIZE = 5
 
 
 @dataclass
@@ -65,13 +66,14 @@ class LiveWatcher:
         self._watch_worker_count = self._normalize_watch_threads(self.options.watch_threads)
         self._last_watch_status_summary = ""
         self._last_watch_status_log_at = 0.0
+        self._heartbeat_count = 0
+        self._watch_started_at = 0.0
+        self._last_detected_log_at = 0.0
         self._last_room_log_key = ""
         self._last_room_log_at = 0.0
         self._last_task_summary = ""
         self._last_task_summary_at = 0.0
         self._last_task_progress_score = 0.0
-        self._pending_zero_task_summary = ""
-        self._pending_zero_task_summary_at = 0.0
         self._last_task_waiting_log_at = 0.0
         self._manual_refresh_thread: Optional[threading.Thread] = None
         self._rediscover_thread: Optional[threading.Thread] = None
@@ -88,6 +90,7 @@ class LiveWatcher:
             self.log("已经在运行中")
             return
         self._stop.clear()
+        self._watch_started_at = time.time()
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
 
@@ -216,6 +219,7 @@ class LiveWatcher:
         with self._watch_status_lock:
             worker_count = self._watch_worker_count
             statuses = [self._watch_statuses.get(worker_id, {"state": "启动中"}) for worker_id in range(1, worker_count + 1)]
+            heartbeat_count = self._heartbeat_count
 
         normal_count = sum(1 for status in statuses if status.get("state") == "正常")
         starting_count = sum(1 for status in statuses if status.get("state") in {"启动中", "计时中"})
@@ -242,11 +246,14 @@ class LiveWatcher:
                 interval_text = f"，下一次约 {min_interval} 秒后"
             else:
                 interval_text = f"，下一次约 {min_interval}-{max_interval} 秒后"
-        return f"后台计时状态：{'，'.join(parts)}{interval_text}", normal_count, failed_count + waiting_count
+        heartbeat_text = f"，累计计时 {heartbeat_count} 次" if heartbeat_count else ""
+        return f"后台计时状态：{'，'.join(parts)}{interval_text}{heartbeat_text}", normal_count, failed_count + waiting_count
 
     def _log_watch_status_summary(self, *, force: bool = False) -> None:
-        summary, normal_count, problem_count = self._watch_status_summary_info()
-        if not force and normal_count < self._watch_worker_count and problem_count == 0:
+        summary, _normal_count, problem_count = self._watch_status_summary_info()
+        # 后台计时状态实时显示在右侧「后台计时状态」卡；运行日志只在出问题（有路重试/等待）时提醒，
+        # 正常运行不刷屏，让运行日志专注任务进度和领取结果。
+        if not force and problem_count == 0:
             return
         now = time.time()
         if force or (summary != self._last_watch_status_summary and now - self._last_watch_status_log_at >= 15):
@@ -292,6 +299,19 @@ class LiveWatcher:
             self._last_room_log_at = now
             self.log(message)
 
+    def _watch_start_delay(self, worker_id: int) -> float:
+        """分批错峰：每 WATCH_START_BATCH_SIZE 路一批、批间隔 1 秒。
+        第 1 批立即启动，第 N 批等待 N-1 秒，既避免瞬时大量心跳触发 B 站频控，
+        又比"每秒只起 1 路"快得多（42 路从约 41 秒缩短到约 8 秒满速）。"""
+        if worker_id <= 1:
+            return 0.0
+        return float((worker_id - 1) // WATCH_START_BATCH_SIZE)
+
+    def _record_heartbeat(self) -> None:
+        """累计一次成功的后台计时心跳，用于实时反映「真的有多少路在计时」。"""
+        with self._watch_status_lock:
+            self._heartbeat_count += 1
+
     def _heartbeat_watch_worker(self, worker_id: int, room: RoomInfo | None) -> None:
         # 先确定本会话的设备身份并构造客户端，让每个 worker 都有独立 cookie 和 buvid。
         client = BilibiliClient(
@@ -299,9 +319,10 @@ class LiveWatcher:
             session_buvid=make_session_buvid(),
             session_device_uuid=make_session_device_uuid(),
         )
-        # 错开启动，每秒只启动一个 worker，避免短时间内大量心跳被 B 站频控拦截。
-        if worker_id > 1:
-            self._stop.wait(worker_id - 1)
+        # 分批错峰启动，避免短时间内大量心跳被 B 站频控拦截（详见 _watch_start_delay）。
+        start_delay = self._watch_start_delay(worker_id)
+        if start_delay > 0:
+            self._stop.wait(start_delay)
         if self._stop.is_set():
             return
         state = HeartbeatState()
@@ -330,6 +351,7 @@ class LiveWatcher:
                 sequence = 1
                 state = self._start_heartbeat_session(client, current_room, state)
                 self._set_watch_status(worker_id, "正常", interval=state.interval, message="首次计时请求已提交")
+                self._record_heartbeat()
                 if self._watch_detail_enabled():
                     self.log(f"后台计时 {worker_id} 首次计时请求成功，下一次约 {state.interval} 秒后")
                 self._log_watch_status_summary()
@@ -339,6 +361,7 @@ class LiveWatcher:
                     state = self._continue_heartbeat_session(client, current_room, sequence, state)
                     sequence += 1
                     self._set_watch_status(worker_id, "正常", interval=state.interval)
+                    self._record_heartbeat()
                     if self._watch_detail_enabled():
                         self.log(f"后台计时 {worker_id} 计时请求已提交，下一次约 {state.interval} 秒后")
                     self._log_watch_status_summary()
@@ -460,25 +483,7 @@ class LiveWatcher:
             return False
         self._enrich_activity_progress(progress)
         self._remember_activity_progress_source(progress, task_ids)
-        if not self._summarize_task(progress):
-            progress = self._activity_task_progress_fallback(client, task_ids)
         return self._record_task_progress(progress, announce_claimable=True)
-
-    def _activity_task_progress_fallback(self, client: BilibiliClient, task_ids: list[str]) -> dict[str, Any]:
-        try:
-            progress = client.get_activity_mission_progress(task_ids)
-        except Exception as exc:
-            self._log_task_waiting_progress(
-                f"活动任务进度接口暂未返回可显示的奖励进度，mission/info 兜底也失败：{self._friendly_error(exc)}"
-            )
-            return {"tasks": []}
-        self._enrich_activity_progress(progress)
-        self._remember_activity_progress_source(progress, task_ids)
-        if not self._summarize_task(progress):
-            self._log_task_waiting_progress(
-                f"活动任务进度接口暂未返回可显示的奖励进度，已识别 {len(task_ids)} 个任务，稍后继续刷新"
-            )
-        return progress
 
     def _remember_activity_progress_source(self, progress: dict[str, Any], queried_task_ids: list[str]) -> None:
         progress_task_ids = self._discover_task_ids(progress)
@@ -494,10 +499,15 @@ class LiveWatcher:
         try:
             progress = client.discover_live_activity_tasks(self.options.room_id)
         except Exception as exc:
-            self.log(f"没有读到活动任务列表，稍后会自动再试：{self._friendly_error(exc)}")
+            if self._is_no_activity_task_error(exc):
+                self._clear_activity_task_cache()
+                self.log(f"当前直播页暂时没有读到可跟踪的掉宝任务：{self._friendly_error(exc)}")
+            else:
+                self.log(f"没有读到活动任务列表，稍后会自动再试：{self._friendly_error(exc)}")
             return []
         task_ids = self._discover_task_ids(progress)
         if not task_ids:
+            self._clear_activity_task_cache()
             self.log("当前直播页暂时没有读到可跟踪的掉宝任务，稍后会自动再试")
             return []
         with self._claim_lock:
@@ -527,6 +537,26 @@ class LiveWatcher:
             self._record_task_progress(progress, announce_claimable=False)
         return task_ids
 
+    def _clear_activity_task_cache(self) -> None:
+        with self._claim_lock:
+            stale_task_ids = set(self._activity_task_ids) | set(self._activity_task_meta)
+            if not stale_task_ids:
+                return
+            self._activity_task_ids.clear()
+            self._activity_task_meta.clear()
+            self._claimable_task_ids.difference_update(stale_task_ids)
+            self._last_task_summary = ""
+            self._last_task_progress_score = 0.0
+        self.log("当前直播页没有本次活动任务，已清空旧任务缓存")
+
+    def _is_no_activity_task_error(self, exc: Exception) -> bool:
+        text = str(exc)
+        return (
+            "直播间号格式不正确" in text
+            or "直播页没有找到活动任务" in text
+            or "直播间页面有本次掉宝任务" in text
+        )
+
     def _enrich_activity_progress(self, progress: dict[str, Any]) -> None:
         with self._claim_lock:
             meta_by_task_id = {task_id: dict(meta) for task_id, meta in self._activity_task_meta.items()}
@@ -553,15 +583,16 @@ class LiveWatcher:
         if summary:
             progress_score = self._task_summary_progress_score(progress)
             if self._should_defer_zero_task_summary(progress, claimable_tasks, progress_score, now):
-                self._pending_zero_task_summary = summary
-                self._pending_zero_task_summary_at = self._pending_zero_task_summary_at or now
-                if not self._last_task_summary:
-                    self._last_task_summary = "等待真实进度"
-                    self._last_task_summary_at = now
-                    self._log_task_waiting_progress("活动任务已识别，正在等待 B 站返回真实进度")
+                detected_summary = self._summarize_detected_tasks(progress)
+                if detected_summary:
+                    if not self._last_task_summary:
+                        self._last_task_summary = detected_summary
+                        self._last_task_summary_at = now
+                        self._log_task_waiting_progress("活动任务已识别，下面按本地挂机时长估算还差多少分钟")
+                    if now - self._last_detected_log_at >= 45:
+                        self._last_detected_log_at = now
+                        self.log(f"掉宝任务：\n{detected_summary}")
             elif summary != self._last_task_summary or now - self._last_task_summary_at >= 60:
-                self._pending_zero_task_summary = ""
-                self._pending_zero_task_summary_at = 0.0
                 self._last_task_summary = summary
                 self._last_task_summary_at = now
                 self._last_task_progress_score = progress_score
@@ -604,17 +635,11 @@ class LiveWatcher:
         progress_score: float,
         now: float,
     ) -> bool:
-        """Avoid flashing B 站启动期的全 0 任务快照，再等真实进度接口一次。"""
+        """B 站分钟数接口经常空返回；只要还没有当前分钟数、也没有可领取任务，
+        就改用本地挂机时长估算每个奖励还差多久，而不是显示全 0 或一直干等。"""
         if claimable_tasks or progress_score > 0:
             return False
-        visible_count = self._task_summary_visible_count(progress)
-        if visible_count < 5:
-            return False
-        if self._last_task_progress_score > 0:
-            return True
-        if not self._pending_zero_task_summary_at:
-            return True
-        return now - self._pending_zero_task_summary_at < 20
+        return self._task_summary_visible_count(progress) >= 1
 
     def _task_summary_visible_count(self, progress: dict[str, Any]) -> int:
         nodes = sorted(self._iter_task_nodes(progress), key=self._task_sort_key)
@@ -634,6 +659,52 @@ class LiveWatcher:
             except (TypeError, ValueError):
                 continue
         return score
+
+    def _watch_elapsed_minutes(self) -> float:
+        """本地挂机时长（分钟）。B 站当前分钟数接口常空返回，用它估算每个奖励还差多久。"""
+        if not self._watch_started_at:
+            return 0.0
+        return max(0.0, (time.time() - self._watch_started_at) / 60.0)
+
+    def _local_task_status_text(self, node: dict[str, Any], elapsed: float, target_value: float) -> str:
+        if self._node_received(node):
+            return "✓ 已领取"
+        if self._node_claimable(node):
+            return "✓ 已完成，待领取"
+        if target_value <= 0:
+            return "等待 B 站返回目标分钟数"
+        if elapsed >= target_value:
+            return "本地已挂够，达标后自动领取"
+        return f"还差 {self._format_progress_value(target_value - elapsed)} 分钟"
+
+    def _summarize_detected_tasks(self, progress: dict[str, Any]) -> str:
+        elapsed = self._watch_elapsed_minutes()
+        nodes = sorted(self._iter_task_nodes(progress), key=self._task_sort_key)
+        nodes, group_label, hidden_count = self._focus_task_nodes(nodes)
+        lines: list[str] = []
+        for node in nodes:
+            if self._skip_task_summary_node(node):
+                continue
+            name = self._task_display_name(node)
+            _current, target = self._task_progress_values(node)
+            try:
+                target_value = float(target)
+            except (TypeError, ValueError):
+                target_value = 0.0
+            status = self._local_task_status_text(node, elapsed, target_value)
+            if target_value > 0:
+                lines.append(f"{name}（目标 {self._format_progress_value(target_value)} 分钟）：{status}")
+            else:
+                lines.append(f"{name}：{status}")
+        if not lines:
+            return ""
+        header_main = f"已挂 {self._format_progress_value(elapsed)} 分钟（本地估算）"
+        if group_label:
+            hidden_note = f"，已隐藏其他日期 {hidden_count} 个任务" if hidden_count else ""
+            header = f"{header_main}，{group_label}，共 {len(lines)} 个奖励{hidden_note}"
+        else:
+            header = f"{header_main}，共 {len(lines)} 个奖励"
+        return "\n".join([header, *lines])
 
     def _check_explicit_task_ids(self, up_id: int) -> bool:
         with self._claim_lock:
@@ -758,7 +829,7 @@ class LiveWatcher:
 
     def _is_rate_limited_error(self, exc: Exception) -> bool:
         text = str(exc)
-        return "请求频率过高" in text or "频率" in text or "稍后再试" in text
+        return "请求频率过高" in text or "频率" in text or "稍后再试" in text or "操作太快" in text
 
     def _is_already_claimed_error(self, exc: Exception) -> bool:
         # 只认 B 站“已经领取/重复领取”这类明确文案；不要用裸“已领取”，

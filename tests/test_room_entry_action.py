@@ -59,25 +59,24 @@ class StartHeartbeatSessionCallsRoomEntryActionFirstTest(unittest.TestCase):
 
 
 class WorkerStaggerTest(unittest.TestCase):
-    def test_workers_stagger_start_one_per_second_by_worker_id(self) -> None:
-        # 这个测试不实际等待，只验证逻辑：worker_id N 调用 _stop.wait(N-1)
+    def test_workers_stagger_start_in_batches_by_worker_id(self) -> None:
+        # 分批错峰：每 5 路一批、批间隔 1 秒。worker_id 6 属于第 2 批，应先 wait 1 秒。
         live_watcher = LiveWatcher(WatchOptions(cookie="a=b", room_id="1"), lambda _m: None)
         wait_calls: list[float] = []
-        original_wait = live_watcher._stop.wait
 
         def recording_wait(timeout=None):
             wait_calls.append(float(timeout) if timeout is not None else -1.0)
-            # 立刻设置 stop event，让 worker 跑完一次就退出
+            # 立刻设置 stop event，让 worker 在错峰等待后立刻退出，不进入真实心跳
             live_watcher._stop.set()
             return True
 
         live_watcher._stop.wait = recording_wait  # type: ignore[method-assign]
 
-        # 模拟启动 worker #3
-        live_watcher._heartbeat_watch_worker(3, RoomInfo(room_id=1, live_status=1))
+        # 模拟启动 worker #6（第 2 批）
+        live_watcher._heartbeat_watch_worker(6, RoomInfo(room_id=1, live_status=1))
 
-        # worker #3 应该 wait 2 秒（worker_id - 1）
-        self.assertEqual(wait_calls[0], 2.0)
+        # worker #6 应先错峰 wait 1 秒（(6-1)//5 = 1）
+        self.assertEqual(wait_calls[0], 1.0)
 
     def test_worker_id_one_does_not_stagger(self) -> None:
         live_watcher = LiveWatcher(WatchOptions(cookie="a=b", room_id="1"), lambda _m: None)

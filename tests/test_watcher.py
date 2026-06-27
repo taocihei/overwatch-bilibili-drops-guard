@@ -486,8 +486,38 @@ class LiveWatcherTest(unittest.TestCase):
         self.assertIn("manual-activity", live_watcher._activity_task_ids)
         self.assertIn("manual-activity", live_watcher._claimable_task_ids)
 
-    def test_activity_progress_falls_back_to_mission_info_when_totalv2_empty(self) -> None:
+    def test_watch_start_delay_uses_batched_stagger(self) -> None:
+        live_watcher = LiveWatcher(WatchOptions(cookie="a=b", room_id="1"), lambda _m: None)
+        self.assertEqual(live_watcher._watch_start_delay(1), 0.0)
+        self.assertEqual(live_watcher._watch_start_delay(5), 0.0)
+        self.assertEqual(live_watcher._watch_start_delay(6), 1.0)
+        self.assertEqual(live_watcher._watch_start_delay(10), 1.0)
+        self.assertEqual(live_watcher._watch_start_delay(11), 2.0)
+        self.assertEqual(live_watcher._watch_start_delay(42), 8.0)
+
+    def test_heartbeat_count_appears_in_status_summary(self) -> None:
+        live_watcher = LiveWatcher(WatchOptions(cookie="a=b", room_id="1", watch_threads=2), lambda _m: None)
+        summary_before, _n1, _p1 = live_watcher._watch_status_summary_info()
+        self.assertNotIn("累计计时", summary_before)
+        for _ in range(3):
+            live_watcher._record_heartbeat()
+        summary_after, _n2, _p2 = live_watcher._watch_status_summary_info()
+        self.assertIn("累计计时 3 次", summary_after)
+
+    def test_status_summary_logs_only_on_problem_not_when_normal(self) -> None:
         logs: list[str] = []
+        live_watcher = LiveWatcher(WatchOptions(cookie="a=b", room_id="1", watch_threads=3), logs.append)
+        for worker_id in (1, 2, 3):
+            live_watcher._set_watch_status(worker_id, "正常", interval=60)
+        live_watcher._log_watch_status_summary(force=False)
+        self.assertFalse(any("后台计时状态" in message for message in logs))
+        live_watcher._set_watch_status(3, "暂时失败", message="网络抖动")
+        live_watcher._log_watch_status_summary(force=False)
+        self.assertTrue(any("后台计时状态" in message for message in logs))
+
+    def test_activity_progress_does_not_call_mission_info_when_totalv2_empty(self) -> None:
+        logs: list[str] = []
+        mission_calls: list[list[str]] = []
 
         class FakeClient:
             def discover_live_activity_tasks(self, room_id: str) -> dict[str, object]:
@@ -501,26 +531,17 @@ class LiveWatcherTest(unittest.TestCase):
                 return {"list": []}
 
             def get_activity_mission_progress(self, task_ids: list[str]) -> dict[str, object]:
-                return {
-                    "tasks": [
-                        {
-                            "task_id": "activity-a",
-                            "task_name": "观看 300 分钟",
-                            "award_name": "补给",
-                            "cur_value": 257,
-                            "limit": 300,
-                            "task_status": 1,
-                        }
-                    ]
-                }
+                mission_calls.append(list(task_ids))
+                raise AssertionError("totalv2 为空时不应再连发 mission/info 兜底")
 
         live_watcher = LiveWatcher(WatchOptions(cookie="a=b", room_id="23612045"), logs.append)
 
         found_claimable = live_watcher._check_activity_task_progress(FakeClient())
 
         self.assertFalse(found_claimable)
-        self.assertTrue(any("257/300 分钟" in message for message in logs))
-        self.assertFalse(any("暂未返回可显示" in message for message in logs))
+        self.assertEqual(mission_calls, [])
+        self.assertFalse(any("兜底" in message for message in logs))
+        self.assertFalse(any("冷却" in message for message in logs))
 
     def test_manual_claim_refreshes_activity_progress_even_when_live_task_api_fails(self) -> None:
         class FakeClient:
@@ -587,6 +608,51 @@ class LiveWatcherTest(unittest.TestCase):
         self.assertEqual(live_watcher._claimable_task_ids, set())
         self.assertEqual(live_watcher._activity_task_meta["new-task"]["group_label"], "5月25日")
         self.assertTrue(any("活动任务已更新" in message for message in logs))
+
+    def test_activity_discovery_clears_stale_task_ids_when_page_has_no_tasks(self) -> None:
+        class FakeClient:
+            def discover_live_activity_tasks(self, room_id: str) -> dict[str, object]:
+                return {"tasks": []}
+
+            def get_activity_task_progress(self, task_ids: list[str]) -> dict[str, object]:
+                raise AssertionError(f"不应继续查询旧任务：{task_ids}")
+
+        logs: list[str] = []
+        live_watcher = LiveWatcher(WatchOptions(cookie="a=b", room_id="23612045"), logs.append)
+        live_watcher._activity_task_ids.update({"old-task"})
+        live_watcher._activity_task_meta["old-task"] = {"group_label": "5月22日"}
+        live_watcher._claimable_task_ids.add("old-task")
+
+        found_claimable = live_watcher._check_activity_task_progress(FakeClient())
+
+        self.assertFalse(found_claimable)
+        self.assertEqual(live_watcher._activity_task_ids, set())
+        self.assertEqual(live_watcher._activity_task_meta, {})
+        self.assertEqual(live_watcher._claimable_task_ids, set())
+        self.assertTrue(any("已清空旧任务缓存" in message for message in logs))
+
+    def test_activity_discovery_clears_stale_task_ids_on_no_task_error(self) -> None:
+        class FakeClient:
+            def discover_live_activity_tasks(self, room_id: str) -> dict[str, object]:
+                raise RuntimeError("直播页没有找到活动任务 ID，请确认直播间页面有本次掉宝任务")
+
+            def get_activity_task_progress(self, task_ids: list[str]) -> dict[str, object]:
+                raise AssertionError(f"不应继续查询旧任务：{task_ids}")
+
+        logs: list[str] = []
+        live_watcher = LiveWatcher(WatchOptions(cookie="a=b", room_id="23612045"), logs.append)
+        live_watcher._activity_task_ids.update({"old-task"})
+        live_watcher._activity_task_meta["old-task"] = {"group_label": "5月22日"}
+        live_watcher._claimable_task_ids.add("old-task")
+
+        found_claimable = live_watcher._check_activity_task_progress(FakeClient())
+
+        self.assertFalse(found_claimable)
+        self.assertEqual(live_watcher._activity_task_ids, set())
+        self.assertEqual(live_watcher._activity_task_meta, {})
+        self.assertEqual(live_watcher._claimable_task_ids, set())
+        self.assertTrue(any("已清空旧任务缓存" in message for message in logs))
+        self.assertTrue(any("暂时没有读到可跟踪的掉宝任务" in message for message in logs))
 
     def test_claimable_task_id_goes_to_specific_queue(self) -> None:
         logs: list[str] = []
@@ -748,7 +814,7 @@ class LiveWatcherTest(unittest.TestCase):
         }
         real_progress = {
             "tasks": [
-                {"task_id": f"task-real-{index}", "name": f"真实奖励 {index}", "current": 257, "target": minutes}
+                {"task_id": f"task-real-{index}", "name": f"同步奖励 {index}", "current": 257, "target": minutes}
                 for index, minutes in enumerate((300, 360, 420, 480), start=1)
             ]
         }
@@ -757,10 +823,13 @@ class LiveWatcherTest(unittest.TestCase):
         live_watcher._record_task_progress(real_progress, announce_claimable=False)
 
         task_logs = [message for message in logs if message.startswith("掉宝任务：")]
-        self.assertEqual(len(task_logs), 1)
-        self.assertIn("257/300 分钟", task_logs[0])
+        self.assertEqual(len(task_logs), 2)
+        self.assertIn("共 6 个奖励", task_logs[0])
+        self.assertIn("奖励 1（目标 30 分钟）：还差 30 分钟", task_logs[0])
         self.assertNotIn("0/30 分钟", task_logs[0])
-        self.assertIn("活动任务已识别，正在等待 B 站返回真实进度", logs)
+        self.assertIn("257/300 分钟", task_logs[1])
+        self.assertNotIn("0/30 分钟", task_logs[1])
+        self.assertIn("活动任务已识别，下面按本地挂机时长估算还差多少分钟", logs)
 
     def test_task_summary_focuses_today_activity_group(self) -> None:
         live_watcher = LiveWatcher(WatchOptions(cookie="a=b", room_id="1"), lambda _message: None)

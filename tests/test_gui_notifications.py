@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import queue
 import unittest
+from datetime import datetime, timedelta
 from types import SimpleNamespace
 
 from bili_drop_guard import gui
@@ -21,6 +22,7 @@ class FakeVar:
 class FakeText:
     def __init__(self, value: str = "") -> None:
         self.value = value
+        self.focused = False
 
     def get(self, _start: str, _end: str) -> str:
         return self.value
@@ -30,6 +32,9 @@ class FakeText:
 
     def insert(self, _index: str, value: str) -> None:
         self.value = value
+
+    def focus_set(self) -> None:
+        self.focused = True
 
 
 class FakeBoolVar:
@@ -183,7 +188,61 @@ class ProgressVisualRoutingTest(unittest.TestCase):
         app.reward_title_var = self.DummyVar("检查中")
         app.reward_detail_var = self.DummyVar()
         app.reward_status_var = self.DummyVar()
+        app._activity_target_minutes = []
+        app._progress_terminal = False
+        app.progress_snapshot = ""
+        app.started_at = None
+        app.watcher = None
         return app
+
+    def test_compute_local_progress_tier_picks_current_tier(self) -> None:
+        app = self._app()
+        self.assertEqual(
+            gui.App._compute_local_progress_tier(app, 40.0, [30, 60, 120]),
+            (40.0, 60.0, 20.0, False),
+        )
+
+    def test_compute_local_progress_tier_marks_all_done(self) -> None:
+        app = self._app()
+        self.assertEqual(
+            gui.App._compute_local_progress_tier(app, 200.0, [30, 60, 120]),
+            (120.0, 120.0, 0.0, True),
+        )
+
+    def test_compute_local_progress_tier_without_targets(self) -> None:
+        app = self._app()
+        self.assertIsNone(gui.App._compute_local_progress_tier(app, 10.0, []))
+
+    def test_remember_activity_targets_parses_target_minutes(self) -> None:
+        app = self._app()
+        gui.App._remember_activity_targets(
+            app, "任务已识别：第 1 组\nA：目标 30 分钟\nB：目标 120 分钟"
+        )
+        self.assertEqual(app._activity_target_minutes, [30.0, 120.0])
+
+    def test_detected_task_renders_local_progress_from_elapsed(self) -> None:
+        app = self._app()
+        app.watcher = SimpleNamespace(running=True)
+        app.started_at = datetime.now() - timedelta(minutes=45)
+        gui.App._remember_activity_targets(app, "A：目标 30 分钟\nB：目标 60 分钟")
+
+        gui.App._sync_progress_visual(app, "活动任务已识别，正在等待 B 站同步当前分钟数")
+
+        self.assertEqual(app.progress_title_var.get(), "45 / 60 分钟")
+        self.assertEqual(app.reward_detail_var.get(), "还差 15 分钟")
+        self.assertEqual(app.reward_status_var.get(), "领奖：未到条件")
+        self.assertFalse(app._progress_terminal)
+
+    def test_real_progress_from_bilibili_overrides_local_estimate(self) -> None:
+        app = self._app()
+        app.watcher = SimpleNamespace(running=True)
+        app.started_at = datetime.now() - timedelta(minutes=45)
+        app._activity_target_minutes = [30.0, 60.0]
+
+        gui.App._sync_progress_visual(app, "A：257/300 分钟，还差 43 分钟")
+
+        self.assertEqual(app.progress_title_var.get(), "257 / 300 分钟")
+        self.assertTrue(app._progress_terminal)
 
     def test_task_progress_failure_is_waiting_not_claim_failure(self) -> None:
         app = self._app()
@@ -191,7 +250,8 @@ class ProgressVisualRoutingTest(unittest.TestCase):
         gui.App._sync_progress_visual(app, "掉宝任务进度检查失败：接口暂时不可用")
 
         self.assertEqual(app.progress_title_var.get(), "等待任务进度")
-        self.assertEqual(app.reward_title_var.get(), "待同步")
+        self.assertEqual(app.reward_title_var.get(), "未到领取条件")
+        self.assertEqual(app.reward_status_var.get(), "领奖：未到条件")
         self.assertNotEqual(app.reward_status_var.get(), "领奖：失败")
 
     def test_claim_failure_sets_claim_failure(self) -> None:
@@ -216,26 +276,50 @@ class ProgressVisualRoutingTest(unittest.TestCase):
 
         gui.App._sync_progress_visual(app, "已刷新任务进度，但仍未检测到可领取任务；如果 B 站页面显示已完成，请稍后再点领取")
 
-        self.assertEqual(app.reward_title_var.get(), "暂无可领")
-        self.assertEqual(app.reward_status_var.get(), "领奖：暂无可领")
+        self.assertEqual(app.reward_title_var.get(), "未到领取条件")
+        self.assertEqual(app.reward_status_var.get(), "领奖：未到条件")
 
     def test_activity_task_detected_updates_progress_card(self) -> None:
         app = self._app()
 
-        gui.App._sync_progress_visual(app, "活动任务已识别，正在等待 B 站返回真实进度")
+        gui.App._sync_progress_visual(app, "活动任务已识别，正在等待 B 站同步当前分钟数")
 
         self.assertEqual(app.progress_title_var.get(), "任务已识别")
-        self.assertEqual(app.reward_title_var.get(), "检查中")
-        self.assertEqual(app.reward_status_var.get(), "领奖：检查中")
+        self.assertEqual(app.reward_title_var.get(), "未到领取条件")
+        self.assertEqual(app.reward_status_var.get(), "领奖：未到条件")
 
     def test_activity_progress_empty_is_waiting_not_failure(self) -> None:
         app = self._app()
 
         gui.App._sync_progress_visual(app, "活动任务进度接口暂未返回可显示的奖励进度，已识别 9 个任务，稍后继续刷新")
 
-        self.assertEqual(app.progress_title_var.get(), "等待真实进度")
-        self.assertEqual(app.reward_title_var.get(), "检查中")
-        self.assertEqual(app.reward_status_var.get(), "领奖：检查中")
+        self.assertEqual(app.progress_title_var.get(), "等待 B 站同步当前分钟数")
+        self.assertEqual(app.reward_title_var.get(), "未到领取条件")
+        self.assertEqual(app.reward_status_var.get(), "领奖：未到条件")
+
+    def test_no_activity_task_clears_stale_local_progress(self) -> None:
+        app = self._app()
+        app._activity_target_minutes = [30.0, 60.0]
+        app.progress_snapshot = "[12:00]\n掉宝任务旧快照"
+        app._progress_terminal = False
+
+        gui.App._sync_progress_visual(app, "当前直播页没有本次活动任务，已清空旧任务缓存")
+
+        self.assertEqual(app._activity_target_minutes, [])
+        self.assertEqual(app.progress_snapshot, "")
+        self.assertEqual(app.progress_title_var.get(), "当前直播页暂无掉宝任务")
+        self.assertEqual(app.reward_status_var.get(), "领奖：无任务")
+        self.assertTrue(app._progress_terminal)
+
+    def test_incomplete_progress_updates_reward_remaining_minutes(self) -> None:
+        app = self._app()
+
+        gui.App._sync_progress_visual(app, "第 1 组｜战令等级直升：257/300 分钟，还差 43 分钟")
+
+        self.assertEqual(app.progress_title_var.get(), "257 / 300 分钟")
+        self.assertEqual(app.reward_title_var.get(), "未到领取条件")
+        self.assertEqual(app.reward_detail_var.get(), "还差 43 分钟")
+        self.assertEqual(app.reward_status_var.get(), "领奖：未到条件")
 
     def test_login_message_updates_cookie_status(self) -> None:
         app = self._app()
@@ -335,6 +419,99 @@ class GuiAccountSelectionTest(unittest.TestCase):
         self.assertEqual(app.account_name_var.get(), "账号 2")
         self.assertEqual(app.cookie_text.get("1.0", "end"), "")
         self.assertEqual(app.cookie_validation_var.get(), "Cookie 未填写")
+
+    def test_edit_account_loads_saved_cookie(self) -> None:
+        app = object.__new__(gui.App)
+        app.config_data = SimpleNamespace(
+            accounts=[
+                gui.AccountProfile(name="主号", cookie="SESSDATA=a"),
+                gui.AccountProfile(name="小号", cookie="SESSDATA=b"),
+            ],
+            account_name="主号",
+        )
+        app.account_name_var = FakeVar("主号")
+        app.cookie_text = FakeText("SESSDATA=a")
+        app.cookie_validation_var = FakeVar("")
+        app.logs: list[str] = []
+        app._log = app.logs.append  # type: ignore[method-assign]
+        app._refresh_cookie_placeholder = lambda: None  # type: ignore[method-assign]
+        app._refresh_summary_bar = lambda: None  # type: ignore[method-assign]
+        app._refresh_account_selector = lambda: None  # type: ignore[method-assign]
+
+        gui.App._select_account_for_edit(app, "小号")
+
+        self.assertEqual(app.account_name_var.get(), "小号")
+        self.assertEqual(app.cookie_text.get("1.0", "end"), "SESSDATA=b")
+        self.assertEqual(app.cookie_validation_var.get(), "Cookie 已填写")
+        self.assertTrue(any("当前编辑账号：小号" in item for item in app.logs))
+
+    def test_edit_account_saves_unsaved_cookie_before_switching(self) -> None:
+        app = object.__new__(gui.App)
+        app.config_data = SimpleNamespace(
+            accounts=[
+                gui.AccountProfile(name="主号", cookie="SESSDATA=a"),
+                gui.AccountProfile(name="小号", cookie="SESSDATA=b"),
+            ],
+            account_name="主号",
+        )
+        app.account_name_var = FakeVar("主号")
+        app.cookie_text = FakeText("SESSDATA=changed")
+        app.cookie_validation_var = FakeVar("")
+        app.logs: list[str] = []
+        saved: list[str] = []
+        app._log = app.logs.append  # type: ignore[method-assign]
+        app._save = lambda: saved.append(app.account_name_var.get()) or SimpleNamespace(account_name=app.account_name_var.get())  # type: ignore[method-assign]
+        app._refresh_cookie_placeholder = lambda: None  # type: ignore[method-assign]
+        app._refresh_summary_bar = lambda: None  # type: ignore[method-assign]
+        app._refresh_account_selector = lambda: None  # type: ignore[method-assign]
+
+        gui.App._select_account_for_edit(app, "小号")
+
+        self.assertEqual(saved, ["主号"])
+        self.assertEqual(app.account_name_var.get(), "小号")
+        self.assertEqual(app.cookie_text.get("1.0", "end"), "SESSDATA=b")
+        self.assertTrue(any("已先保存当前账号：主号" in item for item in app.logs))
+
+    def test_select_current_account_gives_feedback(self) -> None:
+        app = object.__new__(gui.App)
+        app.account_name_var = FakeVar("主号")
+        app.cookie_text = FakeText("SESSDATA=a")
+        app.logs: list[str] = []
+        app._log = app.logs.append  # type: ignore[method-assign]
+
+        gui.App._select_account_for_edit(app, "主号")
+
+        self.assertTrue(app.cookie_text.focused)
+        self.assertTrue(any("正在编辑账号：主号" in item for item in app.logs))
+
+    def test_reset_room_id_restores_default(self) -> None:
+        app = object.__new__(gui.App)
+        app.room_var = FakeVar("123")
+        app.logs: list[str] = []
+        app._log = app.logs.append  # type: ignore[method-assign]
+        app._refresh_summary_bar = lambda: None  # type: ignore[method-assign]
+
+        gui.App._reset_room_id(app)
+
+        self.assertEqual(app.room_var.get(), gui.DEFAULT_ROOM_ID)
+        self.assertTrue(any(gui.DEFAULT_ROOM_ID in item for item in app.logs))
+
+    def test_open_live_room_uses_current_or_default_room(self) -> None:
+        app = object.__new__(gui.App)
+        app.room_var = FakeVar("")
+        app.logs: list[str] = []
+        opened: list[str] = []
+        app._log = app.logs.append  # type: ignore[method-assign]
+        app._refresh_summary_bar = lambda: None  # type: ignore[method-assign]
+        original_open = gui.webbrowser.open
+        gui.webbrowser.open = opened.append  # type: ignore[assignment]
+        try:
+            gui.App._open_live_room(app)
+        finally:
+            gui.webbrowser.open = original_open  # type: ignore[assignment]
+
+        self.assertEqual(opened, [f"https://live.bilibili.com/{gui.DEFAULT_ROOM_ID}"])
+        self.assertEqual(app.room_var.get(), gui.DEFAULT_ROOM_ID)
 
     def test_accounts_with_current_cookie_adds_new_account_without_overwriting_existing(self) -> None:
         app = object.__new__(gui.App)
