@@ -1,6 +1,6 @@
 ﻿# 守望先锋 B 站直播挂宝 / Overwatch Bilibili Live Drops Guard
 
-当前版本：`v0.4.8`
+当前版本：`v0.4.9`
 
 开源地址：<https://github.com/taocihei/overwatch-bilibili-drops-guard>
 
@@ -24,7 +24,7 @@
 
 1. 打开项目页面：<https://github.com/taocihei/overwatch-bilibili-drops-guard>
 2. 进入右侧或页面中的 `Releases`。
-3. 下载 `OverwatchBiliDrops-v0.4.8.exe`。
+3. 下载 `OverwatchBiliDrops-v0.4.9.exe`。
 4. 双击运行。
 5. 如果 Windows 提示“未知发布者”或“Windows 已保护你的电脑”，点击“更多信息”，再点“仍要运行”。这是个人开源软件常见提示，不代表一定有病毒。
 6. 第一次使用先点“自动获取 Cookie”，在弹出的独立 Edge/Chrome 窗口里登录 B 站。
@@ -47,6 +47,14 @@
 - `通知 URL`：可留空。填写后，启动、检测到可领取、领取成功、领取失败、Cookie 获取成功等关键事件会向该地址发送 JSON POST。
 - `观看进度`：优先显示本次观看进度，比如“还差 48 分钟”“已完成，待领取”“已领取”。
 - `运行日志`：保留登录、计时、任务识别和领取记录，适合排查异常。
+
+## v0.4.9 修复
+
+- **增强 40 路后台心跳**：每路使用独立会话身份并补充网页心跳，减少多路计时被合并或降速的情况。
+- **只显示 B 站真实进度**：移除界面里的本地估算进度，任务进度以 B 站接口返回为准。
+- **拆分运行日志**：新增任务日志、房间日志、全部日志切换，清空日志后仍会继续写入新日志。
+- **优化窗口缩放**：默认窗口下压缩卡片和日志区域，减少内容被截断、按钮大小不一致的问题。
+- **下掉大神入口**：暂不接入网易大神掉宝，当前版本继续专注 B 站后台挂宝。
 
 ## v0.4.8 修复
 
@@ -253,7 +261,7 @@ dist\OverwatchBiliDrops.exe
 发布时会同时生成带版本号的文件，例如：
 
 ```text
-dist\OverwatchBiliDrops-v0.4.8.exe
+dist\OverwatchBiliDrops-v0.4.9.exe
 ```
 ## 赞助
 
@@ -270,7 +278,7 @@ dist\OverwatchBiliDrops-v0.4.8.exe
 
 Project name: **守望先锋 B 站直播挂宝 / Overwatch Bilibili Live Drops Guard**
 
-Version: `v0.4.8`
+Version: `v0.4.9`
 
 Repository: <https://github.com/taocihei/overwatch-bilibili-drops-guard>
 
@@ -290,7 +298,7 @@ Default room: `23612045`.
 
 1. Open the repository page: <https://github.com/taocihei/overwatch-bilibili-drops-guard>
 2. Open `Releases`.
-3. Download `OverwatchBiliDrops-v0.4.8.exe`.
+3. Download `OverwatchBiliDrops-v0.4.9.exe`.
 4. Double-click to run it.
 5. If Windows shows an unknown-publisher warning, click `More info`, then `Run anyway`.
 6. Click `自动获取 Cookie`, then sign in to Bilibili in the independent Edge/Chrome window opened by the app.
@@ -334,6 +342,6 @@ dist\OverwatchBiliDrops.exe
 Release builds are also copied with a versioned file name, for example:
 
 ```text
-dist\OverwatchBiliDrops-v0.4.8.exe
+dist\OverwatchBiliDrops-v0.4.9.exe
 ```
 
