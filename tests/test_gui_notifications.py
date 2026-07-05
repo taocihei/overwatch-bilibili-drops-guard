@@ -37,6 +37,26 @@ class FakeText:
         self.focused = True
 
 
+class FakeLogText:
+    def __init__(self) -> None:
+        self.value = ""
+        self.seen_end = False
+
+    def configure(self, **_kwargs) -> None: ...
+
+    def delete(self, _start: str, _end: str) -> None:
+        self.value = ""
+
+    def insert(self, _index: str, value: str) -> None:
+        self.value += value
+
+    def get(self, _start: str, _end: str) -> str:
+        return self.value
+
+    def see(self, _index: str) -> None:
+        self.seen_end = True
+
+
 class FakeBoolVar:
     def __init__(self, value: bool) -> None:
         self.value = value
@@ -195,24 +215,6 @@ class ProgressVisualRoutingTest(unittest.TestCase):
         app.watcher = None
         return app
 
-    def test_compute_local_progress_tier_picks_current_tier(self) -> None:
-        app = self._app()
-        self.assertEqual(
-            gui.App._compute_local_progress_tier(app, 40.0, [30, 60, 120]),
-            (40.0, 60.0, 20.0, False),
-        )
-
-    def test_compute_local_progress_tier_marks_all_done(self) -> None:
-        app = self._app()
-        self.assertEqual(
-            gui.App._compute_local_progress_tier(app, 200.0, [30, 60, 120]),
-            (120.0, 120.0, 0.0, True),
-        )
-
-    def test_compute_local_progress_tier_without_targets(self) -> None:
-        app = self._app()
-        self.assertIsNone(gui.App._compute_local_progress_tier(app, 10.0, []))
-
     def test_remember_activity_targets_parses_target_minutes(self) -> None:
         app = self._app()
         gui.App._remember_activity_targets(
@@ -220,7 +222,7 @@ class ProgressVisualRoutingTest(unittest.TestCase):
         )
         self.assertEqual(app._activity_target_minutes, [30.0, 120.0])
 
-    def test_detected_task_renders_local_progress_from_elapsed(self) -> None:
+    def test_detected_task_waits_for_real_bilibili_progress(self) -> None:
         app = self._app()
         app.watcher = SimpleNamespace(running=True)
         app.started_at = datetime.now() - timedelta(minutes=45)
@@ -228,12 +230,12 @@ class ProgressVisualRoutingTest(unittest.TestCase):
 
         gui.App._sync_progress_visual(app, "活动任务已识别，正在等待 B 站同步当前分钟数")
 
-        self.assertEqual(app.progress_title_var.get(), "45 / 60 分钟")
-        self.assertEqual(app.reward_detail_var.get(), "还差 15 分钟")
+        self.assertEqual(app.progress_title_var.get(), "任务已识别")
+        self.assertEqual(app.reward_title_var.get(), "未到领取条件")
         self.assertEqual(app.reward_status_var.get(), "领奖：未到条件")
         self.assertFalse(app._progress_terminal)
 
-    def test_real_progress_from_bilibili_overrides_local_estimate(self) -> None:
+    def test_real_progress_from_bilibili_updates_progress_card(self) -> None:
         app = self._app()
         app.watcher = SimpleNamespace(running=True)
         app.started_at = datetime.now() - timedelta(minutes=45)
@@ -297,7 +299,7 @@ class ProgressVisualRoutingTest(unittest.TestCase):
         self.assertEqual(app.reward_title_var.get(), "未到领取条件")
         self.assertEqual(app.reward_status_var.get(), "领奖：未到条件")
 
-    def test_no_activity_task_clears_stale_local_progress(self) -> None:
+    def test_no_activity_task_clears_stale_progress_snapshot(self) -> None:
         app = self._app()
         app._activity_target_minutes = [30.0, 60.0]
         app.progress_snapshot = "[12:00]\n掉宝任务旧快照"
@@ -337,6 +339,15 @@ class ProgressVisualRoutingTest(unittest.TestCase):
         self.assertEqual(app.reward_title_var.get(), "已跳过")
         self.assertEqual(app.reward_status_var.get(), "领奖：已完成")
 
+    def test_all_received_snapshot_updates_reward_card(self) -> None:
+        app = self._app()
+
+        gui.App._sync_progress_visual(app, "全部奖励已领取：7月5日，共 9 个奖励")
+
+        self.assertEqual(app.progress_title_var.get(), "已领取")
+        self.assertEqual(app.reward_title_var.get(), "已领取")
+        self.assertEqual(app.reward_status_var.get(), "领奖：已完成")
+
 
 class LogDrainRoutingTest(unittest.TestCase):
     def _app(self) -> gui.App:
@@ -372,6 +383,16 @@ class LogDrainRoutingTest(unittest.TestCase):
         self.assertIn("[默认账号] 掉宝任务：\n观看 30 分钟：10/30 分钟", app.logged)
 
 
+    def test_room_messages_do_not_go_to_task_progress(self) -> None:
+        app = self._app()
+        app.log_queue.put("[默认账号] 房间 23612045：直播中｜赛事｜主播 守望先锋电竞｜人气 616365")
+
+        gui.App._drain_logs(app)
+
+        self.assertEqual(app.progressed, [])
+        self.assertIn("[默认账号] 房间 23612045：直播中｜赛事｜主播 守望先锋电竞｜人气 616365", app.logged)
+
+
 class LogFormatTest(unittest.TestCase):
     def test_multiline_log_entry_indents_continuation_lines(self) -> None:
         app = object.__new__(gui.App)
@@ -384,6 +405,55 @@ class LogFormatTest(unittest.TestCase):
         self.assertEqual(lines[2], "           奖励：205/240 分钟")
         self.assertTrue(entry.endswith("\n\n"))
 
+
+class LogViewFilterTest(unittest.TestCase):
+    def _app(self) -> gui.App:
+        app = object.__new__(gui.App)
+        app.log_text = FakeLogText()
+        app.log_entries = []
+        app.log_view_var = FakeVar("task")
+        app.auto_scroll_var = FakeBoolVar(True)
+        app.log_view_buttons = {}
+        return app
+
+    def test_log_view_filters_task_and_room_entries(self) -> None:
+        app = self._app()
+
+        gui.App._log(app, "掉宝任务：当前可挂")
+        gui.App._log(app, "房间 23612045：直播中｜赛事｜主播 守望先锋电竞｜人气 616365")
+
+        self.assertIn("掉宝任务", app.log_text.value)
+        self.assertNotIn("房间 23612045", app.log_text.value)
+
+        app.log_view_var.set("room")
+        gui.App._render_log_text(app)
+
+        self.assertIn("房间 23612045", app.log_text.value)
+        self.assertNotIn("掉宝任务", app.log_text.value)
+
+    def test_clear_log_removes_only_current_view(self) -> None:
+        app = self._app()
+        gui.App._log(app, "掉宝任务：当前可挂")
+        gui.App._log(app, "房间 23612045：直播中")
+
+        gui.App._clear_log(app)
+
+        self.assertTrue(any(kind == "room" for kind, _entry in app.log_entries))
+        self.assertFalse(any(kind == "task" and "掉宝任务" in entry for kind, entry in app.log_entries))
+
+    def test_clear_room_log_writes_confirmation_to_current_view(self) -> None:
+        app = self._app()
+        app.log_view_var.set("room")
+        gui.App._log(app, "房间 23612045：直播中")
+
+        gui.App._clear_log(app)
+
+        self.assertIn("日志已清空", app.log_text.value)
+        self.assertTrue(any(kind == "room" and "日志已清空" in entry for kind, entry in app.log_entries))
+
+        gui.App._log(app, "房间 23612045：直播中｜赛事｜人气 1")
+
+        self.assertIn("房间 23612045", app.log_text.value)
 
 class GuiAccountSelectionTest(unittest.TestCase):
     def test_toggling_account_does_not_change_current_editor_or_cookie(self) -> None:

@@ -506,7 +506,7 @@ class ProgressRing(tk.Canvas):
 
     def _redraw(self) -> None:
         self.delete("all")
-        size = max(96, min(max(self.winfo_width(), self.winfo_height()), 132))
+        size = max(72, min(max(self.winfo_width(), self.winfo_height()), 132))
         if Image is not None and ImageDraw is not None and ImageTk is not None:
             try:
                 scale = 3
@@ -530,7 +530,8 @@ class ProgressRing(tk.Canvas):
             self._draw_canvas_ring(size)
         cx = (self.winfo_width() or size) // 2
         cy = (self.winfo_height() or size) // 2
-        self.create_text(cx, cy - 7, text=self.text, fill=TEXT, font=("Microsoft YaHei UI", 15, "bold"), anchor="center")
+        text_size = 12 if size < 90 or len(self.text) >= 4 else 15
+        self.create_text(cx, cy - 7, text=self.text, fill=TEXT, font=("Microsoft YaHei UI", text_size, "bold"), anchor="center")
         self.create_text(cx, cy + 18, text=self.caption, fill=MUTED, font=("Microsoft YaHei UI", 8), anchor="center")
 
     def _draw_canvas_ring(self, size: int) -> None:
@@ -923,7 +924,7 @@ class App(tk.Tk):
         super().__init__()
         self.title(f"守望先锋 B 站直播挂宝 v{__version__}")
         self.geometry("1280x840")
-        self.minsize(1180, 760)
+        self.minsize(1080, 660)
         self.configure(bg=APP_BG)
         self._set_window_icon()
 
@@ -938,6 +939,8 @@ class App(tk.Tk):
         self.cookie_capture_thread: threading.Thread | None = None
         self.progress_events: list[str] = []
         self.progress_snapshot = ""
+        self.log_entries: list[tuple[str, str]] = []
+        self.log_view_var = tk.StringVar(value="task")
         self.notification_history: dict[str, float] = {}
         self.notification_failure_history: dict[str, float] = {}
         self.notification_pending: set[str] = set()
@@ -976,13 +979,13 @@ class App(tk.Tk):
         self.advanced_visible_var = tk.BooleanVar(value=True)
         self.version_var = tk.StringVar(value=f"v{__version__}")
         self.status_label: ttk.Label | None = None
+        self._compact_layout = False
 
         self._configure_style()
         self._build_ui()
         self.after(1000, self._poll_watch_status)
         self.after(100, self._clear_initial_focus)
         self.after(200, self._drain_logs)
-        self.after(1000, self._update_local_progress)
 
     def _set_window_icon(self) -> None:
         icon_path = _resource_path("assets/app.ico")
@@ -1065,7 +1068,8 @@ class App(tk.Tk):
         self.columnconfigure(0, weight=1)
         self.rowconfigure(1, weight=1)
 
-        commandbar = tk.Frame(self, bg=HEADER_BG, height=142, highlightthickness=0, borderwidth=0)
+        commandbar = tk.Frame(self, bg=HEADER_BG, height=150, highlightthickness=0, borderwidth=0)
+        self.commandbar = commandbar
         commandbar.grid(row=0, column=0, sticky="ew")
         commandbar.grid_propagate(False)
         commandbar.columnconfigure(0, weight=0, minsize=300)
@@ -1088,7 +1092,7 @@ class App(tk.Tk):
         controls.columnconfigure(0, weight=1, minsize=300)
         controls.columnconfigure(1, weight=0, minsize=102)
         controls.columnconfigure(2, weight=0, minsize=86)
-        controls.columnconfigure(3, weight=0, minsize=220)
+        controls.columnconfigure(3, weight=0, minsize=252)
         controls.columnconfigure(4, weight=0, minsize=86)
         controls.rowconfigure(0, minsize=22)
         controls.rowconfigure(1, minsize=46)
@@ -1115,7 +1119,15 @@ class App(tk.Tk):
         LabelButton(room_box.inner, "粘贴", self._paste_room_id, fill=SECONDARY, foreground=TEXT, active_fill=SECONDARY_ACTIVE, height=30, width=48, font=("Microsoft YaHei UI", 8, "bold")).grid(row=0, column=1, sticky="e", padx=(8, 0))
         LabelButton(room_box.inner, "恢复默认", self._reset_room_id, fill=SECONDARY, foreground=TEXT, active_fill=SECONDARY_ACTIVE, height=30, width=66, font=("Microsoft YaHei UI", 8, "bold")).grid(row=0, column=2, sticky="e", padx=(6, 0))
         LabelButton(room_box.inner, "打开B站", self._open_live_room, fill=ACCENT_SOFT, foreground=ACCENT, active_fill=ACCENT_SOFT_ACTIVE, height=30, width=66, font=("Microsoft YaHei UI", 8, "bold")).grid(row=0, column=3, sticky="e", padx=(6, 0))
-        tk.Label(controls, textvariable=self.room_hint_var, bg=HEADER_BG, fg=HEADER_MUTED, font=("Microsoft YaHei UI", 8)).grid(row=2, column=0, sticky="w", padx=(0, 22), pady=(6, 0))
+        tk.Label(
+            controls,
+            textvariable=self.room_hint_var,
+            bg=HEADER_BG,
+            fg=HEADER_MUTED,
+            font=("Microsoft YaHei UI", 8),
+            wraplength=300,
+            justify="left",
+        ).grid(row=2, column=0, sticky="ew", padx=(0, 22), pady=(6, 0))
 
         NumberInput(controls, self.watch_threads_var, minimum=1, maximum=MAX_WATCH_THREADS, background=HEADER_BG, width=116).grid(row=1, column=1, sticky="nw", padx=(0, 22))
 
@@ -1124,9 +1136,9 @@ class App(tk.Tk):
 
         actions = tk.Frame(controls, bg=HEADER_BG, highlightthickness=0, borderwidth=0)
         actions.grid(row=1, column=3, sticky="nw", padx=(0, 14))
-        self.start_button = LabelButton(actions, "▶ 开始挂宝", self._toggle_run, fill=PRIMARY, foreground="#ffffff", active_fill=PRIMARY_ACTIVE, height=44, width=138, font=("Microsoft YaHei UI", 10, "bold"), radius=14, shadow=True)
+        self.start_button = LabelButton(actions, "▶ 开始挂宝", self._toggle_run, fill=PRIMARY, foreground="#ffffff", active_fill=PRIMARY_ACTIVE, height=44, width=118, font=("Microsoft YaHei UI", 9, "bold"), radius=14, shadow=True)
         self.start_button.pack(side="left", padx=(0, 8))
-        LabelButton(actions, "领取奖励", self._claim, fill=SURFACE, foreground=TEXT, active_fill=SECONDARY_ACTIVE, height=44, width=104, font=("Microsoft YaHei UI", 9, "bold"), radius=14, outline=SUBTLE_OUTLINE).pack(side="left")
+        LabelButton(actions, "领取奖励", self._claim, fill=SURFACE, foreground=TEXT, active_fill=SECONDARY_ACTIVE, height=44, width=118, font=("Microsoft YaHei UI", 9, "bold"), radius=14, outline=SUBTLE_OUTLINE).pack(side="left")
 
         status_card = RoundedPanel(controls, fill="#f6f9fd", background=HEADER_BG, radius=16, padding=(12, 5), min_height=44, outline=SUBTLE_OUTLINE, shadow=False, auto_height=False)
         status_card.configure(width=96)
@@ -1138,9 +1150,10 @@ class App(tk.Tk):
 
         body = tk.Frame(self, bg=APP_BG, highlightthickness=0, borderwidth=0)
         body.grid(row=1, column=0, sticky="nsew")
-        body.columnconfigure(0, weight=1, minsize=360)
+        body.columnconfigure(0, weight=1, minsize=340)
         body.columnconfigure(1, weight=2, minsize=560)
         body.rowconfigure(0, weight=1)
+        self.body = body
 
         side = tk.Frame(body, bg=APP_BG, highlightthickness=0, borderwidth=0)
         side.grid(row=0, column=0, sticky="nsew", padx=(18, 8), pady=(0, 14))
@@ -1156,6 +1169,7 @@ class App(tk.Tk):
         self._refresh_auto_claim_button()
 
         statusbar = tk.Frame(self, bg=HEADER_BG, height=48, highlightthickness=0, borderwidth=0)
+        self.statusbar = statusbar
         statusbar.grid(row=2, column=0, sticky="ew")
         statusbar.grid_propagate(False)
         statusbar.columnconfigure(1, weight=1)
@@ -1174,6 +1188,8 @@ class App(tk.Tk):
         self._footer_link(status_right, "帮助", self._show_onboarding_guide, icon="help").pack(side="left", padx=(0, 14))
         self._footer_link(status_right, "关于", self._show_about_dialog, icon="about").pack(side="left")
         self.after_idle(self._refresh_room_placeholder)
+        self.bind("<Configure>", self._refresh_responsive_layout)
+        self.after_idle(self._refresh_responsive_layout)
 
     def _build_step_strip(self, parent: ttk.Frame) -> None:
         ttk.Label(parent, text="流程", style="RailTitle.TLabel").grid(row=0, column=0, sticky="w")
@@ -1186,8 +1202,10 @@ class App(tk.Tk):
 
     def _build_settings_workspace(self, parent: ttk.Frame) -> None:
         parent.columnconfigure(0, weight=1)
+        parent.rowconfigure(0, weight=1)
 
-        credential_panel = RoundedPanel(parent, fill=GLASS, background=APP_BG, radius=18, padding=(20, 16), min_height=640, outline=SUBTLE_OUTLINE, shadow=True, auto_height=False)
+        credential_panel = RoundedPanel(parent, fill=GLASS, background=APP_BG, radius=18, padding=(20, 16), min_height=620, outline=SUBTLE_OUTLINE, shadow=True, auto_height=False)
+        self.credential_panel = credential_panel
         credential_panel.grid(row=0, column=0, sticky="nsew")
         cookie = credential_panel.inner
         cookie.columnconfigure(0, weight=1)
@@ -1247,6 +1265,7 @@ class App(tk.Tk):
         tk.Label(flow, text="读取成功后自动填入，可手动修改。", bg=GLASS, fg=MUTED, font=("Microsoft YaHei UI", 9)).grid(row=7, column=0, sticky="w", pady=(3, 6))
 
         cookie_box = RoundedPanel(flow, fill=FIELD_BG, background=GLASS, radius=14, padding=(5, 5), min_height=112, outline=SUBTLE_OUTLINE, shadow=False, auto_height=False)
+        self.cookie_box = cookie_box
         cookie_box.grid(row=8, column=0, sticky="ew")
         cookie_box.inner.columnconfigure(0, weight=1)
         cookie_box.inner.rowconfigure(0, weight=1)
@@ -1794,6 +1813,7 @@ class App(tk.Tk):
         parent.rowconfigure(0, weight=1)
 
         monitor = tk.Frame(parent, bg=APP_BG, highlightthickness=0, borderwidth=0)
+        self.monitor = monitor
         monitor.grid(row=0, column=0, sticky="nsew")
         monitor.columnconfigure(0, weight=1)
         monitor.rowconfigure(0, weight=0, minsize=214)
@@ -1805,6 +1825,7 @@ class App(tk.Tk):
         top.rowconfigure(0, weight=1)
 
         overview_panel = RoundedPanel(top, fill=GLASS, background=APP_BG, radius=20, padding=(18, 14), min_height=204, outline=SUBTLE_OUTLINE, shadow=True, auto_height=False)
+        self.overview_panel = overview_panel
         overview_panel.grid(row=0, column=0, sticky="nsew")
         overview = overview_panel.inner
         overview.columnconfigure((0, 1, 2), weight=1, uniform="overview")
@@ -1818,10 +1839,18 @@ class App(tk.Tk):
         progress_body = tk.Frame(progress_pane, bg=SURFACE, highlightthickness=0, borderwidth=0)
         progress_body.grid(row=1, column=0, sticky="nsew", pady=(16, 0))
         progress_body.columnconfigure(1, weight=1)
-        self.progress_ring = ProgressRing(progress_body, text="待启动", caption="点开始挂宝", background=SURFACE, size=86)
-        self.progress_ring.grid(row=0, column=0, rowspan=2, sticky="w", padx=(0, 14))
-        tk.Label(progress_body, textvariable=self.progress_title_var, bg=SURFACE, fg=TEXT, font=("Microsoft YaHei UI", 15, "bold")).grid(row=0, column=1, sticky="sw", pady=(6, 5))
-        tk.Label(progress_body, textvariable=self.progress_detail_var, bg=SURFACE, fg=MUTED, font=("Microsoft YaHei UI", 9), wraplength=135, justify="left").grid(row=1, column=1, sticky="nw")
+        self.progress_ring = ProgressRing(progress_body, text="待启动", caption="点开始挂宝", background=SURFACE, size=76)
+        self.progress_ring.grid(row=0, column=0, rowspan=2, sticky="w", padx=(0, 8))
+        tk.Label(
+            progress_body,
+            textvariable=self.progress_title_var,
+            bg=SURFACE,
+            fg=TEXT,
+            font=("Microsoft YaHei UI", 12, "bold"),
+            wraplength=128,
+            justify="left",
+        ).grid(row=0, column=1, sticky="sw", pady=(3, 4))
+        tk.Label(progress_body, textvariable=self.progress_detail_var, bg=SURFACE, fg=MUTED, font=("Microsoft YaHei UI", 8), wraplength=128, justify="left").grid(row=1, column=1, sticky="nw")
         self.progress_text = tk.Text(progress_pane, height=1, wrap="word", state="disabled", borderwidth=0, relief="flat", bg=SURFACE, fg=SURFACE, insertbackground=SURFACE, highlightthickness=0, font=("Microsoft YaHei UI", 1))
         self.progress_text.grid(row=2, column=0, sticky="ew")
         self._progress_log("等待任务检查。开始挂宝后，这里会显示本次可挂任务、剩余分钟和领取状态。")
@@ -1855,6 +1884,7 @@ class App(tk.Tk):
         tk.Label(reward, textvariable=self.reward_detail_var, bg=SURFACE, fg=MUTED, font=("Microsoft YaHei UI", 9), wraplength=180, justify="center").grid(row=2, column=0, sticky="ew")
 
         log_panel = RoundedPanel(monitor, fill=GLASS, background=APP_BG, radius=18, padding=(20, 16), min_height=392, outline=SUBTLE_OUTLINE, shadow=True, auto_height=False)
+        self.log_panel = log_panel
         log_panel.grid(row=1, column=0, sticky="nsew")
         log_pane = log_panel.inner
         log_pane.columnconfigure(0, weight=1)
@@ -1878,10 +1908,29 @@ class App(tk.Tk):
             height=30,
         )
         self.auto_scroll_button.pack(side="left", padx=(0, 12))
+        self.log_view_buttons: dict[str, LabelButton] = {}
+        for key, label in (("task", "任务日志"), ("room", "房间日志"), ("all", "全部日志")):
+            selected = key == self.log_view_var.get()
+            button = LabelButton(
+                tools,
+                label,
+                lambda _key=key: self._select_log_view(_key),
+                fill=ACCENT if selected else SECONDARY,
+                foreground="#ffffff" if selected else MUTED,
+                active_fill=ACCENT_ACTIVE if selected else SECONDARY_ACTIVE,
+                height=34,
+                width=82,
+                font=("Microsoft YaHei UI", 8, "bold"),
+                radius=11,
+                outline=SUBTLE_OUTLINE,
+            )
+            button.pack(side="left", padx=(0, 8))
+            self.log_view_buttons[key] = button
         LabelButton(tools, "清空日志", self._clear_log, fill=SECONDARY, foreground=MUTED, active_fill=SECONDARY_ACTIVE, height=34, width=88, font=("Microsoft YaHei UI", 8, "bold"), radius=11, outline=SUBTLE_OUTLINE).pack(side="left", padx=(0, 10))
         LabelButton(tools, "复制日志", self._copy_log, fill=SECONDARY, foreground=MUTED, active_fill=SECONDARY_ACTIVE, height=34, width=88, font=("Microsoft YaHei UI", 8, "bold"), radius=11, outline=SUBTLE_OUTLINE).pack(side="left")
 
         log_wrap = RoundedPanel(log_pane, fill=FIELD_BG, background=GLASS, radius=14, padding=(5, 5), min_height=312, outline=SUBTLE_OUTLINE, shadow=False, auto_height=False)
+        self.log_wrap = log_wrap
         log_wrap.grid(row=1, column=0, sticky="nsew")
         log_wrap.inner.columnconfigure(0, weight=1)
         log_wrap.inner.rowconfigure(0, weight=1)
@@ -2256,6 +2305,94 @@ class App(tk.Tk):
         except (tk.TclError, ValueError):
             return default
 
+    def _refresh_responsive_layout(self, event: tk.Event | None = None) -> None:
+        if event is not None and event.widget is not self:
+            return
+        height = self.winfo_height()
+        compact = height < 790
+        if compact == self._compact_layout:
+            return
+        self._compact_layout = compact
+        if compact:
+            self._apply_layout_sizes(
+                commandbar=132,
+                statusbar=38,
+                credential=540,
+                cookie=76,
+                cookie_lines=2,
+                overview=182,
+                monitor_top=192,
+                log_panel=320,
+                log_wrap=244,
+                log_lines=10,
+                side_pad=(14, 6),
+                work_pad=(0, 14),
+            )
+        else:
+            self._apply_layout_sizes(
+                commandbar=150,
+                statusbar=48,
+                credential=620,
+                cookie=112,
+                cookie_lines=4,
+                overview=204,
+                monitor_top=214,
+                log_panel=392,
+                log_wrap=312,
+                log_lines=14,
+                side_pad=(18, 8),
+                work_pad=(0, 18),
+            )
+
+    def _apply_layout_sizes(
+        self,
+        *,
+        commandbar: int,
+        statusbar: int,
+        credential: int,
+        cookie: int,
+        cookie_lines: int,
+        overview: int,
+        monitor_top: int,
+        log_panel: int,
+        log_wrap: int,
+        log_lines: int,
+        side_pad: tuple[int, int],
+        work_pad: tuple[int, int],
+    ) -> None:
+        if hasattr(self, "commandbar"):
+            self.commandbar.configure(height=commandbar)
+        if hasattr(self, "statusbar"):
+            self.statusbar.configure(height=statusbar)
+        if hasattr(self, "credential_panel"):
+            self.credential_panel.min_height = credential
+            self.credential_panel.configure(height=credential)
+        if hasattr(self, "cookie_box"):
+            self.cookie_box.min_height = cookie
+            self.cookie_box.configure(height=cookie)
+        if hasattr(self, "cookie_text"):
+            self.cookie_text.configure(height=cookie_lines)
+        if hasattr(self, "overview_panel"):
+            self.overview_panel.min_height = overview
+            self.overview_panel.configure(height=overview)
+        if hasattr(self, "log_panel"):
+            self.log_panel.min_height = log_panel
+            self.log_panel.configure(height=log_panel)
+        if hasattr(self, "log_wrap"):
+            self.log_wrap.min_height = log_wrap
+            self.log_wrap.configure(height=log_wrap)
+        if hasattr(self, "log_text"):
+            self.log_text.configure(height=log_lines)
+        if hasattr(self, "body"):
+            side = self.body.grid_slaves(row=0, column=0)
+            work = self.body.grid_slaves(row=0, column=1)
+            if side:
+                side[0].grid_configure(padx=(side_pad[0], side_pad[1]), pady=(0, 8 if self._compact_layout else 14))
+            if work:
+                work[0].grid_configure(padx=(work_pad[0], work_pad[1]), pady=(0, 8 if self._compact_layout else 14))
+        if hasattr(self, "monitor"):
+            self.monitor.rowconfigure(0, minsize=monitor_top)
+
     def _open_source_url(self) -> None:
         webbrowser.open(SOURCE_URL)
         self._log("已打开开源地址")
@@ -2303,13 +2440,20 @@ class App(tk.Tk):
         self._log("Cookie 本地格式校验通过")
 
     def _clear_log(self) -> None:
-        self.log_text.configure(state="normal")
-        self.log_text.delete("1.0", "end")
-        self.log_text.configure(state="disabled")
-        self._log("日志已清空")
+        view = self.log_view_var.get() if hasattr(self, "log_view_var") else "all"
+        if view == "all":
+            self.log_entries = []
+            clear_kind = "task"
+        else:
+            self.log_entries = [(kind, entry) for kind, entry in getattr(self, "log_entries", []) if kind != view]
+            clear_kind = view
+        if not hasattr(self, "log_entries"):
+            self.log_entries = []
+        self.log_entries.append((clear_kind, self._format_log_entry("日志已清空")))
+        self._render_log_text()
 
     def _copy_log(self) -> None:
-        content = self.log_text.get("1.0", "end").strip()
+        content = self._current_log_content().strip()
         self.clipboard_clear()
         self.clipboard_append(content)
         self._log("日志已复制到剪贴板")
@@ -2668,19 +2812,68 @@ class App(tk.Tk):
     def _parse_task_ids(self, value: str) -> list[str]:
         return parse_task_ids(value)
 
-    def _log(self, message: str) -> None:
-        entry = self._format_log_entry(message)
-        if hasattr(self, "log_empty_canvas"):
-            self.log_empty_canvas.place_forget()
-        if hasattr(self, "log_empty_label"):
-            self.log_empty_label.place_forget()
-        if hasattr(self, "log_empty_detail_label"):
-            self.log_empty_detail_label.place_forget()
+    def _select_log_view(self, view: str) -> None:
+        if view not in {"task", "room", "all"}:
+            view = "task"
+        self.log_view_var.set(view)
+        for key, button in getattr(self, "log_view_buttons", {}).items():
+            selected = key == view
+            button.set_appearance(
+                text=button.text,
+                fill=ACCENT if selected else SECONDARY,
+                foreground="#ffffff" if selected else MUTED,
+                active_fill=ACCENT_ACTIVE if selected else SECONDARY_ACTIVE,
+            )
+        self._render_log_text()
+
+    def _log_kind(self, message: str) -> str:
+        _prefix, body = self._split_account_prefix(str(message))
+        if body.startswith(("房间 ", "后台计时状态", "后台计时 ", "上报进入直播间")):
+            return "room"
+        if "直播中" in body and "人气" in body:
+            return "room"
+        return "task"
+
+    def _visible_log_entries(self) -> list[str]:
+        view = self.log_view_var.get() if hasattr(self, "log_view_var") else "all"
+        entries = self.__dict__.get("log_entries", [])
+        if view == "all":
+            return [entry for _kind, entry in entries]
+        return [entry for kind, entry in entries if kind == view]
+
+    def _current_log_content(self) -> str:
+        return "".join(self._visible_log_entries())
+
+    def _render_log_text(self) -> None:
+        if "log_text" not in self.__dict__:
+            return
+        content = self._current_log_content()
+        has_content = bool(content.strip())
+        for attr in ("log_empty_canvas", "log_empty_label", "log_empty_detail_label"):
+            widget = self.__dict__.get(attr)
+            if widget is None:
+                continue
+            if has_content:
+                widget.place_forget()
+            elif attr == "log_empty_canvas":
+                widget.place(relx=0, rely=0, relwidth=1, relheight=1)
+            elif attr == "log_empty_label":
+                widget.place(relx=0.5, rely=0.45, anchor="center")
+            else:
+                widget.place(relx=0.5, rely=0.5, anchor="center")
         self.log_text.configure(state="normal")
-        self.log_text.insert("end", entry)
+        self.log_text.delete("1.0", "end")
+        self.log_text.insert("end", content)
         if not hasattr(self, "auto_scroll_var") or bool(self.auto_scroll_var.get()):
             self.log_text.see("end")
         self.log_text.configure(state="disabled")
+
+    def _log(self, message: str) -> None:
+        entry = self._format_log_entry(message)
+        if not hasattr(self, "log_entries"):
+            self.log_entries = []
+        self.log_entries.append((self._log_kind(message), entry))
+        self._render_log_text()
 
     def _format_log_entry(self, message: str) -> str:
         timestamp = datetime.now().strftime("%H:%M:%S")
@@ -2832,8 +3025,6 @@ class App(tk.Tk):
         remaining_match = re.search(r"还差\s*(\d+(?:\.\d+)?)\s*分钟", text)
         if remaining_match:
             self._progress_terminal = False
-            if self._render_local_progress():
-                return
             remaining = float(remaining_match.group(1))
             self.progress_ring.set_state(text="计时中", caption="剩余时长", value=0.32, color=ACCENT)
             self.progress_title_var.set(f"还差 {self._format_progress_number(remaining)} 分钟")
@@ -2916,8 +3107,6 @@ class App(tk.Tk):
             return
         if "没有读到活动任务列表" in text or "任务进度检查失败" in text:
             self._progress_terminal = False
-            if self._render_local_progress():
-                return
             self.progress_ring.set_state(text="等待", caption="任务列表", value=0.16, color=ACCENT)
             self.progress_title_var.set("等待任务进度")
             self.progress_detail_var.set("暂时没有读到任务列表，程序会自动重试。")
@@ -2928,8 +3117,6 @@ class App(tk.Tk):
             return
         if "活动任务进度接口暂未返回可显示的奖励进度" in text:
             self._progress_terminal = False
-            if self._render_local_progress():
-                return
             self.progress_ring.set_state(text="同步中", caption="进度接口", value=0.26, color=ACCENT)
             self.progress_title_var.set("等待 B 站同步当前分钟数")
             self.progress_detail_var.set("任务已识别，B 站暂未返回可显示分钟数。")
@@ -2940,8 +3127,6 @@ class App(tk.Tk):
             return
         if "已找到本次活动任务" in text or "活动任务已识别" in text or "任务已识别" in text or "已自动找到任务列表" in text:
             self._progress_terminal = False
-            if self._render_local_progress():
-                return
             self.progress_ring.set_state(text="已识别", caption="任务列表", value=0.2, color=ACCENT)
             self.progress_title_var.set("任务已识别")
             self.progress_detail_var.set("正在等待 B 站返回当前奖励进度。")
@@ -2952,8 +3137,6 @@ class App(tk.Tk):
             return
         if "后台计时" in text and ("暂时失败" in text or "稍后重试" in text):
             self._progress_terminal = False
-            if self._render_local_progress():
-                return
             self.progress_ring.set_state(text="计时", caption="重试中", value=0.24, color=ACCENT)
             self.progress_title_var.set("后台重试中")
             self.progress_detail_var.set("单路计时暂时失败，后台会自动重试。")
@@ -2968,8 +3151,6 @@ class App(tk.Tk):
             return
         if "已启动" in text or "后台计时" in text or "计时" in text:
             self._progress_terminal = False
-            if self._render_local_progress():
-                return
             self.progress_ring.set_state(text="计时", caption="后台运行", value=0.22, color=ACCENT)
             self.progress_title_var.set("运行中")
             self.progress_detail_var.set("正在等待 B 站返回任务进度。")
@@ -2997,62 +3178,6 @@ class App(tk.Tk):
         merged = set(self._activity_target_minutes)
         merged.update(positive)
         self._activity_target_minutes = sorted(merged)
-
-    def _elapsed_minutes(self) -> float:
-        if self.started_at is None:
-            return 0.0
-        return max(0.0, (datetime.now() - self.started_at).total_seconds() / 60.0)
-
-    def _compute_local_progress_tier(self, elapsed_minutes: float, targets: list[float]) -> tuple[float, float, float, bool] | None:
-        tiers = sorted(value for value in targets if value > 0)
-        if not tiers:
-            return None
-        if elapsed_minutes >= tiers[-1]:
-            return tiers[-1], tiers[-1], 0.0, True
-        target = next(tier for tier in tiers if elapsed_minutes < tier)
-        shown = min(elapsed_minutes, target)
-        remaining = max(0.0, target - elapsed_minutes)
-        return shown, target, remaining, False
-
-    def _render_local_progress(self) -> bool:
-        if not hasattr(self, "progress_ring"):
-            return False
-        tier = self._compute_local_progress_tier(self._elapsed_minutes(), self._activity_target_minutes)
-        if tier is None:
-            return False
-        shown, target, remaining, completed = tier
-        if completed:
-            self.progress_ring.set_state(text="时长足", caption="等待结算", value=1.0, color=SUCCESS)
-            self.progress_title_var.set(f"已挂 {self._format_progress_number(shown)} 分钟")
-            self.progress_detail_var.set("本地时长已达最高档，B 站结算完成后即可领取。")
-            if hasattr(self, "reward_title_var"):
-                self.reward_title_var.set("等待结算")
-                self.reward_detail_var.set("时长已达标，等待 B 站结算后可领取")
-                self.reward_status_var.set("领奖：等待结算")
-            return True
-        ratio = min(max(shown / target, 0.0), 1.0) if target > 0 else 0.0
-        percent = int(round(ratio * 100))
-        self.progress_ring.set_state(text=f"{percent}%", caption="本地计时", value=ratio, color=ACCENT)
-        self.progress_title_var.set(f"{self._format_progress_number(shown)} / {self._format_progress_number(target)} 分钟")
-        self.progress_detail_var.set("按本地挂机时长估算，B 站返回当前分钟数后自动校正。")
-        if hasattr(self, "reward_title_var"):
-            self.reward_title_var.set("未到领取条件")
-            self.reward_detail_var.set(f"还差 {self._format_progress_number(remaining)} 分钟")
-            self.reward_status_var.set("领奖：未到条件")
-        return True
-
-    def _update_local_progress(self) -> None:
-        try:
-            if (
-                self.watcher
-                and getattr(self.watcher, "running", False)
-                and self.started_at is not None
-                and not self._progress_terminal
-                and self._activity_target_minutes
-            ):
-                self._render_local_progress()
-        finally:
-            self.after(1000, self._update_local_progress)
 
     def _format_progress_number(self, value: float) -> str:
         if abs(value - round(value)) < 0.01:
@@ -3137,6 +3262,9 @@ class App(tk.Tk):
                 if account_prefix:
                     snapshot = f"{account_prefix}\n{snapshot}"
                 self._progress_snapshot_log(snapshot)
+                self._log(message)
+                continue
+            if self._log_kind(message) == "room":
                 self._log(message)
                 continue
             if self._is_progress_message(message):

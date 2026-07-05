@@ -6,13 +6,18 @@ from bili_drop_guard import watcher as watcher_module
 from bili_drop_guard.bilibili import (
     BilibiliClient,
     RoomInfo,
+    make_session_cookie_overrides,
     make_session_buvid,
     make_session_device_uuid,
 )
 from bili_drop_guard.watcher import LiveWatcher, WatchOptions
 
 
-COOKIE_WITH_BUVID = "SESSDATA=abc; bili_jct=xyz; buvid3=SHARED-BUVID-FROM-COOKIE"
+COOKIE_WITH_BUVID = (
+    "SESSDATA=abc; bili_jct=xyz; buvid3=SHARED-BUVID-FROM-COOKIE; "
+    "buvid4=SHARED-BUVID4; buvid_fp=SHARED-FP; LIVE_BUVID=SHARED-LIVE; "
+    "_uuid=SHARED-UUID; b_lsid=SHARED-LSID; b_nut=1"
+)
 
 
 class MakeSessionIdentityTest(unittest.TestCase):
@@ -31,6 +36,17 @@ class MakeSessionIdentityTest(unittest.TestCase):
     def test_make_session_device_uuid_is_unique_each_call(self) -> None:
         values = {make_session_device_uuid() for _ in range(50)}
         self.assertEqual(len(values), 50)
+
+    def test_make_session_cookie_overrides_refreshes_device_cookies(self) -> None:
+        overrides = make_session_cookie_overrides("MY-SESSION-BUVID", "device-1")
+
+        self.assertEqual(overrides["buvid3"], "MY-SESSION-BUVID")
+        self.assertIn("buvid4", overrides)
+        self.assertIn("buvid_fp", overrides)
+        self.assertIn("LIVE_BUVID", overrides)
+        self.assertIn("_uuid", overrides)
+        self.assertIn("b_lsid", overrides)
+        self.assertIn("b_nut", overrides)
 
 
 class BilibiliClientSessionIdentityTest(unittest.TestCase):
@@ -57,6 +73,23 @@ class BilibiliClientSessionIdentityTest(unittest.TestCase):
 
         # 关键：HTTP request 用的 cookie 里 buvid3 也得是 session 独立的，B 站去重多半看 cookie。
         self.assertEqual(client.session.cookies.get("buvid3", domain=".bilibili.com"), "MY-FRESH-SESSION-BUVID")
+
+    def test_session_buvid_overrides_browser_device_cookie_set(self) -> None:
+        client = BilibiliClient(
+            COOKIE_WITH_BUVID,
+            session_buvid="MY-FRESH-SESSION-BUVID",
+            session_device_uuid="device-1",
+        )
+
+        for name, original in {
+            "buvid4": "SHARED-BUVID4",
+            "buvid_fp": "SHARED-FP",
+            "LIVE_BUVID": "SHARED-LIVE",
+            "_uuid": "SHARED-UUID",
+            "b_lsid": "SHARED-LSID",
+            "b_nut": "1",
+        }.items():
+            self.assertNotEqual(client.session.cookies.get(name, domain=".bilibili.com"), original)
 
     def test_without_session_buvid_cookie_buvid3_keeps_original(self) -> None:
         client = BilibiliClient(COOKIE_WITH_BUVID)

@@ -136,6 +136,18 @@ class MultiAccountWatcher:
             summary += f"，下一次约 {min(next_intervals)} 秒后"
         return rows, summary
 
+    def get_local_watch_estimate_minutes(self) -> float:
+        total = 0.0
+        for _name, child in self._children:
+            getter = getattr(child, "get_local_watch_estimate_minutes", None)
+            if not callable(getter):
+                continue
+            try:
+                total += max(0.0, float(getter()))
+            except (TypeError, ValueError):
+                continue
+        return total
+
     def claim_completed_tasks(self) -> None:
         with self._claim_lock:
             if self._claim_thread is not None and self._claim_thread.is_alive():

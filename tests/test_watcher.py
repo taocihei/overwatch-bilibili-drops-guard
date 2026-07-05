@@ -115,6 +115,38 @@ class LiveWatcherTest(unittest.TestCase):
         self.assertEqual(next_state.ets, 200)
         self.assertEqual(next_state.secret_key, "secret")
 
+    def test_live_watch_submits_page_heartbeat_alongside_x25kn(self) -> None:
+        calls: list[str] = []
+
+        class FakeClient:
+            def enter_room_heartbeat(self, room: RoomInfo) -> dict[str, object]:
+                calls.append("E")
+                return {"heartbeat_interval": 30, "timestamp": 100, "secret_key": "secret", "secret_rule": [0]}
+
+            def in_room_heartbeat(
+                self,
+                room: RoomInfo,
+                sequence: int,
+                interval: int,
+                ets: int,
+                secret_key: str,
+                secret_rule: list[int],
+            ) -> dict[str, object]:
+                calls.append(f"X{sequence}")
+                return {"heartbeat_interval": 30, "timestamp": 200}
+
+            def web_live_heartbeat(self, room_id: int, interval: int = 60) -> dict[str, object]:
+                calls.append(f"WEB:{room_id}:{interval}")
+                return {"next_interval": interval}
+
+        live_watcher = LiveWatcher(WatchOptions(cookie="a=b", room_id="1"), lambda _message: None)
+        room = RoomInfo(room_id=23612045, live_status=1)
+
+        state = live_watcher._start_heartbeat_session(FakeClient(), room, watcher.HeartbeatState())
+        live_watcher._continue_heartbeat_session(FakeClient(), room, 1, state)
+
+        self.assertEqual(calls, ["E", "WEB:23612045:30", "X1", "WEB:23612045:30"])
+
     def test_claim_worker_uses_single_sequential_path(self) -> None:
         calls: list[tuple[int, str | None]] = []
 
@@ -486,14 +518,14 @@ class LiveWatcherTest(unittest.TestCase):
         self.assertIn("manual-activity", live_watcher._activity_task_ids)
         self.assertIn("manual-activity", live_watcher._claimable_task_ids)
 
-    def test_watch_start_delay_uses_batched_stagger(self) -> None:
+    def test_watch_start_delay_uses_one_per_second_stagger(self) -> None:
         live_watcher = LiveWatcher(WatchOptions(cookie="a=b", room_id="1"), lambda _m: None)
         self.assertEqual(live_watcher._watch_start_delay(1), 0.0)
-        self.assertEqual(live_watcher._watch_start_delay(5), 0.0)
-        self.assertEqual(live_watcher._watch_start_delay(6), 1.0)
-        self.assertEqual(live_watcher._watch_start_delay(10), 1.0)
-        self.assertEqual(live_watcher._watch_start_delay(11), 2.0)
-        self.assertEqual(live_watcher._watch_start_delay(42), 8.0)
+        self.assertEqual(live_watcher._watch_start_delay(5), 4.0)
+        self.assertEqual(live_watcher._watch_start_delay(6), 5.0)
+        self.assertEqual(live_watcher._watch_start_delay(10), 9.0)
+        self.assertEqual(live_watcher._watch_start_delay(11), 10.0)
+        self.assertEqual(live_watcher._watch_start_delay(42), 41.0)
 
     def test_heartbeat_count_appears_in_status_summary(self) -> None:
         live_watcher = LiveWatcher(WatchOptions(cookie="a=b", room_id="1", watch_threads=2), lambda _m: None)
@@ -503,6 +535,13 @@ class LiveWatcherTest(unittest.TestCase):
             live_watcher._record_heartbeat()
         summary_after, _n2, _p2 = live_watcher._watch_status_summary_info()
         self.assertIn("累计计时 3 次", summary_after)
+
+    def test_local_watch_estimate_uses_submitted_heartbeat_seconds(self) -> None:
+        live_watcher = LiveWatcher(WatchOptions(cookie="a=b", room_id="1", watch_threads=2), lambda _m: None)
+        live_watcher._record_heartbeat(60)
+        live_watcher._record_heartbeat(30)
+
+        self.assertEqual(live_watcher.get_local_watch_estimate_minutes(), 1.5)
 
     def test_status_summary_logs_only_on_problem_not_when_normal(self) -> None:
         logs: list[str] = []
@@ -768,7 +807,7 @@ class LiveWatcherTest(unittest.TestCase):
         self.assertIn("90 分钟  还差 48 分钟", summary)
         self.assertNotIn("观看守望先锋电竞直播间30分钟：", summary)
 
-    def test_task_summary_ignores_all_received_watch_steps(self) -> None:
+    def test_task_summary_reports_all_received_watch_steps(self) -> None:
         live_watcher = LiveWatcher(WatchOptions(cookie="a=b", room_id="1"), lambda _message: None)
         progress = {
             "list": [
@@ -791,7 +830,7 @@ class LiveWatcherTest(unittest.TestCase):
 
         summary = live_watcher._summarize_task(progress)
 
-        self.assertEqual(summary, "")
+        self.assertEqual(summary, "全部奖励已领取：5月23日，共 2 个奖励")
 
     def test_record_task_progress_deduplicates_unchanged_summary(self) -> None:
         logs: list[str] = []
@@ -825,11 +864,11 @@ class LiveWatcherTest(unittest.TestCase):
         task_logs = [message for message in logs if message.startswith("掉宝任务：")]
         self.assertEqual(len(task_logs), 2)
         self.assertIn("共 6 个奖励", task_logs[0])
-        self.assertIn("奖励 1（目标 30 分钟）：还差 30 分钟", task_logs[0])
+        self.assertIn("奖励 1（目标 30 分钟）：等待 B 站返回真实进度", task_logs[0])
         self.assertNotIn("0/30 分钟", task_logs[0])
         self.assertIn("257/300 分钟", task_logs[1])
         self.assertNotIn("0/30 分钟", task_logs[1])
-        self.assertIn("活动任务已识别，下面按本地挂机时长估算还差多少分钟", logs)
+        self.assertIn("活动任务已识别，等待 B 站返回真实进度", logs)
 
     def test_task_summary_focuses_today_activity_group(self) -> None:
         live_watcher = LiveWatcher(WatchOptions(cookie="a=b", room_id="1"), lambda _message: None)

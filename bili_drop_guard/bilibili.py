@@ -21,6 +21,17 @@ USER_AGENT = (
     "Chrome/126.0 Safari/537.36"
 )
 
+DEVICE_COOKIE_NAMES = {
+    "buvid3",
+    "buvid4",
+    "buvid_fp",
+    "buvid_fp_plain",
+    "LIVE_BUVID",
+    "_uuid",
+    "b_lsid",
+    "b_nut",
+}
+
 MIXIN_KEY_ENC_TAB = [
     46, 47, 18, 2, 53, 8, 23, 32,
     15, 50, 10, 31, 58, 3, 45, 35,
@@ -129,6 +140,23 @@ def make_session_device_uuid() -> str:
     return uuid4().hex
 
 
+def make_session_cookie_overrides(session_buvid: str, session_device_uuid: str) -> Dict[str, str]:
+    """Build a browser-like device cookie set for one background watch route."""
+
+    now = int(time.time())
+    fingerprint = hashlib.md5(f"{session_buvid}:{session_device_uuid}:{now}".encode("utf-8")).hexdigest()
+    return {
+        "buvid3": session_buvid,
+        "buvid4": f"{session_buvid}-{now}",
+        "buvid_fp": fingerprint,
+        "buvid_fp_plain": fingerprint,
+        "LIVE_BUVID": f"AUTO{uuid4().int % 10**16:016d}",
+        "_uuid": str(uuid4()).upper() + "infoc",
+        "b_lsid": f"{uuid4().hex[:8].upper()}_{format(now, 'X')}",
+        "b_nut": str(now),
+    }
+
+
 class BilibiliClient:
     def __init__(
         self,
@@ -148,6 +176,7 @@ class BilibiliClient:
         else:
             source = self.cookies.get("DedeUserID") or self._buvid
             self._device_uuid = str(uuid4()).replace("-", "")[:8] + str(abs(hash(source)))[:8]
+        self._visit_id = uuid4().hex[:16]
         self.session = requests.Session()
         self._wbi_keys: tuple[str, str] | None = None
         self.session.headers.update(
@@ -160,8 +189,10 @@ class BilibiliClient:
         for key, value in self.cookies.items():
             self.session.cookies.set(key, value, domain=".bilibili.com")
         if session_buvid:
-            # 也要覆盖 cookie 里的 buvid3——B 站去重更可能看 Cookie header 而非请求体里的 device 字段
-            self.session.cookies.set("buvid3", session_buvid, domain=".bilibili.com")
+            # 覆盖整组设备 cookie，而不是只改 buvid3。真实多开浏览器会产生独立的设备/页面身份；
+            # 若 buvid4、buvid_fp、LIVE_BUVID 等仍复用原 Cookie，活动侧仍可能把多路合并。
+            for key, value in make_session_cookie_overrides(self._buvid, self._device_uuid).items():
+                self.session.cookies.set(key, value, domain=".bilibili.com")
 
     @property
     def csrf(self) -> str:
@@ -174,6 +205,10 @@ class BilibiliClient:
     @property
     def device_uuid(self) -> str:
         return self._device_uuid
+
+    @property
+    def visit_id(self) -> str:
+        return self._visit_id
 
     def check_login(self) -> LoginInfo:
         try:
@@ -240,7 +275,7 @@ class BilibiliClient:
             "platform": "pc",
             "csrf_token": self.csrf,
             "csrf": self.csrf,
-            "visit_id": "",
+            "visit_id": self.visit_id,
         }
         return self._post_form(
             "https://api.live.bilibili.com/xlive/web-room/v1/index/roomEntryAction",
@@ -258,7 +293,7 @@ class BilibiliClient:
             "ua": USER_AGENT,
             "csrf_token": self.csrf,
             "csrf": self.csrf,
-            "visit_id": "",
+            "visit_id": self.visit_id,
         }
         return self._post_form(
             "https://live-trace.bilibili.com/xlive/data-interface/v1/x25Kn/E",
@@ -288,7 +323,7 @@ class BilibiliClient:
             {
                 "csrf_token": self.csrf,
                 "csrf": self.csrf,
-                "visit_id": "",
+                "visit_id": self.visit_id,
                 "s": calc_heartbeat_sign(data, secret_rule),
             }
         )
