@@ -1,3 +1,4 @@
+# Local build, cache, and runtime files.
 __pycache__/
 *.py[cod]
 *.pyo

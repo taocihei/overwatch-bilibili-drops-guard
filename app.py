@@ -7,6 +7,7 @@ from bili_drop_guard.config import APP_DIR
 from bili_drop_guard.gui import main
 
 
+# Keep the entrypoint small so packaging and crash reporting stay predictable.
 def _run() -> None:
     try:
         main()
