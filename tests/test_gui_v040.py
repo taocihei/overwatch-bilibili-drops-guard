@@ -36,6 +36,27 @@ class RoundedPanelLayoutTest(_HiddenRootCase):
 
 
 class SmallWindowLayoutRegressionTest(unittest.TestCase):
+    def test_default_window_shows_complete_settings_and_expanded_log_area(self) -> None:
+        app = gui.App(preview_mode=True)
+        try:
+            app.geometry("1280x840+0+0")
+            for _ in range(5):
+                app.update()
+
+            first, last = app.settings_canvas.yview()
+            self.assertAlmostEqual(first, 0.0, places=3)
+            self.assertAlmostEqual(last, 1.0, places=3)
+            self.assertLessEqual(
+                app.controls.winfo_y() + app.controls.winfo_height(),
+                app.commandbar.winfo_height() + 1,
+            )
+            self.assertGreaterEqual(app.log_wrap.winfo_height(), 300)
+            self.assertEqual(app.log_empty_canvas.winfo_manager(), "place")
+            self.assertEqual(app.log_empty_label.winfo_manager(), "place")
+            self.assertLess(app.log_empty_label.winfo_y(), 80)
+        finally:
+            app.destroy()
+
     def test_primary_and_account_actions_are_reachable_at_minimum_size(self) -> None:
         app = gui.App(preview_mode=True)
         try:

@@ -27,11 +27,11 @@ from .multi_account import MultiAccountWatcher, build_account_options
 
 
 SOURCE_URL = "https://github.com/taocihei/overwatch-bilibili-drops-guard"
-APP_BG = "#f3f7fc"
+APP_BG = "#eef3f9"
 SURFACE = "#ffffff"
-GLASS = "#fcfeff"
-SOFT_SURFACE = "#f6f9fd"
-BORDER = "#edf2f8"
+GLASS = "#fbfdff"
+SOFT_SURFACE = "#f4f7fb"
+BORDER = "#cfd9e6"
 TEXT = "#172033"
 MUTED = "#65748a"
 FAINT = "#95a3b6"
@@ -47,13 +47,13 @@ DANGER = "#c84d44"
 DANGER_BG = "#fff0ef"
 WARNING_BG = "#fffaf0"
 WARNING_BORDER = "#f1d79a"
-PANEL_SHADOW = "#d7deea"
-FIELD_BG = "#f8fbfe"
-FIELD_OUTLINE = ""
-BUTTON_OUTLINE = "#e4ebf5"
-SUBTLE_OUTLINE = "#e7edf6"
-SECONDARY = "#f6f9fd"
-SECONDARY_ACTIVE = "#edf3fa"
+PANEL_SHADOW = "#bcc8d8"
+FIELD_BG = "#f6f9fc"
+FIELD_OUTLINE = "#c8d4e3"
+BUTTON_OUTLINE = "#cbd7e5"
+SUBTLE_OUTLINE = "#d3dde9"
+SECONDARY = "#f4f7fb"
+SECONDARY_ACTIVE = "#e8eef6"
 HEADER_BG = "#fbfdff"
 HEADER_MUTED = "#73839a"
 HEADER_INPUT = "#ffffff"
@@ -1076,6 +1076,12 @@ class App(tk.Tk):
         commandbar.columnconfigure(0, weight=0, minsize=300)
         commandbar.columnconfigure(1, weight=1)
         commandbar.columnconfigure(2, weight=0)
+        tk.Frame(commandbar, bg=BORDER, height=1, highlightthickness=0, borderwidth=0).place(
+            relx=0,
+            rely=1,
+            relwidth=1,
+            anchor="sw",
+        )
 
         brand = tk.Frame(commandbar, bg=HEADER_BG, highlightthickness=0, borderwidth=0)
         self.brand = brand
@@ -1311,10 +1317,6 @@ class App(tk.Tk):
         LabelButton(cookie_actions, "新增账号", self._new_account, fill=ACCENT_SOFT, foreground=ACCENT, active_fill=ACCENT_SOFT_ACTIVE, height=34, font=("Microsoft YaHei UI", 9, "bold"), radius=11, outline="").grid(row=0, column=1, sticky="ew", padx=(0, 8))
         LabelButton(cookie_actions, "验证", self._validate_cookie_text, fill=GLASS, foreground=MUTED, active_fill=SECONDARY_ACTIVE, height=34, width=58, font=("Microsoft YaHei UI", 8, "bold"), radius=11, outline="").grid(row=0, column=2, sticky="e", padx=(0, 4))
         LabelButton(cookie_actions, "清空", self._clear_cookie_text, fill=GLASS, foreground=MUTED, active_fill=SECONDARY_ACTIVE, height=34, width=58, font=("Microsoft YaHei UI", 8, "bold"), radius=11, outline="").grid(row=0, column=3, sticky="e")
-
-        notice = RoundedPanel(cookie, fill=WARNING_BG, background=GLASS, radius=12, padding=(12, 8), min_height=38, outline=WARNING_BORDER, shadow=False, auto_height=False)
-        notice.grid(row=4, column=0, sticky="ew", pady=(14, 0))
-        tk.Label(notice.inner, text="本机保存凭据，不上传到任何服务器。", bg=WARNING_BG, fg="#9a6a10", font=("Microsoft YaHei UI", 9, "bold")).grid(row=0, column=0, sticky="w")
 
         hidden = tk.Frame(parent, bg=APP_BG, highlightthickness=0, borderwidth=0)
         hidden.grid(row=1, column=0, sticky="ew")
@@ -1983,10 +1985,16 @@ class App(tk.Tk):
         self.log_empty_canvas = tk.Canvas(log_wrap.inner, bg=FIELD_BG, highlightthickness=0, borderwidth=0)
         self.log_empty_canvas.place(relx=0, rely=0, relwidth=1, relheight=1)
         self.log_empty_canvas.bind("<Configure>", lambda _event: self._draw_log_empty_skeleton())
-        self.log_empty_label = tk.Label(log_wrap.inner, text="日志尚未开始", bg=FIELD_BG, fg=FAINT, font=("Microsoft YaHei UI", 12, "bold"))
-        self.log_empty_label.place(relx=0.5, rely=0.45, anchor="center")
-        self.log_empty_detail_label = tk.Label(log_wrap.inner, text="开始挂宝后自动记录登录、计时和领取结果", bg=FIELD_BG, fg=FAINT, font=("Microsoft YaHei UI", 9))
-        self.log_empty_detail_label.place(relx=0.5, rely=0.5, anchor="center")
+        self.log_empty_label = tk.Label(log_wrap.inner, text="运行日志已展开", bg=FIELD_BG, fg=MUTED, font=("Microsoft YaHei UI", 11, "bold"))
+        self.log_empty_label.place(x=24, y=24, anchor="nw")
+        self.log_empty_detail_label = tk.Label(
+            log_wrap.inner,
+            text="开始挂宝后，登录、计时、任务和领奖记录会逐条显示在这里。",
+            bg=FIELD_BG,
+            fg=FAINT,
+            font=("Microsoft YaHei UI", 9),
+        )
+        self.log_empty_detail_label.place(x=24, y=52, anchor="nw")
 
     def _draw_log_empty_skeleton(self) -> None:
         if not hasattr(self, "log_empty_canvas"):
@@ -1995,11 +2003,30 @@ class App(tk.Tk):
         canvas.delete("all")
         width = max(1, canvas.winfo_width())
         height = max(1, canvas.winfo_height())
-        inset = 22
-        self._rounded_rect_on(canvas, inset, inset, width - inset, height - inset, 16, fill="#fbfdff", outline="")
-        center_y = height // 2 - 48
-        self._rounded_rect_on(canvas, width // 2 - 82, center_y, width // 2 + 82, center_y + 8, 4, fill="#edf3fa", outline="")
-        self._rounded_rect_on(canvas, width // 2 - 128, center_y + 24, width // 2 + 128, center_y + 32, 4, fill="#f1f5fa", outline="")
+        inset = 18
+        self._rounded_rect_on(
+            canvas,
+            inset,
+            inset,
+            width - inset,
+            height - inset,
+            14,
+            fill="#fbfdff",
+            outline=FIELD_OUTLINE,
+        )
+        row_y = min(98, max(82, height // 3))
+        for row_width in (0.72, 0.58, 0.66):
+            self._rounded_rect_on(
+                canvas,
+                inset + 18,
+                row_y,
+                inset + 18 + int((width - inset * 2 - 36) * row_width),
+                row_y + 8,
+                4,
+                fill="#e8eef6",
+                outline="",
+            )
+            row_y += 28
 
     def _rounded_rect_on(self, canvas: tk.Canvas, x1: int, y1: int, x2: int, y2: int, radius: int, **kwargs: object) -> None:
         points = [
@@ -2350,7 +2377,9 @@ class App(tk.Tk):
             return
         height = self.winfo_height()
         width = self.winfo_width()
-        compact = height < 790
+        # 1280×840 是产品默认窗口，必须直接呈现完整可用布局；这个阈值让默认
+        # 窗口采用经校准的紧凑尺寸，而不是先按超高窗口排版后再被系统裁切。
+        compact = height < 900
         narrow = width < 1200
         if narrow != self._narrow_layout:
             self._narrow_layout = narrow
@@ -2378,15 +2407,15 @@ class App(tk.Tk):
         if compact:
             self._apply_layout_sizes(
                 commandbar=132,
-                statusbar=38,
-                credential=540,
-                cookie=76,
-                cookie_lines=2,
-                overview=182,
-                monitor_top=192,
-                log_panel=320,
-                log_wrap=244,
-                log_lines=10,
+                statusbar=42,
+                credential=620,
+                cookie=84,
+                cookie_lines=3,
+                overview=204,
+                monitor_top=214,
+                log_panel=360,
+                log_wrap=280,
+                log_lines=12,
                 side_pad=(14, 6),
                 work_pad=(0, 14),
             )
@@ -2424,6 +2453,8 @@ class App(tk.Tk):
     ) -> None:
         if hasattr(self, "commandbar"):
             self.commandbar.configure(height=commandbar)
+        if hasattr(self, "controls"):
+            self.controls.grid_configure(pady=(14 if self._compact_layout else 22, 0))
         if hasattr(self, "statusbar"):
             self.statusbar.configure(height=statusbar)
         if hasattr(self, "credential_panel"):
@@ -2927,9 +2958,9 @@ class App(tk.Tk):
             elif attr == "log_empty_canvas":
                 widget.place(relx=0, rely=0, relwidth=1, relheight=1)
             elif attr == "log_empty_label":
-                widget.place(relx=0.5, rely=0.45, anchor="center")
+                widget.place(x=24, y=24, anchor="nw")
             else:
-                widget.place(relx=0.5, rely=0.5, anchor="center")
+                widget.place(x=24, y=52, anchor="nw")
         self.log_text.configure(state="normal")
         self.log_text.delete("1.0", "end")
         self.log_text.insert("end", content)
