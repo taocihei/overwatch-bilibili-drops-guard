@@ -98,7 +98,8 @@ class MultiAccountWatcher:
 
     @property
     def running(self) -> bool:
-        return any(getattr(child, "running", False) for _name, child in self._children)
+        starting = self._start_thread is not None and self._start_thread.is_alive()
+        return starting or any(getattr(child, "running", False) for _name, child in self._children)
 
     def get_watch_status_snapshot(self) -> tuple[list[WatchWorkerStatus], str]:
         rows: list[WatchWorkerStatus] = []
@@ -106,11 +107,15 @@ class MultiAccountWatcher:
         total_routes = 0
         next_intervals: list[int] = []
         for _account_index, (name, child) in enumerate(self._children, start=1):
+            child_rows: list[WatchWorkerStatus] = []
             getter = getattr(child, "get_watch_status_snapshot", None)
             if callable(getter):
                 try:
-                    child_rows, child_summary = getter()
-                    del child_summary
+                    snapshot = getter()
+                    if isinstance(snapshot, tuple) and len(snapshot) == 2:
+                        candidate_rows, _child_summary = snapshot
+                        if isinstance(candidate_rows, list):
+                            child_rows = [row for row in candidate_rows if isinstance(row, WatchWorkerStatus)]
                 except Exception:
                     # 单账号状态读取异常不应拖垮整体状态展示
                     child_rows = []

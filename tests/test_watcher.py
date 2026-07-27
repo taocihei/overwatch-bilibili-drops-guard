@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import threading
+import time
 import unittest
 from datetime import date, timedelta
 from threading import Lock
 
-from bili_drop_guard.bilibili import RoomInfo
+from bili_drop_guard.bilibili import LoginInfo, RoomInfo
 from bili_drop_guard import watcher
 from bili_drop_guard.watcher import LiveWatcher, WatchOptions
 
@@ -489,6 +491,48 @@ class LiveWatcherTest(unittest.TestCase):
         self.assertTrue(any(f"{today_label}｜观看 60 分钟｜奖励 B" in message for message in logs))
         self.assertFalse(any(f"{yesterday_label}｜观看 30 分钟｜奖励 A" in message for message in logs))
         self.assertTrue(any("已找到本次活动任务" in message for message in logs))
+
+    def test_activity_discovery_is_cached_while_progress_stays_fresh(self) -> None:
+        calls = {"discover": 0, "progress": 0}
+
+        class FakeClient:
+            def discover_live_activity_tasks(self, room_id: str) -> dict[str, object]:
+                calls["discover"] += 1
+                return {"tasks": [{"task_id": "activity-a", "task_name": "观看 30 分钟"}]}
+
+            def get_activity_task_progress(self, task_ids: list[str]) -> dict[str, object]:
+                calls["progress"] += 1
+                return {"list": [{"task_id": "activity-a", "task_status": 1}]}
+
+        live_watcher = LiveWatcher(
+            WatchOptions(cookie="a=b", room_id="23612045"),
+            lambda _message: None,
+        )
+        client = FakeClient()
+
+        live_watcher._check_activity_task_progress(client)
+        live_watcher._check_activity_task_progress(client)
+
+        self.assertEqual(calls, {"discover": 1, "progress": 2})
+
+    def test_forced_activity_discovery_bypasses_cache(self) -> None:
+        calls = {"discover": 0}
+
+        class FakeClient:
+            def discover_live_activity_tasks(self, room_id: str) -> dict[str, object]:
+                calls["discover"] += 1
+                return {"tasks": [{"task_id": "activity-a"}]}
+
+        live_watcher = LiveWatcher(
+            WatchOptions(cookie="a=b", room_id="23612045"),
+            lambda _message: None,
+        )
+        client = FakeClient()
+
+        live_watcher._discover_activity_task_ids_if_due(client, announce_progress=False)
+        live_watcher._discover_activity_task_ids_if_due(client, announce_progress=False, force=True)
+
+        self.assertEqual(calls["discover"], 2)
 
     def test_activity_totalv2_result_marks_queried_ids_as_activity_tasks(self) -> None:
         class FakeClient:
@@ -1026,6 +1070,106 @@ class LiveWatcherTest(unittest.TestCase):
             live_watcher._merge_task_ids(["task-b", "task-a"], {"task-a", "task-c"}),
             ["task-b", "task-a", "task-c"],
         )
+
+
+class LiveWatcherRegressionTest(unittest.TestCase):
+    def test_heartbeat_uses_latest_shared_room_snapshot(self) -> None:
+        live_watcher = LiveWatcher(WatchOptions(cookie="a=b", room_id="1"), lambda _message: None)
+        stale_room = RoomInfo(room_id=1, live_status=0, message="未开播")
+        latest_room = RoomInfo(room_id=1, live_status=1, message="直播中")
+        live_watcher._room = latest_room
+
+        resolved = live_watcher._resolve_heartbeat_room(object(), stale_room)  # type: ignore[arg-type]
+
+        self.assertIs(resolved, latest_room)
+
+    def test_invalid_login_stops_before_starting_watch_workers_and_closes_client(self) -> None:
+        closed = threading.Event()
+        started = []
+
+        class FakeClient:
+            def __init__(self, cookie: str) -> None:
+                self.cookie = cookie
+
+            def check_login(self) -> LoginInfo:
+                return LoginInfo(logged_in=False, message="Cookie 未登录")
+
+            def close(self) -> None:
+                closed.set()
+
+        original_client = watcher.BilibiliClient
+        watcher.BilibiliClient = FakeClient
+        try:
+            live_watcher = LiveWatcher(WatchOptions(cookie="expired", room_id="1"), lambda _message: None)
+            live_watcher._start_watch_threads = lambda _room=None: started.append(True)  # type: ignore[method-assign]
+            live_watcher._run()
+        finally:
+            watcher.BilibiliClient = original_client
+
+        self.assertEqual(started, [])
+        self.assertTrue(closed.is_set())
+
+    def test_claimable_snapshot_is_deduplicated_and_received_snapshot_clears_queue(self) -> None:
+        logs: list[str] = []
+        live_watcher = LiveWatcher(WatchOptions(cookie="a=b", room_id="1"), logs.append)
+        live_watcher._last_up_id = 100
+        claimable = {
+            "list": [
+                {"task_id": "task-a", "task_name": "奖励 A", "current": 30, "target": 30},
+                {"task_id": "task-a", "task_name": "奖励 A", "current": 30, "target": 30},
+            ]
+        }
+
+        live_watcher._record_task_progress(claimable, announce_claimable=True)
+        live_watcher._record_task_progress(claimable, announce_claimable=True)
+
+        self.assertEqual(live_watcher._claimable_task_ids, {"task-a"})
+        self.assertEqual(sum("检测到 1 个奖励" in message for message in logs), 1)
+
+        received = {"list": [{"task_id": "task-a", "task_name": "奖励 A", "is_receive": 1}]}
+        live_watcher._record_task_progress(received, announce_claimable=True)
+        self.assertEqual(live_watcher._claimable_task_ids, set())
+
+    def test_concurrent_claim_for_same_task_submits_only_once(self) -> None:
+        submit_count = 0
+        submit_lock = threading.Lock()
+        barrier = threading.Barrier(2)
+
+        class FakeClient:
+            def __init__(self, cookie: str) -> None:
+                self.cookie = cookie
+
+            def claim_user_task_rewards(self, up_id: int, task_id: str | None = None) -> dict[str, object]:
+                nonlocal submit_count
+                with submit_lock:
+                    submit_count += 1
+                time.sleep(0.05)
+                return {}
+
+            def close(self) -> None:
+                return
+
+        original_client = watcher.BilibiliClient
+        watcher.BilibiliClient = FakeClient
+        try:
+            live_watcher = LiveWatcher(WatchOptions(cookie="a=b", room_id="1"), lambda _message: None)
+            results: list[str] = []
+
+            def claim() -> None:
+                barrier.wait(timeout=1)
+                results.append(live_watcher._claim_one_task(100, "task-a"))
+
+            threads = [threading.Thread(target=claim), threading.Thread(target=claim)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(timeout=2)
+        finally:
+            watcher.BilibiliClient = original_client
+
+        self.assertEqual(submit_count, 1)
+        self.assertEqual(len(results), 2)
+        self.assertTrue(any("正在领取" in result or "已经领取过" in result for result in results))
 
 
 if __name__ == "__main__":

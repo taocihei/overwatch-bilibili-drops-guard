@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import os
 import re
-from dataclasses import asdict, dataclass, field
+import tempfile
+from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 
 from .bilibili import normalize_room_id
@@ -19,7 +21,6 @@ DEFAULT_TASK_IDS = ""
 DEFAULT_ROOM_ID = "23612045"
 MIN_CHECK_INTERVAL = 10
 MAX_CHECK_INTERVAL = 600
-MAX_WATCH_WINDOWS = 20
 MAX_WATCH_THREADS = 100
 DEFAULT_CHECK_INTERVAL = 10
 LEGACY_DEFAULT_CHECK_INTERVAL = 60
@@ -52,6 +53,8 @@ def load_config() -> AppConfig:
         return AppConfig()
     try:
         data = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            return AppConfig()
         if "watch_threads" not in data and "claim_threads" in data:
             data["watch_threads"] = data["claim_threads"]
         data.pop("claim_threads", None)
@@ -69,18 +72,41 @@ def load_config() -> AppConfig:
                 if isinstance(item, dict) and str(item.get("name") or "").strip()
             ]
         data["config_version"] = CONFIG_VERSION
-        return sanitize_config(AppConfig(**{**asdict(AppConfig()), **data}))
-    except Exception:
+        known_fields = {item.name for item in fields(AppConfig)}
+        known_data = {key: value for key, value in data.items() if key in known_fields}
+        return sanitize_config(AppConfig(**{**asdict(AppConfig()), **known_data}))
+    except (OSError, UnicodeError, json.JSONDecodeError, TypeError, ValueError):
         return AppConfig()
 
 
 def save_config(config: AppConfig) -> None:
     config = sanitize_config(config)
-    APP_DIR.mkdir(parents=True, exist_ok=True)
-    CONFIG_PATH.write_text(
-        json.dumps(asdict(config), ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
+    config_dir = CONFIG_PATH.parent
+    config_dir.mkdir(parents=True, exist_ok=True)
+    serialized = json.dumps(asdict(config), ensure_ascii=False, indent=2) + "\n"
+
+    # 先完整写入同目录临时文件，再原子替换正式配置。即使程序在保存过程中退出，
+    # 旧配置也不会变成半截 JSON；同目录还能保证 os.replace 不跨磁盘失败。
+    temp_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            newline="\n",
+            prefix=f".{CONFIG_PATH.name}.",
+            suffix=".tmp",
+            dir=config_dir,
+            delete=False,
+        ) as temp_file:
+            temp_file.write(serialized)
+            temp_file.flush()
+            os.fsync(temp_file.fileno())
+            temp_path = Path(temp_file.name)
+        os.replace(temp_path, CONFIG_PATH)
+        temp_path = None
+    finally:
+        if temp_path is not None:
+            temp_path.unlink(missing_ok=True)
 
 
 def sanitize_config(config: AppConfig) -> AppConfig:

@@ -4,12 +4,67 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from bili_drop_guard import config
 from bili_drop_guard.config import AppConfig, AccountProfile, sanitize_config
 
 
 class ConfigTest(unittest.TestCase):
+    def test_load_config_ignores_future_unknown_fields(self) -> None:
+        original_path = config.CONFIG_PATH
+        with tempfile.TemporaryDirectory() as temp_dir:
+            try:
+                config.CONFIG_PATH = Path(temp_dir) / "config.json"
+                config.CONFIG_PATH.write_text(
+                    json.dumps({"check_interval": 42, "future_option": {"enabled": True}}),
+                    encoding="utf-8",
+                )
+
+                loaded = config.load_config()
+            finally:
+                config.CONFIG_PATH = original_path
+
+        self.assertEqual(loaded.check_interval, 42)
+
+    def test_save_config_atomically_replaces_existing_file(self) -> None:
+        original_path = config.CONFIG_PATH
+        with tempfile.TemporaryDirectory() as temp_dir:
+            try:
+                config.CONFIG_PATH = Path(temp_dir) / "config.json"
+                config.CONFIG_PATH.write_text('{"room_id":"old"}', encoding="utf-8")
+
+                config.save_config(AppConfig(room_id="123456", check_interval=35))
+
+                saved = json.loads(config.CONFIG_PATH.read_text(encoding="utf-8"))
+                temporary_files = list(config.CONFIG_PATH.parent.glob(".config.json.*.tmp"))
+            finally:
+                config.CONFIG_PATH = original_path
+
+        self.assertEqual(saved["room_id"], "123456")
+        self.assertEqual(saved["check_interval"], 35)
+        self.assertEqual(temporary_files, [])
+
+    def test_save_config_keeps_old_file_when_replace_fails(self) -> None:
+        original_path = config.CONFIG_PATH
+        with tempfile.TemporaryDirectory() as temp_dir:
+            try:
+                config.CONFIG_PATH = Path(temp_dir) / "config.json"
+                original_content = '{"room_id":"old"}'
+                config.CONFIG_PATH.write_text(original_content, encoding="utf-8")
+
+                with patch("bili_drop_guard.config.os.replace", side_effect=OSError("locked")):
+                    with self.assertRaisesRegex(OSError, "locked"):
+                        config.save_config(AppConfig(room_id="123456"))
+
+                current_content = config.CONFIG_PATH.read_text(encoding="utf-8")
+                temporary_files = list(config.CONFIG_PATH.parent.glob(".config.json.*.tmp"))
+            finally:
+                config.CONFIG_PATH = original_path
+
+        self.assertEqual(current_content, original_content)
+        self.assertEqual(temporary_files, [])
+
     def test_load_config_clears_legacy_default_task_ids(self) -> None:
         original_path = config.CONFIG_PATH
         with tempfile.TemporaryDirectory() as temp_dir:

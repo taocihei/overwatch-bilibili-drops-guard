@@ -5,7 +5,14 @@ import unittest
 from pathlib import Path
 
 from bili_drop_guard import cookie_capture
-from bili_drop_guard.cookie_capture import BILIBILI_LOGIN_URL, _launch_browser_for_attach, _wait_for_cookie, open_bilibili_login_page
+from bili_drop_guard.cookie_capture import (
+    BILIBILI_LOGIN_URL,
+    _build_cookie_header,
+    _launch_browser_for_attach,
+    _read_bilibili_cookies,
+    _wait_for_cookie,
+    open_bilibili_login_page,
+)
 
 
 class FakeDriver:
@@ -68,6 +75,28 @@ class CookieCaptureTest(unittest.TestCase):
         self.assertIn("SESSDATA=abc", result.cookie_header)
         self.assertIn("bili_jct=csrf", result.cookie_header)
         self.assertNotIn("other=ignored", result.cookie_header)
+
+    def test_cookie_reader_rejects_lookalike_domain(self) -> None:
+        driver = CdpOnlyDriver(
+            cdp_cookies=[
+                {"name": "SESSDATA", "value": "evil", "domain": ".evilbilibili.com", "path": "/"},
+                {"name": "SESSDATA", "value": "valid", "domain": ".bilibili.com", "path": "/"},
+            ]
+        )
+
+        cookies = _read_bilibili_cookies(driver)
+
+        self.assertEqual([(item["name"], item["value"]) for item in cookies], [("SESSDATA", "valid")])
+
+    def test_cookie_header_selects_one_stable_value_per_name(self) -> None:
+        header = _build_cookie_header([
+            {"name": "SESSDATA", "value": "host-old", "domain": ".passport.bilibili.com", "path": "/login"},
+            {"name": "SESSDATA", "value": "shared-valid", "domain": ".bilibili.com", "path": "/"},
+            {"name": "bili_jct", "value": "csrf", "domain": ".bilibili.com", "path": "/"},
+        ])
+
+        self.assertEqual(header.count("SESSDATA="), 1)
+        self.assertIn("SESSDATA=shared-valid", header)
 
     def test_open_login_page_prefers_local_browser(self) -> None:
         calls: list[list[str]] = []

@@ -1,8 +1,18 @@
 # -*- mode: python ; coding: utf-8 -*-
 import sys
+from importlib.util import find_spec
 from pathlib import Path
 
 from PyInstaller.utils.hooks import collect_all
+
+required_packages = ('requests', 'selenium', 'PIL', 'tkinter', '_tkinter')
+missing_packages = [name for name in required_packages if find_spec(name) is None]
+if missing_packages:
+    raise RuntimeError(
+        'Missing required build packages: '
+        + ', '.join(missing_packages)
+        + '. Run: python -m pip install -r requirements.txt'
+    )
 
 python_root = Path(sys.base_prefix)
 tcl_library = python_root / 'tcl' / 'tcl8.6'

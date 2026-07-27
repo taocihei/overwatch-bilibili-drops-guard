@@ -1,6 +1,6 @@
 ﻿# 守望先锋 B 站直播挂宝 / Overwatch Bilibili Live Drops Guard
 
-当前版本：`v0.4.9`
+当前版本：`v0.5.0`
 
 开源地址：<https://github.com/taocihei/overwatch-bilibili-drops-guard>
 
@@ -16,7 +16,7 @@
 
 这是一个给守望先锋 B 站直播掉宝活动使用的桌面工具。
 
-它会通过本机 Edge 或 Chrome 获取你的 B 站登录 Cookie，然后在后台发送直播观看计时请求。正式挂宝时不会打开一堆直播间浏览器窗口。程序会定时检查直播间、任务进度和领奖状态，任务完成后可以自动领取，也可以手动点击领取。
+它可以在你主动点击“自动获取 Cookie”时临时打开一个本机 Edge 或 Chrome 登录窗口；正式挂宝只运行当前应用，通过内部后台会话发送直播观看计时请求，不会打开任何直播间浏览器窗口或标签页。程序会定时检查直播间、任务进度和领奖状态，任务完成后可以自动领取，也可以手动点击领取。
 
 默认直播间是守望先锋赛事直播间：`23612045`。
 
@@ -24,7 +24,7 @@
 
 1. 打开项目页面：<https://github.com/taocihei/overwatch-bilibili-drops-guard>
 2. 进入右侧或页面中的 `Releases`。
-3. 下载 `OverwatchBiliDrops-v0.4.9.exe`。
+3. 下载 `OverwatchBiliDrops-v0.5.0.exe`。
 4. 双击运行。
 5. 如果 Windows 提示“未知发布者”或“Windows 已保护你的电脑”，点击“更多信息”，再点“仍要运行”。这是个人开源软件常见提示，不代表一定有病毒。
 6. 第一次使用先点“自动获取 Cookie”，在弹出的独立 Edge/Chrome 窗口里登录 B 站。
@@ -47,6 +47,15 @@
 - `通知 URL`：可留空。填写后，启动、检测到可领取、领取成功、领取失败、Cookie 获取成功等关键事件会向该地址发送 JSON POST。
 - `观看进度`：优先显示本次观看进度，比如“还差 48 分钟”“已完成，待领取”“已领取”。
 - `运行日志`：保留登录、计时、任务识别和领取记录，适合排查异常。
+
+## v0.5.0 修复
+
+- **修复开播状态切换**：后台计时会采用最新直播间状态，未开播后开播可自动恢复，下播后不再继续提交旧心跳。
+- **修复重复领奖与并发竞态**：同一任务只排队、提示和提交一次；已领取或状态回退的任务会及时移出待领取队列。
+- **修复登录状态假运行**：Cookie 明确失效时不会启动后台计时，界面会结束“运行中”状态。
+- **修复小窗口操作不可达**：左侧凭据区域支持滚动，窄窗口会压缩顶部工具栏，账号与领奖按钮均可操作。
+- **增强 Cookie 与资源安全**：过滤仿冒域、稳定选择同名 Cookie，并关闭所有短生命周期网络会话。
+- **增强打包可靠性**：缺少 Selenium、Pillow、Tkinter 等依赖或 PyInstaller 失败时立即终止，不再生成残缺安装包或误报成功。
 
 ## v0.4.9 修复
 
@@ -261,7 +270,7 @@ dist\OverwatchBiliDrops.exe
 发布时会同时生成带版本号的文件，例如：
 
 ```text
-dist\OverwatchBiliDrops-v0.4.9.exe
+dist\OverwatchBiliDrops-v0.5.0.exe
 ```
 ## 赞助
 
@@ -278,7 +287,7 @@ dist\OverwatchBiliDrops-v0.4.9.exe
 
 Project name: **守望先锋 B 站直播挂宝 / Overwatch Bilibili Live Drops Guard**
 
-Version: `v0.4.9`
+Version: `v0.5.0`
 
 Repository: <https://github.com/taocihei/overwatch-bilibili-drops-guard>
 
@@ -290,7 +299,7 @@ Sponsorship has no functional effect. It does not unlock features, improve succe
 
 This is a Windows desktop helper for Overwatch Bilibili live drop tasks.
 
-It opens your local Edge or Chrome browser to capture Bilibili login cookies. During guarding, it sends background live heartbeat requests to accumulate watch time, checks task progress, and claims completed rewards. It does not open multiple visible live-room browser windows.
+It opens one temporary local Edge or Chrome login window only when you explicitly request automatic Cookie capture. During guarding, only the desktop app runs: internal background sessions submit live heartbeat requests, check task progress, and claim completed rewards. No live-room browser window or tab is opened.
 
 Default room: `23612045`.
 
@@ -298,7 +307,7 @@ Default room: `23612045`.
 
 1. Open the repository page: <https://github.com/taocihei/overwatch-bilibili-drops-guard>
 2. Open `Releases`.
-3. Download `OverwatchBiliDrops-v0.4.9.exe`.
+3. Download `OverwatchBiliDrops-v0.5.0.exe`.
 4. Double-click to run it.
 5. If Windows shows an unknown-publisher warning, click `More info`, then `Run anyway`.
 6. Click `自动获取 Cookie`, then sign in to Bilibili in the independent Edge/Chrome window opened by the app.
@@ -342,6 +351,6 @@ dist\OverwatchBiliDrops.exe
 Release builds are also copied with a versioned file name, for example:
 
 ```text
-dist\OverwatchBiliDrops-v0.4.9.exe
+dist\OverwatchBiliDrops-v0.5.0.exe
 ```
 

@@ -74,7 +74,7 @@ class BilibiliClientSessionIdentityTest(unittest.TestCase):
         # 关键：HTTP request 用的 cookie 里 buvid3 也得是 session 独立的，B 站去重多半看 cookie。
         self.assertEqual(client.session.cookies.get("buvid3", domain=".bilibili.com"), "MY-FRESH-SESSION-BUVID")
 
-    def test_session_buvid_overrides_browser_device_cookie_set(self) -> None:
+    def test_session_buvid_overrides_shared_device_cookie_set(self) -> None:
         client = BilibiliClient(
             COOKIE_WITH_BUVID,
             session_buvid="MY-FRESH-SESSION-BUVID",
@@ -101,6 +101,7 @@ class WatcherHeartbeatWorkerUsesUniqueSessionIdentityTest(unittest.TestCase):
     def test_each_worker_creates_client_with_distinct_buvid(self) -> None:
         captured_buvids: list[str] = []
         captured_device_uuids: list[str] = []
+        closed_clients: list[str] = []
         orig_client_cls = watcher_module.BilibiliClient
 
         class RecordingClient:
@@ -114,6 +115,9 @@ class WatcherHeartbeatWorkerUsesUniqueSessionIdentityTest(unittest.TestCase):
             def check_login(self):
                 from bili_drop_guard.bilibili import LoginInfo
                 return LoginInfo(False, message="skip")
+
+            def close(self) -> None:
+                closed_clients.append(self._buvid)
 
         watcher_module.BilibiliClient = RecordingClient
         try:
@@ -131,6 +135,7 @@ class WatcherHeartbeatWorkerUsesUniqueSessionIdentityTest(unittest.TestCase):
         self.assertEqual(len(captured_buvids), 5)
         self.assertEqual(len(set(captured_buvids)), 5, f"buvids not unique: {captured_buvids}")
         self.assertEqual(len(set(captured_device_uuids)), 5, f"device_uuids not unique: {captured_device_uuids}")
+        self.assertCountEqual(closed_clients, captured_buvids)
         # And NONE should equal the cookie's shared buvid3
         for buvid in captured_buvids:
             self.assertNotEqual(buvid, "SHARED-BUVID-FROM-COOKIE")

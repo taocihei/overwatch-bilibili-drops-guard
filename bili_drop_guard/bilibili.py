@@ -7,6 +7,7 @@ import re
 import time
 import base64
 import urllib.parse
+from collections.abc import Iterator
 from dataclasses import dataclass
 from http.cookies import SimpleCookie
 from typing import Any, Dict, List
@@ -141,7 +142,7 @@ def make_session_device_uuid() -> str:
 
 
 def make_session_cookie_overrides(session_buvid: str, session_device_uuid: str) -> Dict[str, str]:
-    """Build a browser-like device cookie set for one background watch route."""
+    """Build an isolated device cookie set for one background watch route."""
 
     now = int(time.time())
     fingerprint = hashlib.md5(f"{session_buvid}:{session_device_uuid}:{now}".encode("utf-8")).hexdigest()
@@ -189,10 +190,14 @@ class BilibiliClient:
         for key, value in self.cookies.items():
             self.session.cookies.set(key, value, domain=".bilibili.com")
         if session_buvid:
-            # 覆盖整组设备 cookie，而不是只改 buvid3。真实多开浏览器会产生独立的设备/页面身份；
-            # 若 buvid4、buvid_fp、LIVE_BUVID 等仍复用原 Cookie，活动侧仍可能把多路合并。
+            # 覆盖整组设备 cookie，而不是只改 buvid3，让每路后台计时保持独立会话身份；
+            # 若 buvid4、buvid_fp、LIVE_BUVID 等仍复用原值，活动侧可能把多路合并。
             for key, value in make_session_cookie_overrides(self._buvid, self._device_uuid).items():
                 self.session.cookies.set(key, value, domain=".bilibili.com")
+
+    def close(self) -> None:
+        """释放当前计时会话持有的连接池和套接字。"""
+        self.session.close()
 
     @property
     def csrf(self) -> str:
@@ -642,16 +647,24 @@ def _extract_era_task_groups(state: dict[str, Any]) -> list[dict[str, Any]]:
     return groups
 
 
-def _iter_nested_dicts(value: Any) -> list[dict[str, Any]]:
-    nodes: list[dict[str, Any]] = []
-    if isinstance(value, dict):
-        nodes.append(value)
-        for child in value.values():
-            nodes.extend(_iter_nested_dicts(child))
-    elif isinstance(value, list):
-        for child in value:
-            nodes.extend(_iter_nested_dicts(child))
-    return nodes
+def _iter_nested_dicts(value: Any) -> Iterator[dict[str, Any]]:
+    """深度优先遍历嵌套容器，不复制整棵活动配置树。"""
+    stack = [value]
+    visited: set[int] = set()
+    while stack:
+        node = stack.pop()
+        if not isinstance(node, (dict, list)):
+            continue
+        node_id = id(node)
+        if node_id in visited:
+            continue
+        visited.add(node_id)
+        if isinstance(node, dict):
+            yield node
+            children = node.values()
+        else:
+            children = node
+        stack.extend(reversed(list(children)))
 
 
 def _is_task_group(value: Any) -> bool:

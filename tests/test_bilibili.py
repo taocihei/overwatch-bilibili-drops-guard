@@ -4,10 +4,37 @@ import unittest
 
 import requests
 
-from bili_drop_guard.bilibili import BilibiliClient, _decode_json_response, _extract_tab_labels, _group_label_for_index, normalize_room_id
+from bili_drop_guard.bilibili import (
+    BilibiliClient,
+    _decode_json_response,
+    _extract_tab_labels,
+    _group_label_for_index,
+    _iter_nested_dicts,
+    normalize_room_id,
+)
 
 
 class BilibiliRoomTest(unittest.TestCase):
+    def test_nested_dict_iterator_handles_deep_activity_state(self) -> None:
+        root: dict[str, object] = {}
+        cursor = root
+        for index in range(2_000):
+            child: dict[str, object] = {"index": index}
+            cursor["child"] = child
+            cursor = child
+
+        nodes = list(_iter_nested_dicts(root))
+
+        self.assertEqual(len(nodes), 2_001)
+        self.assertIs(nodes[0], root)
+        self.assertEqual(nodes[-1]["index"], 1_999)
+
+    def test_nested_dict_iterator_ignores_container_cycles(self) -> None:
+        root: dict[str, object] = {}
+        root["self"] = root
+
+        self.assertEqual(list(_iter_nested_dicts(root)), [root])
+
     def test_normalize_room_id_accepts_number(self) -> None:
         self.assertEqual(normalize_room_id(" 123456 "), "123456")
 

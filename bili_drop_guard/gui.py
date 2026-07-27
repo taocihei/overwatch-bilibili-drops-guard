@@ -22,7 +22,7 @@ from .bilibili import normalize_room_id
 from .config import APP_DIR, DEFAULT_ROOM_ID, MAX_CHECK_INTERVAL, MAX_WATCH_THREADS, MIN_CHECK_INTERVAL, AccountProfile, AppConfig, load_config, parse_task_ids, sanitize_config, save_config
 from .cookie_capture import capture_bilibili_cookie, open_bilibili_login_page
 from .notifier import send_notification
-from .watcher import LiveWatcher, WatchOptions, WatchWorkerStatus
+from .watcher import LiveWatcher, WatchWorkerStatus
 from .multi_account import MultiAccountWatcher, build_account_options
 
 
@@ -980,6 +980,7 @@ class App(tk.Tk):
         self.version_var = tk.StringVar(value=f"v{__version__}")
         self.status_label: ttk.Label | None = None
         self._compact_layout = False
+        self._narrow_layout = False
 
         self._configure_style()
         self._build_ui()
@@ -1077,6 +1078,7 @@ class App(tk.Tk):
         commandbar.columnconfigure(2, weight=0)
 
         brand = tk.Frame(commandbar, bg=HEADER_BG, highlightthickness=0, borderwidth=0)
+        self.brand = brand
         brand.grid(row=0, column=0, sticky="w", padx=(22, 16), pady=(24, 0))
         logo = tk.Canvas(brand, width=44, height=44, bg=HEADER_BG, highlightthickness=0, borderwidth=0)
         logo.grid(row=0, column=0, rowspan=2, sticky="w", padx=(0, 12))
@@ -1088,6 +1090,7 @@ class App(tk.Tk):
         tk.Label(sub, textvariable=self.version_var, bg="#edf3fb", fg=TEXT, font=("Microsoft YaHei UI", 8, "bold"), padx=10, pady=2).pack(side="left", padx=(12, 0))
 
         controls = tk.Frame(commandbar, bg=HEADER_BG, highlightthickness=0, borderwidth=0)
+        self.controls = controls
         controls.grid(row=0, column=1, sticky="ew", pady=(22, 0))
         controls.columnconfigure(0, weight=1, minsize=300)
         controls.columnconfigure(1, weight=0, minsize=102)
@@ -1117,8 +1120,10 @@ class App(tk.Tk):
         self.room_entry.bind("<FocusOut>", lambda _event: self._refresh_room_placeholder())
         self.room_var.trace_add("write", lambda *_args: self._refresh_room_placeholder())
         LabelButton(room_box.inner, "粘贴", self._paste_room_id, fill=SECONDARY, foreground=TEXT, active_fill=SECONDARY_ACTIVE, height=30, width=48, font=("Microsoft YaHei UI", 8, "bold")).grid(row=0, column=1, sticky="e", padx=(8, 0))
-        LabelButton(room_box.inner, "恢复默认", self._reset_room_id, fill=SECONDARY, foreground=TEXT, active_fill=SECONDARY_ACTIVE, height=30, width=66, font=("Microsoft YaHei UI", 8, "bold")).grid(row=0, column=2, sticky="e", padx=(6, 0))
-        LabelButton(room_box.inner, "打开B站", self._open_live_room, fill=ACCENT_SOFT, foreground=ACCENT, active_fill=ACCENT_SOFT_ACTIVE, height=30, width=66, font=("Microsoft YaHei UI", 8, "bold")).grid(row=0, column=3, sticky="e", padx=(6, 0))
+        self.reset_room_button = LabelButton(room_box.inner, "恢复默认", self._reset_room_id, fill=SECONDARY, foreground=TEXT, active_fill=SECONDARY_ACTIVE, height=30, width=66, font=("Microsoft YaHei UI", 8, "bold"))
+        self.reset_room_button.grid(row=0, column=2, sticky="e", padx=(6, 0))
+        self.open_room_button = LabelButton(room_box.inner, "打开B站", self._open_live_room, fill=ACCENT_SOFT, foreground=ACCENT, active_fill=ACCENT_SOFT_ACTIVE, height=30, width=66, font=("Microsoft YaHei UI", 8, "bold"))
+        self.open_room_button.grid(row=0, column=3, sticky="e", padx=(6, 0))
         tk.Label(
             controls,
             textvariable=self.room_hint_var,
@@ -1141,6 +1146,7 @@ class App(tk.Tk):
         LabelButton(actions, "领取奖励", self._claim, fill=SURFACE, foreground=TEXT, active_fill=SECONDARY_ACTIVE, height=44, width=118, font=("Microsoft YaHei UI", 9, "bold"), radius=14, outline=SUBTLE_OUTLINE).pack(side="left")
 
         status_card = RoundedPanel(controls, fill="#f6f9fd", background=HEADER_BG, radius=16, padding=(12, 5), min_height=44, outline=SUBTLE_OUTLINE, shadow=False, auto_height=False)
+        self.status_card = status_card
         status_card.configure(width=96)
         status_card.grid(row=1, column=4, sticky="nw")
         status_inner = status_card.inner
@@ -1204,7 +1210,26 @@ class App(tk.Tk):
         parent.columnconfigure(0, weight=1)
         parent.rowconfigure(0, weight=1)
 
-        credential_panel = RoundedPanel(parent, fill=GLASS, background=APP_BG, radius=18, padding=(20, 16), min_height=620, outline=SUBTLE_OUTLINE, shadow=True, auto_height=False)
+        settings_canvas = tk.Canvas(parent, bg=APP_BG, highlightthickness=0, borderwidth=0)
+        settings_canvas.grid(row=0, column=0, sticky="nsew")
+        settings_scrollbar = ttk.Scrollbar(parent, orient="vertical", command=settings_canvas.yview, style="Vertical.TScrollbar")
+        settings_scrollbar.grid(row=0, column=1, sticky="ns", padx=(2, 0))
+        settings_canvas.configure(yscrollcommand=settings_scrollbar.set)
+        settings_host = tk.Frame(settings_canvas, bg=APP_BG, highlightthickness=0, borderwidth=0)
+        settings_host.columnconfigure(0, weight=1)
+        settings_window = settings_canvas.create_window(0, 0, anchor="nw", window=settings_host)
+        settings_canvas.bind(
+            "<Configure>",
+            lambda event: settings_canvas.itemconfigure(settings_window, width=max(1, event.width)),
+        )
+        settings_host.bind(
+            "<Configure>",
+            lambda _event: settings_canvas.configure(scrollregion=settings_canvas.bbox("all")),
+        )
+        self.settings_canvas = settings_canvas
+        self.bind_all("<MouseWheel>", self._scroll_settings_workspace, add="+")
+
+        credential_panel = RoundedPanel(settings_host, fill=GLASS, background=APP_BG, radius=18, padding=(20, 16), min_height=620, outline=SUBTLE_OUTLINE, shadow=True, auto_height=True)
         self.credential_panel = credential_panel
         credential_panel.grid(row=0, column=0, sticky="nsew")
         cookie = credential_panel.inner
@@ -1300,6 +1325,25 @@ class App(tk.Tk):
         self.task_ids_text.grid(row=0, column=0)
         self.task_ids_text.insert("1.0", self.config_data.task_ids)
         hidden.grid_remove()
+
+    def _scroll_settings_workspace(self, event: tk.Event) -> str | None:
+        canvas = getattr(self, "settings_canvas", None)
+        if canvas is None or not canvas.winfo_exists():
+            return None
+        pointer_x = self.winfo_pointerx()
+        pointer_y = self.winfo_pointery()
+        left = canvas.winfo_rootx()
+        top = canvas.winfo_rooty()
+        if not (left <= pointer_x < left + canvas.winfo_width() and top <= pointer_y < top + canvas.winfo_height()):
+            return None
+        scrollregion = canvas.bbox("all")
+        if not scrollregion or scrollregion[3] <= canvas.winfo_height():
+            return None
+        delta = int(getattr(event, "delta", 0) or 0)
+        if delta:
+            canvas.yview_scroll(-1 if delta > 0 else 1, "units")
+            return "break"
+        return None
 
     def _credential_flow_header(self, parent: tk.Misc, number: str, title: str, status: str, *, row: int) -> None:
         header = tk.Frame(parent, bg=GLASS, highlightthickness=0, borderwidth=0)
@@ -1743,10 +1787,6 @@ class App(tk.Tk):
             canvas.create_oval(3, 3, 12, 12, outline=color, width=1)
 
     def _toolbar_link(self, parent: tk.Misc, text: str, command: Callable[[], object], *, icon: str) -> tk.Frame:
-        try:
-            background = str(parent.cget("bg"))
-        except tk.TclError:
-            background = GLASS
         link = tk.Frame(
             parent,
             bg=SECONDARY,
@@ -2309,7 +2349,29 @@ class App(tk.Tk):
         if event is not None and event.widget is not self:
             return
         height = self.winfo_height()
+        width = self.winfo_width()
         compact = height < 790
+        narrow = width < 1200
+        if narrow != self._narrow_layout:
+            self._narrow_layout = narrow
+            if narrow:
+                self.brand.grid_remove()
+                self.commandbar.columnconfigure(0, minsize=0)
+                self.controls.grid_configure(row=0, column=0, columnspan=2, sticky="ew", padx=(22, 18))
+                self.controls.columnconfigure(0, minsize=210)
+                self.controls.columnconfigure(4, minsize=0)
+                self.reset_room_button.grid_remove()
+                self.open_room_button.grid_remove()
+                self.status_card.grid_remove()
+            else:
+                self.commandbar.columnconfigure(0, minsize=300)
+                self.brand.grid()
+                self.controls.grid_configure(row=0, column=1, columnspan=1, sticky="ew", padx=0)
+                self.controls.columnconfigure(0, minsize=300)
+                self.controls.columnconfigure(4, minsize=86)
+                self.reset_room_button.grid()
+                self.open_room_button.grid()
+                self.status_card.grid()
         if compact == self._compact_layout:
             return
         self._compact_layout = compact
@@ -2506,8 +2568,6 @@ class App(tk.Tk):
             if account.name == account_name:
                 if cookie:
                     accounts.append(AccountProfile(name=account_name, cookie=cookie))
-                else:
-                    accounts.append(AccountProfile(name=account.name, cookie=account.cookie))
                 replaced = True
             else:
                 accounts.append(AccountProfile(name=account.name, cookie=account.cookie))
@@ -2681,6 +2741,15 @@ class App(tk.Tk):
     def _start(self) -> None:
         requested_watch_threads = self._safe_int_var(self.watch_threads_var, 1)
         config = self._current_config()
+        room_variable = self.__dict__.get("room_var")
+        raw_room_id = room_variable.get().strip() if room_variable is not None else config.room_id
+        requested_room_id = normalize_room_id(raw_room_id)
+        if not requested_room_id:
+            messagebox.showwarning("直播间号无效", "请填写正确的数字直播间号或 B 站直播间链接。")
+            return
+        if room_variable is not None:
+            room_variable.set(requested_room_id)
+            config = self._current_config()
         if not config.cookie:
             messagebox.showwarning("缺少 Cookie", "请先粘贴 B 站 Cookie。")
             return
@@ -2873,6 +2942,7 @@ class App(tk.Tk):
         if not hasattr(self, "log_entries"):
             self.log_entries = []
         self.log_entries.append((self._log_kind(message), entry))
+        self.log_entries = self.log_entries[-2000:]
         self._render_log_text()
 
     def _format_log_entry(self, message: str) -> str:
@@ -3283,6 +3353,10 @@ class App(tk.Tk):
             else:
                 self.watch_status_card.update_snapshot([], "后台计时状态：未启动")
                 self._refresh_backend_summary([])
+                if self.watcher is not None and self.status_var.get() == "运行中":
+                    self._set_status("未运行")
+                    self.started_at = None
+                    self.elapsed_status_var.set("计时：已停止")
         finally:
             self.after(1000, self._poll_watch_status)
 
