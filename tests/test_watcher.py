@@ -262,6 +262,7 @@ class LiveWatcherTest(unittest.TestCase):
         try:
             live_watcher = LiveWatcher(WatchOptions(cookie="a=b", room_id="1"), lambda _message: None)
             live_watcher._activity_task_ids.add("activity-a")
+            live_watcher._activity_claim_task_ids.add("activity-a")
 
             result = live_watcher._claim_one_task(100, "activity-a")
         finally:
@@ -290,6 +291,7 @@ class LiveWatcherTest(unittest.TestCase):
         try:
             live_watcher = LiveWatcher(WatchOptions(cookie="a=b", room_id="1"), lambda _message: None)
             live_watcher._activity_task_ids.add("activity-a")
+            live_watcher._activity_claim_task_ids.add("activity-a")
             live_watcher._wait_between_claims = waits.append  # type: ignore[method-assign]
 
             result = live_watcher._claim_one_task(100, "activity-a")
@@ -316,6 +318,7 @@ class LiveWatcherTest(unittest.TestCase):
         try:
             live_watcher = LiveWatcher(WatchOptions(cookie="a=b", room_id="1"), lambda _message: None)
             live_watcher._activity_task_ids.add("activity-a")
+            live_watcher._activity_claim_task_ids.add("activity-a")
 
             with self.assertRaisesRegex(RuntimeError, "csrf"):
                 live_watcher._claim_one_task(100, "activity-a")
@@ -340,6 +343,7 @@ class LiveWatcherTest(unittest.TestCase):
         try:
             live_watcher = LiveWatcher(WatchOptions(cookie="a=b", room_id="1"), lambda _message: None)
             live_watcher._activity_task_ids.add("activity-a")
+            live_watcher._activity_claim_task_ids.add("activity-a")
 
             with self.assertRaisesRegex(RuntimeError, "请求频率过高"):
                 live_watcher._claim_one_task(100, "activity-a")
@@ -391,6 +395,7 @@ class LiveWatcherTest(unittest.TestCase):
         try:
             live_watcher = LiveWatcher(WatchOptions(cookie="a=b", room_id="1"), lambda _message: None)
             live_watcher._activity_task_ids.add("activity-a")
+            live_watcher._activity_claim_task_ids.add("activity-a")
             live_watcher._claimable_task_ids.add("activity-a")
 
             result = live_watcher._claim_one_task(100, "activity-a")
@@ -491,6 +496,157 @@ class LiveWatcherTest(unittest.TestCase):
         self.assertTrue(any(f"{today_label}｜观看 60 分钟｜奖励 B" in message for message in logs))
         self.assertFalse(any(f"{yesterday_label}｜观看 30 分钟｜奖励 A" in message for message in logs))
         self.assertTrue(any("已找到本次活动任务" in message for message in logs))
+
+    def test_new_checkpoint_template_queries_parent_and_claims_checkpoint_sid(self) -> None:
+        calls: list[list[str]] = []
+
+        class FakeClient:
+            def discover_live_activity_tasks(self, room_id: str) -> dict[str, object]:
+                return {
+                    "tracking_task_ids": ["parent-day-1"],
+                    "tasks": [
+                        {
+                            "task_id": "claim-60",
+                            "parent_task_id": "parent-day-1",
+                            "task_name": "观看直播60分钟",
+                            "award_name": "头像",
+                            "group_label": "7月29日",
+                            "current": 0,
+                            "target": 60,
+                            "task_status": 1,
+                        },
+                        {
+                            "task_id": "claim-120",
+                            "parent_task_id": "parent-day-1",
+                            "task_name": "观看直播120分钟",
+                            "award_name": "战令等级直升",
+                            "group_label": "7月29日",
+                            "current": 0,
+                            "target": 120,
+                            "task_status": 1,
+                        },
+                    ],
+                }
+
+            def get_activity_task_progress(self, task_ids: list[str]) -> dict[str, object]:
+                calls.append(task_ids)
+                return {
+                    "tracking_task_ids": ["parent-day-1"],
+                    "list": [
+                        {
+                            "task_id": "claim-60",
+                            "parent_task_id": "parent-day-1",
+                            "task_name": "观看直播60分钟",
+                            "award_name": "头像",
+                            "current": 60,
+                            "target": 60,
+                            "task_status": 3,
+                        },
+                        {
+                            "task_id": "claim-120",
+                            "parent_task_id": "parent-day-1",
+                            "task_name": "观看直播120分钟",
+                            "award_name": "战令等级直升",
+                            "current": 120,
+                            "target": 120,
+                            "task_status": 2,
+                        },
+                    ],
+                }
+
+        live_watcher = LiveWatcher(
+            WatchOptions(cookie="a=b", room_id="23612045"),
+            lambda _message: None,
+        )
+
+        found_claimable = live_watcher._check_activity_task_progress(FakeClient())
+
+        self.assertTrue(found_claimable)
+        self.assertEqual(calls, [["parent-day-1"]])
+        self.assertEqual(live_watcher._activity_task_ids, {"parent-day-1"})
+        self.assertEqual(
+            live_watcher._activity_claim_task_ids,
+            {"claim-60", "claim-120"},
+        )
+        self.assertEqual(live_watcher._claimable_task_ids, {"claim-120"})
+        self.assertNotIn("parent-day-1", live_watcher._claimable_task_ids)
+        self.assertEqual(
+            live_watcher._activity_task_meta["claim-120"]["award_name"],
+            "战令等级直升",
+        )
+
+    def test_new_checkpoint_claim_uses_activity_mission_api(self) -> None:
+        calls: list[tuple[str, str]] = []
+
+        class FakeClient:
+            def __init__(self, cookie: str) -> None:
+                self.cookie = cookie
+
+            def claim_activity_mission_reward(self, task_id: str) -> dict[str, object]:
+                calls.append(("activity", task_id))
+                return {}
+
+            def claim_user_task_rewards(self, up_id: int, task_id: str | None = None) -> dict[str, object]:
+                calls.append(("user", str(task_id)))
+                return {}
+
+            def close(self) -> None:
+                return None
+
+        original_client = watcher.BilibiliClient
+        watcher.BilibiliClient = FakeClient
+        try:
+            live_watcher = LiveWatcher(
+                WatchOptions(cookie="a=b", room_id="23612045"),
+                lambda _message: None,
+            )
+            live_watcher._activity_task_ids.add("parent-day-1")
+            live_watcher._activity_claim_task_ids.add("claim-120")
+            live_watcher._activity_task_meta["claim-120"] = {
+                "group_label": "7月29日",
+                "task_name": "观看直播120分钟",
+                "award_name": "战令等级直升",
+            }
+
+            result = live_watcher._claim_one_task(100, "claim-120")
+        finally:
+            watcher.BilibiliClient = original_client
+
+        self.assertEqual(calls, [("activity", "claim-120")])
+        self.assertIn("战令等级直升", result)
+
+    def test_activity_progress_enrichment_replaces_empty_checkpoint_metadata(self) -> None:
+        live_watcher = LiveWatcher(
+            WatchOptions(cookie="a=b", room_id="23612045"),
+            lambda _message: None,
+        )
+        live_watcher._activity_task_meta["claim-120"] = {
+            "group_label": "7月29日",
+            "group_index": 0,
+            "task_name": "观看直播120分钟",
+            "award_name": "战令等级直升",
+        }
+        progress = {
+            "list": [
+                {
+                    "task_id": "claim-120",
+                    "group_label": "",
+                    "task_name": "",
+                    "award_name": "",
+                    "task_status": 2,
+                    "current": 120,
+                    "target": 120,
+                }
+            ]
+        }
+
+        live_watcher._enrich_activity_progress(progress)
+
+        task = progress["list"][0]
+        self.assertEqual(task["group_label"], "7月29日")
+        self.assertEqual(task["group_index"], 0)
+        self.assertEqual(task["task_name"], "观看直播120分钟")
+        self.assertEqual(task["award_name"], "战令等级直升")
 
     def test_activity_discovery_is_cached_while_progress_stays_fresh(self) -> None:
         calls = {"discover": 0, "progress": 0}
@@ -681,13 +837,16 @@ class LiveWatcherTest(unittest.TestCase):
         logs: list[str] = []
         live_watcher = LiveWatcher(WatchOptions(cookie="a=b", room_id="23612045"), logs.append)
         live_watcher._activity_task_ids.update({"old-task"})
+        live_watcher._activity_claim_task_ids.update({"old-claim"})
         live_watcher._activity_task_meta["old-task"] = {"group_label": "5月22日"}
-        live_watcher._claimable_task_ids.add("old-task")
+        live_watcher._activity_task_meta["old-claim"] = {"group_label": "5月22日"}
+        live_watcher._claimable_task_ids.update({"old-task", "old-claim"})
 
         task_ids = live_watcher._discover_activity_task_ids(FakeClient(), announce_progress=False)
 
         self.assertEqual(task_ids, ["new-task"])
         self.assertEqual(live_watcher._activity_task_ids, {"new-task"})
+        self.assertEqual(live_watcher._activity_claim_task_ids, {"new-task"})
         self.assertEqual(live_watcher._claimable_task_ids, set())
         self.assertEqual(live_watcher._activity_task_meta["new-task"]["group_label"], "5月25日")
         self.assertTrue(any("活动任务已更新" in message for message in logs))
@@ -703,13 +862,16 @@ class LiveWatcherTest(unittest.TestCase):
         logs: list[str] = []
         live_watcher = LiveWatcher(WatchOptions(cookie="a=b", room_id="23612045"), logs.append)
         live_watcher._activity_task_ids.update({"old-task"})
+        live_watcher._activity_claim_task_ids.update({"old-claim"})
         live_watcher._activity_task_meta["old-task"] = {"group_label": "5月22日"}
-        live_watcher._claimable_task_ids.add("old-task")
+        live_watcher._activity_task_meta["old-claim"] = {"group_label": "5月22日"}
+        live_watcher._claimable_task_ids.update({"old-task", "old-claim"})
 
         found_claimable = live_watcher._check_activity_task_progress(FakeClient())
 
         self.assertFalse(found_claimable)
         self.assertEqual(live_watcher._activity_task_ids, set())
+        self.assertEqual(live_watcher._activity_claim_task_ids, set())
         self.assertEqual(live_watcher._activity_task_meta, {})
         self.assertEqual(live_watcher._claimable_task_ids, set())
         self.assertTrue(any("已清空旧任务缓存" in message for message in logs))
@@ -725,13 +887,16 @@ class LiveWatcherTest(unittest.TestCase):
         logs: list[str] = []
         live_watcher = LiveWatcher(WatchOptions(cookie="a=b", room_id="23612045"), logs.append)
         live_watcher._activity_task_ids.update({"old-task"})
+        live_watcher._activity_claim_task_ids.update({"old-claim"})
         live_watcher._activity_task_meta["old-task"] = {"group_label": "5月22日"}
-        live_watcher._claimable_task_ids.add("old-task")
+        live_watcher._activity_task_meta["old-claim"] = {"group_label": "5月22日"}
+        live_watcher._claimable_task_ids.update({"old-task", "old-claim"})
 
         found_claimable = live_watcher._check_activity_task_progress(FakeClient())
 
         self.assertFalse(found_claimable)
         self.assertEqual(live_watcher._activity_task_ids, set())
+        self.assertEqual(live_watcher._activity_claim_task_ids, set())
         self.assertEqual(live_watcher._activity_task_meta, {})
         self.assertEqual(live_watcher._claimable_task_ids, set())
         self.assertTrue(any("已清空旧任务缓存" in message for message in logs))
@@ -775,6 +940,34 @@ class LiveWatcherTest(unittest.TestCase):
         claimable = live_watcher._find_claimable_task_refs(progress)
 
         self.assertEqual(claimable, [("观看 30 分钟", "activity-a")])
+
+    def test_activity_status_one_is_not_claimable_even_when_progress_is_full(self) -> None:
+        live_watcher = LiveWatcher(
+            WatchOptions(cookie="a=b", room_id="1"),
+            lambda _message: None,
+        )
+        progress = {
+            "list": [
+                {
+                    "task_id": "claim-60",
+                    "task_name": "观看直播60分钟",
+                    "task_status": 1,
+                    "current": 60,
+                    "target": 60,
+                },
+                {
+                    "task_id": "claim-120",
+                    "task_name": "观看直播120分钟",
+                    "task_status": 2,
+                    "current": 120,
+                    "target": 120,
+                },
+            ]
+        }
+
+        claimable = live_watcher._find_claimable_task_refs(progress)
+
+        self.assertEqual(claimable, [("观看直播120分钟", "claim-120")])
 
     def test_task_summary_uses_user_friendly_remaining_and_claim_status(self) -> None:
         live_watcher = LiveWatcher(WatchOptions(cookie="a=b", room_id="1"), lambda _message: None)

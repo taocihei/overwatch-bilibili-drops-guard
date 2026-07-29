@@ -57,7 +57,9 @@ class LiveWatcher:
         self._claimed_markers: set[str] = set()
         self._claimable_task_ids: set[str] = set()
         self._known_task_ids: set[str] = set()
+        # totalv2 必须查询父 task_id；mission/receive 必须提交 checkpoint sid。
         self._activity_task_ids: set[str] = set()
+        self._activity_claim_task_ids: set[str] = set()
         self._activity_task_meta: dict[str, dict[str, Any]] = {}
         self._claimable_general = False
         self._claim_lock = threading.Lock()
@@ -142,12 +144,19 @@ class LiveWatcher:
         self.log("重新识别任务列表")
         with self._claim_lock:
             self._activity_task_ids.clear()
+            self._activity_claim_task_ids.clear()
             self._activity_task_meta.clear()
             self._claimable_task_ids.clear()
         client: BilibiliClient | None = None
         try:
             client = BilibiliClient(self.options.cookie)
-            self._discover_activity_task_ids_if_due(client, announce_progress=True, force=True)
+            task_ids = self._discover_activity_task_ids_if_due(
+                client,
+                announce_progress=True,
+                force=True,
+            )
+            if task_ids:
+                self._check_activity_task_progress(client)
         except Exception as exc:
             self.log(f"重新识别任务失败：{self._friendly_error(exc)}")
         finally:
@@ -588,13 +597,14 @@ class LiveWatcher:
             pass
 
     def _remember_activity_progress_source(self, progress: dict[str, Any], queried_task_ids: list[str]) -> None:
-        progress_task_ids = self._discover_task_ids(progress)
-        task_ids = progress_task_ids or queried_task_ids
-        if not task_ids:
+        tracking_task_ids = self._activity_tracking_task_ids(progress) or queried_task_ids
+        claim_task_ids = self._discover_task_ids(progress)
+        if not tracking_task_ids and not claim_task_ids:
             return
         with self._claim_lock:
-            self._activity_task_ids.update(task_ids)
-            for task_id in task_ids:
+            self._activity_task_ids.update(tracking_task_ids)
+            self._activity_claim_task_ids.update(claim_task_ids)
+            for task_id in claim_task_ids:
                 self._activity_task_meta.setdefault(task_id, {})
 
     def _discover_activity_task_ids(self, client: BilibiliClient, announce_progress: bool = True) -> list[str]:
@@ -607,7 +617,8 @@ class LiveWatcher:
             else:
                 self.log(f"没有读到活动任务列表，稍后会自动再试：{self._friendly_error(exc)}")
             return []
-        task_ids = self._discover_task_ids(progress)
+        claim_task_ids = self._discover_task_ids(progress)
+        task_ids = self._activity_tracking_task_ids(progress) or claim_task_ids
         if not task_ids:
             self._clear_activity_task_cache()
             self.log("当前直播页暂时没有读到可跟踪的掉宝任务，稍后会自动再试")
@@ -617,9 +628,13 @@ class LiveWatcher:
             previous_task_ids = set(self._activity_task_ids)
             new_task_ids = [task_id for task_id in task_ids if task_id not in previous_task_ids]
             stale_task_ids = sorted(previous_task_ids - current_task_ids)
+            current_claim_task_ids = set(claim_task_ids)
+            previous_claim_task_ids = set(self._activity_claim_task_ids)
+            stale_claim_task_ids = previous_claim_task_ids - current_claim_task_ids
             self._activity_task_ids = current_task_ids
-            self._known_task_ids.update(task_ids)
-            self._claimable_task_ids.difference_update(stale_task_ids)
+            self._activity_claim_task_ids = current_claim_task_ids
+            self._known_task_ids.update(current_claim_task_ids)
+            self._claimable_task_ids.difference_update(set(stale_task_ids) | stale_claim_task_ids)
             next_meta: dict[str, dict[str, Any]] = {}
             for node in self._iter_task_nodes(progress):
                 task_id = self._task_id_from_node(node)
@@ -635,16 +650,21 @@ class LiveWatcher:
             self.log("已找到本次活动任务，会自动显示本次可挂的奖励进度")
         if stale_task_ids:
             self.log("活动任务已更新，已同步最新任务列表")
-        if announce_progress or new_task_ids:
-            self._record_task_progress(progress, announce_claimable=False)
+        # 页面 bootstrap 只用于识别拓扑和文案；可领取状态以 totalv2 的实时响应为准，
+        # 避免旧 HTML 中的 status=2 把过期奖励提前塞进领取队列。
         return task_ids
 
     def _clear_activity_task_cache(self) -> None:
         with self._claim_lock:
-            stale_task_ids = set(self._activity_task_ids) | set(self._activity_task_meta)
+            stale_task_ids = (
+                set(self._activity_task_ids)
+                | set(self._activity_claim_task_ids)
+                | set(self._activity_task_meta)
+            )
             if not stale_task_ids:
                 return
             self._activity_task_ids.clear()
+            self._activity_claim_task_ids.clear()
             self._activity_task_meta.clear()
             self._claimable_task_ids.difference_update(stale_task_ids)
             self._last_task_summary = ""
@@ -670,13 +690,17 @@ class LiveWatcher:
             if not meta:
                 continue
             if meta.get("group_label"):
-                node.setdefault("group_label", meta["group_label"])
+                if not node.get("group_label"):
+                    node["group_label"] = meta["group_label"]
             if meta.get("group_index") is not None:
-                node.setdefault("group_index", meta["group_index"])
+                if node.get("group_index") is None:
+                    node["group_index"] = meta["group_index"]
             if meta.get("award_name"):
-                node.setdefault("award_name", meta["award_name"])
+                if not node.get("award_name"):
+                    node["award_name"] = meta["award_name"]
             if meta.get("task_name"):
-                node.setdefault("task_name", meta["task_name"])
+                if not node.get("task_name"):
+                    node["task_name"] = meta["task_name"]
 
     def _record_task_progress(self, progress: dict[str, Any], announce_claimable: bool) -> bool:
         summary = self._summarize_task(progress)
@@ -930,7 +954,7 @@ class LiveWatcher:
         marker = f"{up_id}:{task_id}"
         with self._claim_lock:
             already_claimed = marker in self._claimed_markers
-            is_activity_task = task_id in self._activity_task_ids
+            is_activity_task = task_id in self._activity_claim_task_ids
             already_claiming = marker in self._claiming_markers
             if already_claimed:
                 self._claimable_task_ids.discard(task_id)
@@ -1011,7 +1035,7 @@ class LiveWatcher:
     def _claim_task_label(self, task_id: str) -> str:
         with self._claim_lock:
             meta = dict(self._activity_task_meta.get(task_id) or {})
-            is_activity_task = task_id in self._activity_task_ids
+            is_activity_task = task_id in self._activity_claim_task_ids
         if not is_activity_task:
             return "手动填写的任务"
         parts = [
@@ -1324,6 +1348,20 @@ class LiveWatcher:
                 seen.add(task_id)
         return task_ids
 
+    def _activity_tracking_task_ids(self, progress: dict[str, Any]) -> list[str]:
+        raw_task_ids = progress.get("tracking_task_ids")
+        if not isinstance(raw_task_ids, (list, tuple, set)):
+            return []
+        task_ids: list[str] = []
+        seen: set[str] = set()
+        for value in raw_task_ids:
+            task_id = str(value or "").strip()
+            if not task_id or task_id in seen:
+                continue
+            seen.add(task_id)
+            task_ids.append(task_id)
+        return task_ids
+
     def _task_id_from_node(self, node: dict[str, Any]) -> str:
         value = node.get("task_id") or node.get("taskId") or node.get("taskid") or node.get("id")
         if value is None:
@@ -1378,10 +1416,8 @@ class LiveWatcher:
 
     def _node_claimable(self, node: dict[str, Any]) -> bool:
         activity_status = self._activity_status(node)
-        if activity_status == 2:
-            return True
-        if activity_status == 3:
-            return False
+        if activity_status is not None:
+            return activity_status == 2
         if self._node_received(node) or self._node_unclaimable(node):
             return False
         if self._truthy(node.get("can_receive")) or self._truthy(node.get("claimable")):

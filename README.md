@@ -1,6 +1,6 @@
 ﻿# 守望先锋 B 站直播挂宝 / Overwatch Bilibili Live Drops Guard
 
-当前版本：`v0.5.0`
+当前版本：`v0.5.1`
 
 开源地址：<https://github.com/taocihei/overwatch-bilibili-drops-guard>
 
@@ -24,7 +24,7 @@
 
 1. 打开项目页面：<https://github.com/taocihei/overwatch-bilibili-drops-guard>
 2. 进入右侧或页面中的 `Releases`。
-3. 下载 `OverwatchBiliDrops-v0.5.0.exe`。
+3. 下载 `OverwatchBiliDrops-v0.5.1.exe`。
 4. 双击运行。
 5. 如果 Windows 提示“未知发布者”或“Windows 已保护你的电脑”，点击“更多信息”，再点“仍要运行”。这是个人开源软件常见提示，不代表一定有病毒。
 6. 第一次使用先点“自动获取 Cookie”，在弹出的独立 Edge/Chrome 窗口里登录 B 站。
@@ -47,6 +47,14 @@
 - `通知 URL`：可留空。填写后，启动、检测到可领取、领取成功、领取失败、Cookie 获取成功等关键事件会向该地址发送 JSON POST。
 - `观看进度`：优先显示本次观看进度，比如“还差 48 分钟”“已完成，待领取”“已领取”。
 - `运行日志`：保留登录、计时、任务识别和领取记录，适合排查异常。
+
+## v0.5.1 修复
+
+- **适配 B 站新版多档奖励模板**：进度查询继续使用父任务 ID，每一档奖励改用对应 checkpoint `sid/ztasksid` 领取，不再拿父任务 ID 请求领奖接口。
+- **修复多档奖励只显示一档**：按 60/120/180/240/300 分钟等 checkpoint 分别显示奖励、进度和领取状态。
+- **修复满进度误判可领**：checkpoint 状态为 1 时即使分钟数已满也会等待 B 站刷新，只有状态 2 才进入领奖队列，状态 3 视为已领取。
+- **兼容旧领取模板**：无 checkpoint、旧版直接任务和新版单/多 checkpoint 模板可同时识别。
+- **增强任务页签识别**：兼容嵌套 `EvaTabs.Panel`，按实际活动日期关联同一天的多个奖励组件。
 
 ## v0.5.0 修复
 
@@ -270,7 +278,7 @@ dist\OverwatchBiliDrops.exe
 发布时会同时生成带版本号的文件，例如：
 
 ```text
-dist\OverwatchBiliDrops-v0.5.0.exe
+dist\OverwatchBiliDrops-v0.5.1.exe
 ```
 ## 赞助
 
@@ -287,7 +295,7 @@ dist\OverwatchBiliDrops-v0.5.0.exe
 
 Project name: **守望先锋 B 站直播挂宝 / Overwatch Bilibili Live Drops Guard**
 
-Version: `v0.5.0`
+Version: `v0.5.1`
 
 Repository: <https://github.com/taocihei/overwatch-bilibili-drops-guard>
 
@@ -307,7 +315,7 @@ Default room: `23612045`.
 
 1. Open the repository page: <https://github.com/taocihei/overwatch-bilibili-drops-guard>
 2. Open `Releases`.
-3. Download `OverwatchBiliDrops-v0.5.0.exe`.
+3. Download `OverwatchBiliDrops-v0.5.1.exe`.
 4. Double-click to run it.
 5. If Windows shows an unknown-publisher warning, click `More info`, then `Run anyway`.
 6. Click `自动获取 Cookie`, then sign in to Bilibili in the independent Edge/Chrome window opened by the app.
@@ -351,6 +359,6 @@ dist\OverwatchBiliDrops.exe
 Release builds are also copied with a versioned file name, for example:
 
 ```text
-dist\OverwatchBiliDrops-v0.5.0.exe
+dist\OverwatchBiliDrops-v0.5.1.exe
 ```
 
