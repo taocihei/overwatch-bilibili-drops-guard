@@ -4,10 +4,38 @@ import unittest
 
 import requests
 
-from bili_drop_guard.bilibili import BilibiliClient, _decode_json_response, _extract_tab_labels, _group_label_for_index, normalize_room_id
+from bili_drop_guard.bilibili import (
+    BilibiliClient,
+    _decode_json_response,
+    _extract_tab_labels,
+    _group_label_for_index,
+    _iter_nested_dicts,
+    _normalize_activity_task_progress,
+    normalize_room_id,
+)
 
 
 class BilibiliRoomTest(unittest.TestCase):
+    def test_nested_dict_iterator_handles_deep_activity_state(self) -> None:
+        root: dict[str, object] = {}
+        cursor = root
+        for index in range(2_000):
+            child: dict[str, object] = {"index": index}
+            cursor["child"] = child
+            cursor = child
+
+        nodes = list(_iter_nested_dicts(root))
+
+        self.assertEqual(len(nodes), 2_001)
+        self.assertIs(nodes[0], root)
+        self.assertEqual(nodes[-1]["index"], 1_999)
+
+    def test_nested_dict_iterator_ignores_container_cycles(self) -> None:
+        root: dict[str, object] = {}
+        root["self"] = root
+
+        self.assertEqual(list(_iter_nested_dicts(root)), [root])
+
     def test_normalize_room_id_accepts_number(self) -> None:
         self.assertEqual(normalize_room_id(" 123456 "), "123456")
 
@@ -151,6 +179,155 @@ class BilibiliRoomTest(unittest.TestCase):
         self.assertEqual(result["tasks"][0]["task_id"], "task-60")
         self.assertEqual(result["tasks"][0]["group_label"], "6月6日")
         self.assertEqual(result["tasks"][0]["target"], 60)
+
+    def test_discover_live_activity_tasks_flattens_new_checkpoint_template(self) -> None:
+        html = """
+        <script>
+        window.__BILIACT_EVAPAGEDATA__ = {
+            "layerTree": [{
+                "name": "EvaTabs.Panel",
+                "props": {
+                    "tabItem": {
+                        "tabItemProps": {
+                            "textContent": {"content": "DAY1观赛奖励"}
+                        }
+                    }
+                },
+                "slots": [{"children": [{
+                    "name": "EraTasklistPc",
+                    "props": {
+                        "tasklist": [{
+                            "taskId": "parent-day-1",
+                            "taskName": "7月29日 观看守望先锋电竞直播间",
+                            "checkpoints": [
+                                {
+                                    "alias": "观看直播60分钟",
+                                    "awardname": "头像",
+                                    "awardsid": "award-60",
+                                    "ztasksid": "claim-60",
+                                    "status": 3,
+                                    "list": [{"cur_value": 60, "limit": 60}]
+                                },
+                                {
+                                    "alias": "观看直播120分钟",
+                                    "awardname": "战令等级直升",
+                                    "awardsid": "award-120",
+                                    "ztasksid": "claim-120",
+                                    "status": 2,
+                                    "list": [{"cur_value": 120, "limit": 120}]
+                                }
+                            ]
+                        }]
+                    }
+                }]}]
+            }]
+        };
+        </script>
+        """
+        response = requests.Response()
+        response.status_code = 200
+        response.url = "https://live.bilibili.com/23612045"
+        response._content = html.encode("utf-8")
+        client = BilibiliClient("")
+        client.session.get = lambda *_args, **_kwargs: response  # type: ignore[method-assign]
+
+        result = client.discover_live_activity_tasks("23612045")
+
+        self.assertEqual(result["tracking_task_ids"], ["parent-day-1"])
+        self.assertEqual([task["task_id"] for task in result["tasks"]], ["claim-60", "claim-120"])
+        self.assertEqual(result["tasks"][0]["parent_task_id"], "parent-day-1")
+        self.assertEqual(result["tasks"][0]["group_label"], "7月29日")
+        self.assertEqual(result["tasks"][0]["award_sid"], "award-60")
+        self.assertEqual(result["tasks"][1]["award_name"], "战令等级直升")
+        self.assertEqual(result["tasks"][1]["target"], 120)
+        self.assertEqual(result["tasks"][1]["task_status"], 2)
+
+    def test_normalize_totalv2_uses_parent_for_tracking_and_sid_for_claim(self) -> None:
+        progress = {
+            "list": [
+                {
+                    "task_id": "parent-day-1",
+                    "task_name": "7月29日 观看守望先锋电竞直播间",
+                    "statistic_type": 1,
+                    "check_points": [
+                        {
+                            "alias": "观看直播60分钟",
+                            "award_name": "头像",
+                            "award_sid": "award-60",
+                            "sid": "claim-60",
+                            "status": 3,
+                            "list": [{"cur_value": 60, "limit": 60}],
+                        },
+                        {
+                            "alias": "观看直播120分钟",
+                            "award_name": "战令等级直升",
+                            "award_sid": "award-120",
+                            "sid": "claim-120",
+                            "status": 2,
+                            "list": [{"cur_value": 120, "limit": 120}],
+                        },
+                    ],
+                }
+            ]
+        }
+
+        result = _normalize_activity_task_progress(progress, ["parent-day-1"])
+
+        self.assertEqual(result["tracking_task_ids"], ["parent-day-1"])
+        self.assertEqual([task["task_id"] for task in result["list"]], ["claim-60", "claim-120"])
+        self.assertEqual(result["list"][0]["task_status"], 3)
+        self.assertEqual(result["list"][1]["task_status"], 2)
+        self.assertEqual(result["list"][1]["group_label"], "7月29日")
+
+    def test_normalize_totalv2_keeps_legacy_direct_single_checkpoint_parent_id(self) -> None:
+        progress = {
+            "list": [
+                {
+                    "task_id": "legacy-parent",
+                    "task_name": "旧版直接任务",
+                    "task_type": 1,
+                    "statistic_type": 1,
+                    "task_status": 2,
+                    "checkpoints": [],
+                    "check_points": [
+                        {
+                            "alias": "完成旧版任务",
+                            "sid": "legacy-child",
+                            "status": 2,
+                            "list": [{"cur_value": 1, "limit": 1}],
+                        }
+                    ],
+                }
+            ]
+        }
+
+        result = _normalize_activity_task_progress(progress, ["legacy-parent"])
+
+        self.assertEqual(result["tracking_task_ids"], ["legacy-parent"])
+        self.assertEqual([task["task_id"] for task in result["list"]], ["legacy-parent"])
+
+    def test_normalize_totalv2_retains_all_queried_parents_on_partial_response(self) -> None:
+        progress = {
+            "list": [
+                {
+                    "task_id": "parent-a",
+                    "task_type": 2,
+                    "statistic_type": 1,
+                    "check_points": [
+                        {
+                            "sid": "claim-a",
+                            "status": 1,
+                            "list": [{"cur_value": 0, "limit": 60}],
+                        }
+                    ],
+                }
+            ]
+        }
+
+        result = _normalize_activity_task_progress(progress, ["parent-a", "parent-b"])
+
+        self.assertEqual(result["tracking_task_ids"], ["parent-a", "parent-b"])
+        self.assertEqual([task["task_id"] for task in result["list"]], ["claim-a"])
 
     def test_activity_mission_claim_payload_includes_csrf(self) -> None:
         client = BilibiliClient("SESSDATA=abc; bili_jct=csrf-token")

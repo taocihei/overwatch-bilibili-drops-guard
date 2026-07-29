@@ -221,6 +221,21 @@ class MultiAccountDelegationTest(unittest.TestCase):
 
 
 class MultiAccountEdgeCaseTest(unittest.TestCase):
+    def test_snapshot_handles_child_without_snapshot_method(self) -> None:
+        mw = MultiAccountWatcher(
+            [("旧版账号", WatchOptions(cookie="a", room_id="1"))],
+            log=lambda _m: None,
+            watcher_factory=FakeWatcher,
+            stagger_seconds=0,
+        )
+
+        rows, summary = mw.get_watch_status_snapshot()
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0].state, "启动中")
+        self.assertIn("旧版账号", rows[0].message)
+        self.assertIn("0/1", summary)
+
     def test_empty_accounts_running_false_and_zero_summary(self) -> None:
         mw = MultiAccountWatcher([], log=lambda _m: None, stagger_seconds=0)
         self.assertFalse(mw.running)

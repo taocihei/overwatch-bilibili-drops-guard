@@ -16,6 +16,8 @@ CLAIM_SUBMIT_DELAY_SECONDS = 3.0
 CLAIM_RATE_LIMIT_DELAY_SECONDS = 12.0
 CLAIM_RATE_LIMIT_ATTEMPTS = 3
 WATCH_START_BATCH_SIZE = 1
+ACTIVITY_DISCOVERY_SUCCESS_TTL_SECONDS = 300.0
+ACTIVITY_DISCOVERY_RETRY_TTL_SECONDS = 60.0
 
 
 @dataclass
@@ -55,11 +57,16 @@ class LiveWatcher:
         self._claimed_markers: set[str] = set()
         self._claimable_task_ids: set[str] = set()
         self._known_task_ids: set[str] = set()
+        # totalv2 必须查询父 task_id；mission/receive 必须提交 checkpoint sid。
         self._activity_task_ids: set[str] = set()
+        self._activity_claim_task_ids: set[str] = set()
         self._activity_task_meta: dict[str, dict[str, Any]] = {}
         self._claimable_general = False
         self._claim_lock = threading.Lock()
+        self._claim_run_lock = threading.Lock()
         self._claim_thread: Optional[threading.Thread] = None
+        self._claiming_markers: set[str] = set()
+        self._general_claim_suppressed = False
         self._last_up_id: int | None = None
         self._watch_status_lock = threading.Lock()
         self._watch_statuses: dict[int, dict[str, Any]] = {}
@@ -78,6 +85,7 @@ class LiveWatcher:
         self._last_task_waiting_log_at = 0.0
         self._manual_refresh_thread: Optional[threading.Thread] = None
         self._rediscover_thread: Optional[threading.Thread] = None
+        self._next_activity_discovery_at = 0.0
 
     @property
     def running(self) -> bool:
@@ -100,11 +108,8 @@ class LiveWatcher:
         self.log("已请求停止")
 
     def claim_completed_tasks(self) -> None:
-        if self._claim_thread and self._claim_thread.is_alive():
-            self.log("领取线程正在运行中")
+        if not self._start_claim_thread(log_if_running=True):
             return
-        self._claim_thread = threading.Thread(target=self._claim_completed_worker, daemon=True)
-        self._claim_thread.start()
 
     def refresh_progress_once(self) -> None:
         if self._manual_refresh_thread and self._manual_refresh_thread.is_alive():
@@ -139,45 +144,66 @@ class LiveWatcher:
         self.log("重新识别任务列表")
         with self._claim_lock:
             self._activity_task_ids.clear()
+            self._activity_claim_task_ids.clear()
             self._activity_task_meta.clear()
             self._claimable_task_ids.clear()
-        client = BilibiliClient(self.options.cookie)
+        client: BilibiliClient | None = None
         try:
-            self._discover_activity_task_ids(client, announce_progress=True)
+            client = BilibiliClient(self.options.cookie)
+            task_ids = self._discover_activity_task_ids_if_due(
+                client,
+                announce_progress=True,
+                force=True,
+            )
+            if task_ids:
+                self._check_activity_task_progress(client)
         except Exception as exc:
             self.log(f"重新识别任务失败：{self._friendly_error(exc)}")
+        finally:
+            if client is not None:
+                self._close_client(client)
 
     def _run(self) -> None:
-        client = BilibiliClient(self.options.cookie)
-        login = client.check_login()
-        if login.logged_in:
-            self.log(f"账号登录正常：{login.uname}（{login.mid}）")
-        else:
-            self.log(login.message)
-        watch_started = False
-
-        while not self._stop.is_set():
+        client: BilibiliClient | None = None
+        try:
+            client = BilibiliClient(self.options.cookie)
             try:
-                room = client.get_room_info(self.options.room_id)
-                self._room = room
-                self._last_up_id = room.anchor_uid or self._last_up_id
-                self._log_room(room)
-                if room.room_id and not watch_started:
-                    self._start_watch_threads(room)
-                    watch_started = True
-
-                if self.options.auto_claim and room.anchor_uid:
-                    found_live_claimable = self._check_and_claim_task(client, room.anchor_uid)
-                    found_activity_claimable = self._check_activity_task_progress(client)
-                    found_explicit_claimable = self._check_explicit_task_ids(room.anchor_uid)
-                    if found_live_claimable or found_activity_claimable or found_explicit_claimable:
-                        self._start_auto_claim_thread()
+                login = client.check_login()
             except Exception as exc:
-                self.log(f"守护循环异常：{exc}")
+                self.log(f"登录状态检查失败：{self._friendly_error(exc)}")
+            else:
+                if not login.logged_in:
+                    self.log(login.message)
+                    return
+                self.log(f"账号登录正常：{login.uname}（{login.mid}）")
 
-            self._stop.wait(max(10, int(self.options.check_interval or 10)))
+            watch_started = False
+            while not self._stop.is_set():
+                try:
+                    room = client.get_room_info(self.options.room_id)
+                    self._room = room
+                    self._last_up_id = room.anchor_uid or self._last_up_id
+                    self._log_room(room)
+                    if room.room_id and not watch_started:
+                        self._start_watch_threads(room)
+                        watch_started = True
 
-        self.log("守护已停止")
+                    if self.options.auto_claim and room.anchor_uid:
+                        found_live_claimable = self._check_and_claim_task(client, room.anchor_uid)
+                        found_activity_claimable = self._check_activity_task_progress(client)
+                        found_explicit_claimable = self._check_explicit_task_ids(room.anchor_uid)
+                        if found_live_claimable or found_activity_claimable or found_explicit_claimable:
+                            self._start_auto_claim_thread()
+                except Exception as exc:
+                    self.log(f"守护循环异常：{exc}")
+
+                self._stop.wait(max(10, int(self.options.check_interval or 10)))
+        except Exception as exc:
+            self.log(f"守护启动失败：{self._friendly_error(exc)}")
+        finally:
+            if client is not None:
+                self._close_client(client)
+            self.log("守护已停止")
 
     def _start_watch_threads(self, room: RoomInfo | None = None) -> None:
         worker_count = self._normalize_watch_threads(self.options.watch_threads)
@@ -324,72 +350,89 @@ class LiveWatcher:
 
     def _heartbeat_watch_worker(self, worker_id: int, room: RoomInfo | None) -> None:
         # 先确定本会话的设备身份并构造客户端，让每个 worker 都有独立 cookie 和 buvid。
-        client = BilibiliClient(
-            self.options.cookie,
-            session_buvid=make_session_buvid(),
-            session_device_uuid=make_session_device_uuid(),
-        )
-        # 分批错峰启动，避免短时间内大量心跳被 B 站频控拦截（详见 _watch_start_delay）。
-        start_delay = self._watch_start_delay(worker_id)
-        if start_delay > 0:
-            self._stop.wait(start_delay)
-        if self._stop.is_set():
+        try:
+            client = BilibiliClient(
+                self.options.cookie,
+                session_buvid=make_session_buvid(),
+                session_device_uuid=make_session_device_uuid(),
+            )
+        except Exception as exc:
+            self._set_watch_status(worker_id, "暂时失败", message=self._friendly_error(exc))
+            self.log(f"后台计时 {worker_id} 启动失败：{self._friendly_error(exc)}")
             return
-        state = HeartbeatState()
-        current_room = room
-        while not self._stop.is_set():
-            try:
-                current_room = self._resolve_heartbeat_room(client, current_room)
-                if not current_room.room_id:
-                    self._set_watch_status(worker_id, "暂时失败", message=current_room.message)
-                    self.log(f"后台计时 {worker_id} 暂停：{current_room.message}")
-                    self._log_watch_status_summary()
-                    self._stop.wait(20)
-                    continue
-                if current_room.live_status != 1:
-                    self._set_watch_status(worker_id, "等待开播", message=f"房间 {current_room.room_id} 当前未开播")
+        try:
+            # 分批错峰启动，避免短时间内大量心跳被 B 站频控拦截（详见 _watch_start_delay）。
+            start_delay = self._watch_start_delay(worker_id)
+            if start_delay > 0:
+                self._stop.wait(start_delay)
+            if self._stop.is_set():
+                return
+            state = HeartbeatState()
+            current_room = room
+            while not self._stop.is_set():
+                try:
+                    current_room = self._resolve_heartbeat_room(client, current_room)
+                    if not current_room.room_id:
+                        self._set_watch_status(worker_id, "暂时失败", message=current_room.message)
+                        self.log(f"后台计时 {worker_id} 暂停：{current_room.message}")
+                        self._log_watch_status_summary()
+                        self._stop.wait(20)
+                        continue
+                    if current_room.live_status != 1:
+                        self._set_watch_status(worker_id, "等待开播", message=f"房间 {current_room.room_id} 当前未开播")
+                        if self._watch_detail_enabled():
+                            self.log(f"后台计时 {worker_id} 等待开播：房间 {current_room.room_id} 当前未开播")
+                        self._log_watch_status_summary()
+                        self._stop.wait(30)
+                        continue
+
+                    self._set_watch_status(worker_id, "计时中", message=f"已进入房间 {current_room.room_id}")
                     if self._watch_detail_enabled():
-                        self.log(f"后台计时 {worker_id} 等待开播：房间 {current_room.room_id} 当前未开播")
-                    self._log_watch_status_summary()
-                    self._stop.wait(30)
-                    continue
+                        self.log(f"后台计时 {worker_id} 已进入房间 {current_room.room_id}，正在提交观看计时")
 
-                self._set_watch_status(worker_id, "计时中", message=f"已进入房间 {current_room.room_id}")
-                if self._watch_detail_enabled():
-                    self.log(f"后台计时 {worker_id} 已进入房间 {current_room.room_id}，正在提交观看计时")
-
-                sequence = 1
-                state = self._start_heartbeat_session(client, current_room, state)
-                self._set_watch_status(worker_id, "正常", interval=state.interval, message="首次计时请求已提交")
-                self._record_heartbeat(state.interval)
-                if self._watch_detail_enabled():
-                    self.log(f"后台计时 {worker_id} 首次计时请求成功，下一次约 {state.interval} 秒后")
-                self._log_watch_status_summary()
-                self._stop.wait(state.interval)
-
-                while not self._stop.is_set():
-                    state = self._continue_heartbeat_session(client, current_room, sequence, state)
-                    sequence += 1
-                    self._set_watch_status(worker_id, "正常", interval=state.interval)
+                    sequence = 1
+                    state = self._start_heartbeat_session(client, current_room, state)
+                    self._set_watch_status(worker_id, "正常", interval=state.interval, message="首次计时请求已提交")
                     self._record_heartbeat(state.interval)
                     if self._watch_detail_enabled():
-                        self.log(f"后台计时 {worker_id} 计时请求已提交，下一次约 {state.interval} 秒后")
+                        self.log(f"后台计时 {worker_id} 首次计时请求成功，下一次约 {state.interval} 秒后")
                     self._log_watch_status_summary()
                     self._stop.wait(state.interval)
-            except Exception as exc:
-                self._set_watch_status(worker_id, "暂时失败", message=self._friendly_error(exc))
-                if self._watch_detail_enabled():
-                    self.log(f"后台计时 {worker_id} 暂时失败：{self._friendly_error(exc)}；稍后重试")
-                self._log_watch_status_summary()
-                self._stop.wait(15)
+
+                    while not self._stop.is_set():
+                        latest_room = self._latest_room_snapshot(current_room)
+                        if latest_room.live_status != 1:
+                            current_room = latest_room
+                            break
+                        current_room = latest_room
+                        state = self._continue_heartbeat_session(client, current_room, sequence, state)
+                        sequence += 1
+                        self._set_watch_status(worker_id, "正常", interval=state.interval)
+                        self._record_heartbeat(state.interval)
+                        if self._watch_detail_enabled():
+                            self.log(f"后台计时 {worker_id} 计时请求已提交，下一次约 {state.interval} 秒后")
+                        self._log_watch_status_summary()
+                        self._stop.wait(state.interval)
+                except Exception as exc:
+                    self._set_watch_status(worker_id, "暂时失败", message=self._friendly_error(exc))
+                    if self._watch_detail_enabled():
+                        self.log(f"后台计时 {worker_id} 暂时失败：{self._friendly_error(exc)}；稍后重试")
+                    self._log_watch_status_summary()
+                    self._stop.wait(15)
+        finally:
+            self._close_client(client)
 
     def _resolve_heartbeat_room(self, client: BilibiliClient, room: RoomInfo | None) -> RoomInfo:
-        if room and room.room_id:
-            return room
-        with_room = self._room
-        if with_room and with_room.room_id:
-            return with_room
+        latest = self._latest_room_snapshot(room)
+        if latest and latest.room_id:
+            return latest
         return client.get_room_info(self.options.room_id)
+
+    def _latest_room_snapshot(self, fallback: RoomInfo | None) -> RoomInfo:
+        latest = self._room
+        if latest and latest.room_id and (fallback is None or latest.room_id == fallback.room_id):
+            return latest
+        return fallback or RoomInfo(room_id=0)
 
     def _extract_heartbeat_state(self, data: dict[str, Any], fallback: HeartbeatState | None = None) -> HeartbeatState:
         fallback = fallback or HeartbeatState()
@@ -479,10 +522,17 @@ class LiveWatcher:
         state.interval = self._extract_web_heartbeat_interval(data, state.interval)
 
     def _start_auto_claim_thread(self) -> None:
-        if self._claim_thread and self._claim_thread.is_alive():
-            return
-        self._claim_thread = threading.Thread(target=self._claim_completed_worker, daemon=True)
-        self._claim_thread.start()
+        self._start_claim_thread(log_if_running=False)
+
+    def _start_claim_thread(self, *, log_if_running: bool) -> bool:
+        with self._claim_run_lock:
+            if self._claim_thread and self._claim_thread.is_alive():
+                if log_if_running:
+                    self.log("领取线程正在运行中")
+                return False
+            self._claim_thread = threading.Thread(target=self._claim_completed_worker, daemon=True)
+            self._claim_thread.start()
+            return True
 
     def _check_and_claim_task(self, client: BilibiliClient, up_id: int) -> bool:
         try:
@@ -494,7 +544,7 @@ class LiveWatcher:
         return self._record_task_progress(progress, announce_claimable=True)
 
     def _check_activity_task_progress(self, client: BilibiliClient) -> bool:
-        self._discover_activity_task_ids(client, announce_progress=False)
+        self._discover_activity_task_ids_if_due(client, announce_progress=False)
         with self._claim_lock:
             if self._activity_task_ids:
                 task_ids = self._merge_task_ids([], self._activity_task_ids)
@@ -511,14 +561,50 @@ class LiveWatcher:
         self._remember_activity_progress_source(progress, task_ids)
         return self._record_task_progress(progress, announce_claimable=True)
 
+    def _discover_activity_task_ids_if_due(
+        self,
+        client: BilibiliClient,
+        *,
+        announce_progress: bool,
+        force: bool = False,
+    ) -> list[str]:
+        """按 TTL 刷新公共活动配置，避免每个进度周期重复下载直播页。"""
+        now = time.monotonic()
+        with self._claim_lock:
+            if not force and now < self._next_activity_discovery_at:
+                return sorted(self._activity_task_ids)
+            # 先占住刷新窗口，防止手动刷新与守护循环同时抓取同一直播页。
+            self._next_activity_discovery_at = now + ACTIVITY_DISCOVERY_RETRY_TTL_SECONDS
+
+        task_ids = self._discover_activity_task_ids(client, announce_progress=announce_progress)
+        ttl = (
+            ACTIVITY_DISCOVERY_SUCCESS_TTL_SECONDS
+            if task_ids
+            else ACTIVITY_DISCOVERY_RETRY_TTL_SECONDS
+        )
+        with self._claim_lock:
+            self._next_activity_discovery_at = time.monotonic() + ttl
+        return task_ids
+
+    @staticmethod
+    def _close_client(client: object) -> None:
+        close = getattr(client, "close", None)
+        if not callable(close):
+            return
+        try:
+            close()
+        except Exception:
+            pass
+
     def _remember_activity_progress_source(self, progress: dict[str, Any], queried_task_ids: list[str]) -> None:
-        progress_task_ids = self._discover_task_ids(progress)
-        task_ids = progress_task_ids or queried_task_ids
-        if not task_ids:
+        tracking_task_ids = self._activity_tracking_task_ids(progress) or queried_task_ids
+        claim_task_ids = self._discover_task_ids(progress)
+        if not tracking_task_ids and not claim_task_ids:
             return
         with self._claim_lock:
-            self._activity_task_ids.update(task_ids)
-            for task_id in task_ids:
+            self._activity_task_ids.update(tracking_task_ids)
+            self._activity_claim_task_ids.update(claim_task_ids)
+            for task_id in claim_task_ids:
                 self._activity_task_meta.setdefault(task_id, {})
 
     def _discover_activity_task_ids(self, client: BilibiliClient, announce_progress: bool = True) -> list[str]:
@@ -531,7 +617,8 @@ class LiveWatcher:
             else:
                 self.log(f"没有读到活动任务列表，稍后会自动再试：{self._friendly_error(exc)}")
             return []
-        task_ids = self._discover_task_ids(progress)
+        claim_task_ids = self._discover_task_ids(progress)
+        task_ids = self._activity_tracking_task_ids(progress) or claim_task_ids
         if not task_ids:
             self._clear_activity_task_cache()
             self.log("当前直播页暂时没有读到可跟踪的掉宝任务，稍后会自动再试")
@@ -541,9 +628,13 @@ class LiveWatcher:
             previous_task_ids = set(self._activity_task_ids)
             new_task_ids = [task_id for task_id in task_ids if task_id not in previous_task_ids]
             stale_task_ids = sorted(previous_task_ids - current_task_ids)
+            current_claim_task_ids = set(claim_task_ids)
+            previous_claim_task_ids = set(self._activity_claim_task_ids)
+            stale_claim_task_ids = previous_claim_task_ids - current_claim_task_ids
             self._activity_task_ids = current_task_ids
-            self._known_task_ids.update(task_ids)
-            self._claimable_task_ids.difference_update(stale_task_ids)
+            self._activity_claim_task_ids = current_claim_task_ids
+            self._known_task_ids.update(current_claim_task_ids)
+            self._claimable_task_ids.difference_update(set(stale_task_ids) | stale_claim_task_ids)
             next_meta: dict[str, dict[str, Any]] = {}
             for node in self._iter_task_nodes(progress):
                 task_id = self._task_id_from_node(node)
@@ -559,16 +650,21 @@ class LiveWatcher:
             self.log("已找到本次活动任务，会自动显示本次可挂的奖励进度")
         if stale_task_ids:
             self.log("活动任务已更新，已同步最新任务列表")
-        if announce_progress or new_task_ids:
-            self._record_task_progress(progress, announce_claimable=False)
+        # 页面 bootstrap 只用于识别拓扑和文案；可领取状态以 totalv2 的实时响应为准，
+        # 避免旧 HTML 中的 status=2 把过期奖励提前塞进领取队列。
         return task_ids
 
     def _clear_activity_task_cache(self) -> None:
         with self._claim_lock:
-            stale_task_ids = set(self._activity_task_ids) | set(self._activity_task_meta)
+            stale_task_ids = (
+                set(self._activity_task_ids)
+                | set(self._activity_claim_task_ids)
+                | set(self._activity_task_meta)
+            )
             if not stale_task_ids:
                 return
             self._activity_task_ids.clear()
+            self._activity_claim_task_ids.clear()
             self._activity_task_meta.clear()
             self._claimable_task_ids.difference_update(stale_task_ids)
             self._last_task_summary = ""
@@ -594,18 +690,23 @@ class LiveWatcher:
             if not meta:
                 continue
             if meta.get("group_label"):
-                node.setdefault("group_label", meta["group_label"])
+                if not node.get("group_label"):
+                    node["group_label"] = meta["group_label"]
             if meta.get("group_index") is not None:
-                node.setdefault("group_index", meta["group_index"])
+                if node.get("group_index") is None:
+                    node["group_index"] = meta["group_index"]
             if meta.get("award_name"):
-                node.setdefault("award_name", meta["award_name"])
+                if not node.get("award_name"):
+                    node["award_name"] = meta["award_name"]
             if meta.get("task_name"):
-                node.setdefault("task_name", meta["task_name"])
+                if not node.get("task_name"):
+                    node["task_name"] = meta["task_name"]
 
     def _record_task_progress(self, progress: dict[str, Any], announce_claimable: bool) -> bool:
         summary = self._summarize_task(progress)
         now = time.time()
         claimable_tasks = self._find_claimable_task_refs(progress)
+        task_nodes = self._iter_task_nodes(progress)
         if summary:
             progress_score = self._task_summary_progress_score(progress)
             if self._should_defer_zero_task_summary(progress, claimable_tasks, progress_score, now):
@@ -632,19 +733,45 @@ class LiveWatcher:
             if new_task_ids:
                 self.log("已自动找到任务列表，无需手动填写")
 
-        if not claimable_tasks:
+        with self._claim_lock:
+            previous_claimable_ids = set(self._claimable_task_ids)
+            previous_claimable_general = self._claimable_general
+            claimable_ids = {task_id for _name, task_id in claimable_tasks if task_id}
+            if self._last_up_id:
+                claimable_ids = {
+                    task_id
+                    for task_id in claimable_ids
+                    if f"{self._last_up_id}:{task_id}" not in self._claimed_markers
+                }
+            # 只清理由本次响应明确出现的任务，避免一个接口的空/局部响应误删
+            # 另一个接口刚识别出的可领取任务。
+            self._claimable_task_ids.difference_update(set(discovered_task_ids) - claimable_ids)
+            self._claimable_task_ids.update(claimable_ids)
+
+            general_nodes = [node for node in task_nodes if not self._task_id_from_node(node)]
+            general_claimable = any(self._node_claimable(node) for node in general_nodes)
+            if general_nodes and not general_claimable:
+                self._claimable_general = False
+                self._general_claim_suppressed = False
+            elif general_claimable and not self._general_claim_suppressed:
+                self._claimable_general = True
+
+            pending_named_tasks = [
+                name for name, task_id in claimable_tasks
+                if (task_id and task_id in claimable_ids)
+                or (not task_id and self._claimable_general)
+            ]
+            newly_claimable_names = [
+                name for name, task_id in claimable_tasks
+                if (task_id and task_id in claimable_ids and task_id not in previous_claimable_ids)
+                or (not task_id and self._claimable_general and not previous_claimable_general)
+            ]
+
+        if not pending_named_tasks:
             return False
 
-        with self._claim_lock:
-            named_tasks: list[str] = []
-            for name, task_id in claimable_tasks:
-                named_tasks.append(name)
-                if task_id:
-                    self._claimable_task_ids.add(task_id)
-                else:
-                    self._claimable_general = True
-        if announce_claimable:
-            self.log(f"检测到 {len(named_tasks)} 个奖励可以领取，正在排队领取")
+        if announce_claimable and newly_claimable_names:
+            self.log(f"检测到 {len(newly_claimable_names)} 个奖励可以领取，正在排队领取")
         return True
 
     def _log_task_waiting_progress(self, message: str, *, min_interval: float = 30.0) -> None:
@@ -761,17 +888,28 @@ class LiveWatcher:
         if stop_scan.is_set():
             return ""
         client = BilibiliClient(self.options.cookie)
-        progress = client.get_user_task_progress(up_id, task_id=task_id)
-        claimable_tasks = self._find_claimable_task_refs(progress)
-        if not claimable_tasks:
-            return "手动任务尚未完成"
-        with self._claim_lock:
-            for _name, found_task_id in claimable_tasks:
-                self._claimable_task_ids.add(found_task_id or task_id)
-        stop_scan.set()
-        return f"手动任务已完成：{', '.join(name for name, _task_id in claimable_tasks)}"
+        try:
+            progress = client.get_user_task_progress(up_id, task_id=task_id)
+            claimable_tasks = self._find_claimable_task_refs(progress)
+            if not claimable_tasks:
+                with self._claim_lock:
+                    self._claimable_task_ids.discard(task_id)
+                return "手动任务尚未完成"
+            with self._claim_lock:
+                for _name, found_task_id in claimable_tasks:
+                    self._claimable_task_ids.add(found_task_id or task_id)
+            stop_scan.set()
+            return f"手动任务已完成：{', '.join(name for name, _task_id in claimable_tasks)}"
+        finally:
+            self._close_client(client)
 
     def _claim_completed_worker(self) -> None:
+        try:
+            self._claim_completed_worker_impl()
+        except Exception as exc:
+            self.log(f"领取失败：{self._friendly_error(exc)}")
+
+    def _claim_completed_worker_impl(self) -> None:
         up_id = self._resolve_up_id()
         if not up_id:
             self.log("缺少主播 UID，暂时无法领取")
@@ -786,13 +924,17 @@ class LiveWatcher:
         self.log("开始领取奖励：会按顺序一个一个领取，避免太快导致失败")
 
         if claim_general and not task_ids:
+            client = BilibiliClient(self.options.cookie)
             try:
-                BilibiliClient(self.options.cookie).claim_user_task_rewards(up_id)
+                client.claim_user_task_rewards(up_id)
                 with self._claim_lock:
                     self._claimable_general = False
+                    self._general_claim_suppressed = True
                 self.log("已领取：已完成的通用奖励")
             except Exception as exc:
                 self.log(f"领取失败：通用奖励：{self._friendly_error(exc)}")
+            finally:
+                self._close_client(client)
             return
 
         for index, task_id in enumerate(task_ids):
@@ -812,13 +954,21 @@ class LiveWatcher:
         marker = f"{up_id}:{task_id}"
         with self._claim_lock:
             already_claimed = marker in self._claimed_markers
-            is_activity_task = task_id in self._activity_task_ids
+            is_activity_task = task_id in self._activity_claim_task_ids
+            already_claiming = marker in self._claiming_markers
+            if already_claimed:
+                self._claimable_task_ids.discard(task_id)
+            elif not already_claiming:
+                self._claiming_markers.add(marker)
         if already_claimed:
             return f"已跳过：{self._claim_task_label(task_id)} 已经领取过"
-        client = BilibiliClient(self.options.cookie)
+        if already_claiming:
+            return f"已跳过：{self._claim_task_label(task_id)} 正在领取"
         label = self._claim_task_label(task_id)
         already_received = False
+        client: BilibiliClient | None = None
         try:
+            client = BilibiliClient(self.options.cookie)
             if is_activity_task:
                 self._claim_with_retry(lambda: client.claim_activity_mission_reward(task_id), label)
             else:
@@ -830,6 +980,11 @@ class LiveWatcher:
             if not self._is_already_claimed_error(exc):
                 raise
             already_received = True
+        finally:
+            if client is not None:
+                self._close_client(client)
+            with self._claim_lock:
+                self._claiming_markers.discard(marker)
         with self._claim_lock:
             self._claimed_markers.add(marker)
             self._claimable_task_ids.discard(task_id)
@@ -880,7 +1035,7 @@ class LiveWatcher:
     def _claim_task_label(self, task_id: str) -> str:
         with self._claim_lock:
             meta = dict(self._activity_task_meta.get(task_id) or {})
-            is_activity_task = task_id in self._activity_task_ids
+            is_activity_task = task_id in self._activity_claim_task_ids
         if not is_activity_task:
             return "手动填写的任务"
         parts = [
@@ -894,7 +1049,11 @@ class LiveWatcher:
     def _resolve_up_id(self) -> int | None:
         if self._last_up_id:
             return self._last_up_id
-        room = BilibiliClient(self.options.cookie).get_room_info(self.options.room_id)
+        client = BilibiliClient(self.options.cookie)
+        try:
+            room = client.get_room_info(self.options.room_id)
+        finally:
+            self._close_client(client)
         self._room = room
         self._last_up_id = room.anchor_uid or self._last_up_id
         if room.room_id:
@@ -905,12 +1064,15 @@ class LiveWatcher:
         self.log("领取前刷新任务进度")
         client = BilibiliClient(self.options.cookie)
         try:
-            progress = client.get_user_task_progress(up_id)
-        except Exception as exc:
-            self.log(f"领取前刷新任务进度失败：{exc}")
-        else:
-            self._record_task_progress(progress, announce_claimable=False)
-        self._check_activity_task_progress(client)
+            try:
+                progress = client.get_user_task_progress(up_id)
+            except Exception as exc:
+                self.log(f"领取前刷新任务进度失败：{exc}")
+            else:
+                self._record_task_progress(progress, announce_claimable=False)
+            self._check_activity_task_progress(client)
+        finally:
+            self._close_client(client)
 
         with self._claim_lock:
             task_ids = self._merge_task_ids(self.options.task_ids or [], set())
@@ -1148,13 +1310,19 @@ class LiveWatcher:
 
     def _find_claimable_task_refs(self, progress: dict[str, Any]) -> list[tuple[str, str]]:
         claimable_refs: list[tuple[str, str]] = []
+        seen: set[tuple[str, str]] = set()
         for index, node in enumerate(sorted(self._iter_task_nodes(progress), key=self._task_sort_key)):
             if not self._node_claimable(node):
                 continue
             name = self._task_display_name(node)
             if name == "任务":
                 name = str(node.get("id") or f"任务{index + 1}")
-            claimable_refs.append((name, self._task_id_from_node(node)))
+            task_id = self._task_id_from_node(node)
+            key = ("id", task_id) if task_id else ("name", name)
+            if key in seen:
+                continue
+            seen.add(key)
+            claimable_refs.append((name, task_id))
         return claimable_refs
 
     def _task_sort_key(self, node: dict[str, Any]) -> tuple[int, float, str]:
@@ -1178,6 +1346,20 @@ class LiveWatcher:
             if task_id and task_id not in seen:
                 task_ids.append(task_id)
                 seen.add(task_id)
+        return task_ids
+
+    def _activity_tracking_task_ids(self, progress: dict[str, Any]) -> list[str]:
+        raw_task_ids = progress.get("tracking_task_ids")
+        if not isinstance(raw_task_ids, (list, tuple, set)):
+            return []
+        task_ids: list[str] = []
+        seen: set[str] = set()
+        for value in raw_task_ids:
+            task_id = str(value or "").strip()
+            if not task_id or task_id in seen:
+                continue
+            seen.add(task_id)
+            task_ids.append(task_id)
         return task_ids
 
     def _task_id_from_node(self, node: dict[str, Any]) -> str:
@@ -1234,10 +1416,8 @@ class LiveWatcher:
 
     def _node_claimable(self, node: dict[str, Any]) -> bool:
         activity_status = self._activity_status(node)
-        if activity_status == 2:
-            return True
-        if activity_status == 3:
-            return False
+        if activity_status is not None:
+            return activity_status == 2
         if self._node_received(node) or self._node_unclaimable(node):
             return False
         if self._truthy(node.get("can_receive")) or self._truthy(node.get("claimable")):

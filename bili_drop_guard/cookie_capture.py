@@ -158,7 +158,16 @@ def _read_bilibili_cookies(driver: Any) -> list[dict[str, Any]]:
         if not name or value is None:
             continue
         domain = str(cookie.get("domain") or "")
-        if domain and "bilibili.com" not in domain:
+        normalized_domain = domain.lstrip(".").lower()
+        if domain and normalized_domain != "bilibili.com" and not normalized_domain.endswith(".bilibili.com"):
+            continue
+        expires = cookie.get("expires") or cookie.get("expiry")
+        try:
+            if expires and float(expires) <= time.time():
+                continue
+        except (TypeError, ValueError):
+            pass
+        if not value and str(name) in {"SESSDATA", "bili_jct", "DedeUserID"}:
             continue
         key = (str(name), domain, str(cookie.get("path") or ""))
         deduped[key] = cookie
@@ -167,12 +176,36 @@ def _read_bilibili_cookies(driver: Any) -> list[dict[str, Any]]:
 
 def _build_cookie_header(cookies: list[dict[str, Any]]) -> str:
     preferred = {"SESSDATA": 0, "bili_jct": 1, "DedeUserID": 2, "DedeUserID__ckMd5": 3, "buvid3": 4, "buvid4": 5}
-    sorted_cookies = sorted(cookies, key=lambda item: (preferred.get(str(item.get("name")), 100), str(item.get("name"))))
+    # Chromium 可能同时返回相同 name 的 host-only、父域和旧 path Cookie。Cookie header
+    # 中重复 name 的解析结果取决于顺序，必须先确定唯一候选，避免旧值覆盖有效登录态。
+    selected: dict[str, dict[str, Any]] = {}
+    for item in cookies:
+        name = str(item.get("name") or "")
+        if not name or item.get("value") is None:
+            continue
+        current = selected.get(name)
+        if current is None or _cookie_specificity(item) > _cookie_specificity(current):
+            selected[name] = item
+    sorted_cookies = sorted(
+        selected.values(),
+        key=lambda item: (preferred.get(str(item.get("name")), 100), str(item.get("name"))),
+    )
     return "; ".join(
         f"{item['name']}={item['value']}"
         for item in sorted_cookies
         if item.get("name") and item.get("value") is not None
     )
+
+
+def _cookie_specificity(cookie: dict[str, Any]) -> tuple[int, int, float]:
+    domain = str(cookie.get("domain") or "").lstrip(".").lower()
+    broad_domain = 2 if domain == "bilibili.com" else 1
+    root_path = 1 if str(cookie.get("path") or "/") == "/" else 0
+    try:
+        expiry = float(cookie.get("expires") or cookie.get("expiry") or 0)
+    except (TypeError, ValueError):
+        expiry = 0.0
+    return broad_domain, root_path, expiry
 
 
 def _open_live_probe(driver: Any) -> None:

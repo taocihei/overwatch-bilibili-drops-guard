@@ -7,6 +7,7 @@ import re
 import time
 import base64
 import urllib.parse
+from collections.abc import Iterator
 from dataclasses import dataclass
 from http.cookies import SimpleCookie
 from typing import Any, Dict, List
@@ -141,7 +142,7 @@ def make_session_device_uuid() -> str:
 
 
 def make_session_cookie_overrides(session_buvid: str, session_device_uuid: str) -> Dict[str, str]:
-    """Build a browser-like device cookie set for one background watch route."""
+    """Build an isolated device cookie set for one background watch route."""
 
     now = int(time.time())
     fingerprint = hashlib.md5(f"{session_buvid}:{session_device_uuid}:{now}".encode("utf-8")).hexdigest()
@@ -189,10 +190,14 @@ class BilibiliClient:
         for key, value in self.cookies.items():
             self.session.cookies.set(key, value, domain=".bilibili.com")
         if session_buvid:
-            # 覆盖整组设备 cookie，而不是只改 buvid3。真实多开浏览器会产生独立的设备/页面身份；
-            # 若 buvid4、buvid_fp、LIVE_BUVID 等仍复用原 Cookie，活动侧仍可能把多路合并。
+            # 覆盖整组设备 cookie，而不是只改 buvid3，让每路后台计时保持独立会话身份；
+            # 若 buvid4、buvid_fp、LIVE_BUVID 等仍复用原值，活动侧可能把多路合并。
             for key, value in make_session_cookie_overrides(self._buvid, self._device_uuid).items():
                 self.session.cookies.set(key, value, domain=".bilibili.com")
+
+    def close(self) -> None:
+        """释放当前计时会话持有的连接池和套接字。"""
+        self.session.close()
 
     @property
     def csrf(self) -> str:
@@ -354,7 +359,9 @@ class BilibiliClient:
             raise RuntimeError("直播页没有找到活动任务配置")
 
         tasks: list[dict[str, Any]] = []
+        tracking_task_ids: list[str] = []
         seen: set[str] = set()
+        seen_tracking: set[str] = set()
         group_records: list[dict[str, Any]] = []
         for state in states:
             tab_labels = _extract_tab_labels(state)
@@ -365,27 +372,57 @@ class BilibiliClient:
                 for task in group.get("tasklist") or []:
                     if not isinstance(task, dict):
                         continue
-                    task_id = str(task.get("taskId") or task.get("task_id") or "").strip()
-                    if not task_id or task_id in seen:
+                    parent_task_id = str(task.get("taskId") or task.get("task_id") or "").strip()
+                    if not parent_task_id:
                         continue
-                    seen.add(task_id)
-                    tasks.append(_activity_task_from_page_task(task, task_id, group_label, group_index))
+                    if parent_task_id not in seen_tracking:
+                        seen_tracking.add(parent_task_id)
+                        tracking_task_ids.append(parent_task_id)
+                    task_group_label = _task_date_label(task) or group_label
+                    checkpoint_tasks = _activity_checkpoint_tasks(
+                        task,
+                        parent_task_id=parent_task_id,
+                        group_label=task_group_label,
+                        group_index=group_index,
+                    )
+                    if checkpoint_tasks:
+                        for checkpoint_task in checkpoint_tasks:
+                            task_id = checkpoint_task["task_id"]
+                            if task_id in seen:
+                                continue
+                            seen.add(task_id)
+                            tasks.append(checkpoint_task)
+                    elif parent_task_id not in seen:
+                        seen.add(parent_task_id)
+                        tasks.append(
+                            _activity_task_from_page_task(
+                                task,
+                                parent_task_id,
+                                task_group_label,
+                                group_index,
+                            )
+                        )
 
         if not tasks:
             raise RuntimeError("直播页没有找到活动任务 ID，请确认直播间页面有本次掉宝任务")
-        return {"tasks": tasks, "groups": group_records}
+        return {
+            "tasks": tasks,
+            "tracking_task_ids": tracking_task_ids,
+            "groups": group_records,
+        }
 
     def get_activity_task_progress(self, task_ids: list[str]) -> Dict[str, Any]:
         normalized_task_ids = [str(task_id).strip() for task_id in task_ids if str(task_id).strip()]
         if not normalized_task_ids:
             return {"list": []}
-        return self._get_data(
+        progress = self._get_data(
             "https://api.bilibili.com/x/task/totalv2",
             params={
                 "task_ids": ",".join(normalized_task_ids),
                 "need_all_invited_info": "false",
             },
         )
+        return _normalize_activity_task_progress(progress, normalized_task_ids)
 
     def get_activity_mission_info(self, task_id: str) -> Dict[str, Any]:
         params = self._wbi_signed_params({"task_id": task_id})
@@ -623,6 +660,145 @@ def _activity_task_from_page_task(task: dict[str, Any], task_id: str, group_labe
     }
 
 
+def _activity_checkpoint_tasks(
+    task: dict[str, Any],
+    *,
+    parent_task_id: str,
+    group_label: str = "",
+    group_index: int | None = None,
+) -> list[dict[str, Any]]:
+    """Flatten Bilibili's multi-reward task template into claimable mission tasks.
+
+    ``x/task/totalv2`` is queried with the parent ``task_id`` while
+    ``x/activity_components/mission/receive`` expects each checkpoint ``sid``.
+    The current activity page exposes those fields as ``taskId`` and
+    ``checkpoints[].ztasksid`` respectively.
+    """
+
+    statistic_type = task.get("statistic_type")
+    if statistic_type is None:
+        statistic_type = task.get("statisticType")
+    task_type = task.get("task_type")
+    if task_type is None:
+        task_type = task.get("taskType")
+    checkpoints: Any = task.get("checkpoints")
+    if not isinstance(checkpoints, list) or not checkpoints:
+        accumulative = task.get("accumulative_check_points")
+        regular = task.get("check_points")
+        if str(statistic_type) == "2" and isinstance(accumulative, list) and accumulative:
+            checkpoints = accumulative
+        else:
+            checkpoints = regular
+    if not isinstance(checkpoints, list):
+        return []
+    # 旧版“直接任务”虽然带一个 checkpoint，但领奖页仍使用父 taskId。
+    # 新版多档奖励和非直接任务则使用 checkpoint sid/ztasksid。
+    if len(checkpoints) == 1 and str(task_type) == "1" and str(statistic_type) != "2":
+        return []
+
+    parent_name = str(task.get("taskName") or task.get("task_name") or "").strip()
+    flattened: list[dict[str, Any]] = []
+    for checkpoint in checkpoints:
+        if not isinstance(checkpoint, dict):
+            continue
+        task_id = str(
+            checkpoint.get("ztasksid")
+            or checkpoint.get("sid")
+            or checkpoint.get("task_id")
+            or checkpoint.get("taskId")
+            or ""
+        ).strip()
+        if not task_id:
+            continue
+        progress = _first_dict(checkpoint.get("list"))
+        task_name = str(checkpoint.get("alias") or parent_name or task_id).strip()
+        award_name = str(
+            checkpoint.get("awardname")
+            or checkpoint.get("award_name")
+            or task.get("awardName")
+            or task.get("award_name")
+            or ""
+        ).strip()
+        node: dict[str, Any] = {
+            "task_id": task_id,
+            "parent_task_id": parent_task_id,
+            "task_name": task_name,
+            "award_name": award_name,
+            "award_sid": checkpoint.get("awardsid") or checkpoint.get("award_sid") or "",
+            "current": progress.get("cur_value"),
+            "target": progress.get("limit"),
+            "task_status": checkpoint.get("status"),
+            "group_label": group_label,
+        }
+        if group_index is not None:
+            node["group_index"] = group_index
+        flattened.append(node)
+    return flattened
+
+
+def _normalize_activity_task_progress(
+    progress: dict[str, Any],
+    queried_task_ids: list[str],
+) -> dict[str, Any]:
+    """Normalize totalv2 parent tasks to one node per reward checkpoint."""
+
+    normalized = dict(progress)
+    raw_tasks = progress.get("list")
+    if not isinstance(raw_tasks, list):
+        normalized["tracking_task_ids"] = list(queried_task_ids)
+        return normalized
+
+    tasks: list[dict[str, Any]] = []
+    tracking_task_ids: list[str] = []
+    seen_tracking: set[str] = set()
+    for queried_task_id in queried_task_ids:
+        task_id = str(queried_task_id or "").strip()
+        if task_id and task_id not in seen_tracking:
+            seen_tracking.add(task_id)
+            tracking_task_ids.append(task_id)
+    seen_claim: set[str] = set()
+    for raw_task in raw_tasks:
+        if not isinstance(raw_task, dict):
+            continue
+        parent_task_id = str(
+            raw_task.get("task_id")
+            or raw_task.get("taskId")
+            or raw_task.get("taskid")
+            or ""
+        ).strip()
+        if parent_task_id and parent_task_id not in seen_tracking:
+            seen_tracking.add(parent_task_id)
+            tracking_task_ids.append(parent_task_id)
+        checkpoint_tasks = _activity_checkpoint_tasks(
+            raw_task,
+            parent_task_id=parent_task_id,
+            group_label=_task_date_label(raw_task),
+        )
+        if checkpoint_tasks:
+            for checkpoint_task in checkpoint_tasks:
+                claim_task_id = checkpoint_task["task_id"]
+                if claim_task_id in seen_claim:
+                    continue
+                seen_claim.add(claim_task_id)
+                tasks.append(checkpoint_task)
+        elif parent_task_id not in seen_claim:
+            seen_claim.add(parent_task_id)
+            tasks.append(dict(raw_task))
+
+    normalized["list"] = tasks
+    normalized["tracking_task_ids"] = tracking_task_ids
+    return normalized
+
+
+def _task_date_label(task: dict[str, Any]) -> str:
+    for key in ("group_label", "taskName", "task_name", "name", "title"):
+        text = str(task.get(key) or "")
+        match = re.search(r"(\d{1,2}\s*月\s*\d{1,2}\s*日)", text)
+        if match:
+            return re.sub(r"\s+", "", match.group(1))
+    return ""
+
+
 def _extract_era_task_groups(state: dict[str, Any]) -> list[dict[str, Any]]:
     groups: list[dict[str, Any]] = []
     top_level_groups = state.get("EraTasklistPc")
@@ -633,25 +809,51 @@ def _extract_era_task_groups(state: dict[str, Any]) -> list[dict[str, Any]]:
             if _is_task_group(group):
                 groups.append(group)
 
-    for node in _iter_nested_dicts(state):
-        if node.get("name") != "EraTasklistPc":
-            continue
-        props = node.get("props") if isinstance(node.get("props"), dict) else {}
-        if _is_task_group(props):
-            groups.append(props)
+    def visit(value: Any, panel_label: str = "") -> None:
+        if isinstance(value, list):
+            for child in value:
+                visit(child, panel_label)
+            return
+        if not isinstance(value, dict):
+            return
+
+        name = value.get("name")
+        current_label = panel_label
+        if name == "EvaTabs.Panel":
+            current_label = _tab_panel_label(value) or panel_label
+        if name == "EraTasklistPc":
+            props = value.get("props") if isinstance(value.get("props"), dict) else {}
+            if _is_task_group(props):
+                group = dict(props)
+                if current_label:
+                    group.setdefault("group_label", current_label)
+                groups.append(group)
+            return
+        for child in value.values():
+            visit(child, current_label)
+
+    visit(state)
     return groups
 
 
-def _iter_nested_dicts(value: Any) -> list[dict[str, Any]]:
-    nodes: list[dict[str, Any]] = []
-    if isinstance(value, dict):
-        nodes.append(value)
-        for child in value.values():
-            nodes.extend(_iter_nested_dicts(child))
-    elif isinstance(value, list):
-        for child in value:
-            nodes.extend(_iter_nested_dicts(child))
-    return nodes
+def _iter_nested_dicts(value: Any) -> Iterator[dict[str, Any]]:
+    """深度优先遍历嵌套容器，不复制整棵活动配置树。"""
+    stack = [value]
+    visited: set[int] = set()
+    while stack:
+        node = stack.pop()
+        if not isinstance(node, (dict, list)):
+            continue
+        node_id = id(node)
+        if node_id in visited:
+            continue
+        visited.add(node_id)
+        if isinstance(node, dict):
+            yield node
+            children = node.values()
+        else:
+            children = node
+        stack.extend(reversed(list(children)))
 
 
 def _is_task_group(value: Any) -> bool:
@@ -688,16 +890,40 @@ def _is_terminal_claim_error(exc: Exception) -> bool:
 
 def _extract_tab_labels(state: Dict[str, Any]) -> list[str]:
     labels: list[str] = []
-    for panel in state.get("EvaTabs.Panel") or []:
-        if not isinstance(panel, dict):
+    seen: set[str] = set()
+
+    legacy_panels = state.get("EvaTabs.Panel") or []
+    if isinstance(legacy_panels, dict):
+        legacy_panels = [legacy_panels]
+    if isinstance(legacy_panels, list):
+        for panel in legacy_panels:
+            label = _tab_panel_label(panel)
+            if label and label not in seen:
+                seen.add(label)
+                labels.append(label)
+
+    for node in _iter_nested_dicts(state):
+        if node.get("name") != "EvaTabs.Panel":
             continue
-        tab_item = panel.get("tabItem") if isinstance(panel.get("tabItem"), dict) else {}
-        props = tab_item.get("tabItemProps") if isinstance(tab_item.get("tabItemProps"), dict) else {}
-        text_content = props.get("textContent") if isinstance(props.get("textContent"), dict) else {}
-        label = str(text_content.get("content") or "").strip()
-        if label:
+        label = _tab_panel_label(node)
+        if label and label not in seen:
+            seen.add(label)
             labels.append(label)
     return labels
+
+
+def _tab_panel_label(panel: Any) -> str:
+    if not isinstance(panel, dict):
+        return ""
+    props = panel.get("props") if isinstance(panel.get("props"), dict) else panel
+    tab_item = props.get("tabItem") if isinstance(props.get("tabItem"), dict) else {}
+    for key in ("tabItemProps", "activatedTabItemProps"):
+        item_props = tab_item.get(key) if isinstance(tab_item.get(key), dict) else {}
+        text_content = item_props.get("textContent") if isinstance(item_props.get("textContent"), dict) else {}
+        label = str(text_content.get("content") or "").strip()
+        if label:
+            return label
+    return ""
 
 
 def _group_label_for_index(labels: list[str], index: int) -> str:

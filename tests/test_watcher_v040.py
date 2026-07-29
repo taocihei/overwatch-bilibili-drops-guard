@@ -130,13 +130,21 @@ class RediscoverTasksOnceTest(unittest.TestCase):
     def test_rediscover_clears_cached_ids_then_invokes_discover(self) -> None:
         watcher = LiveWatcher(WatchOptions(cookie="a=b", room_id="1"), lambda _m: None)
         watcher._activity_task_ids.add("old-task")
+        watcher._activity_claim_task_ids.add("old-claim")
         watcher._activity_task_meta["old-task"] = {"group_label": "5月22日"}
-        watcher._claimable_task_ids.add("old-task")
+        watcher._activity_task_meta["old-claim"] = {"group_label": "5月22日"}
+        watcher._claimable_task_ids.update({"old-task", "old-claim"})
         finished = threading.Event()
-        captured: list[tuple[set[str], dict[str, dict]]] = []
+        captured: list[tuple[set[str], set[str], dict[str, dict]]] = []
 
         def fake_discover(client, announce_progress: bool = True) -> list[str]:
-            captured.append((set(watcher._activity_task_ids), dict(watcher._activity_task_meta)))
+            captured.append(
+                (
+                    set(watcher._activity_task_ids),
+                    set(watcher._activity_claim_task_ids),
+                    dict(watcher._activity_task_meta),
+                )
+            )
             finished.set()
             return []
 
@@ -145,8 +153,9 @@ class RediscoverTasksOnceTest(unittest.TestCase):
         watcher.rediscover_tasks_once()
 
         self.assertTrue(finished.wait(timeout=2))
-        cached_ids, cached_meta = captured[0]
+        cached_ids, cached_claim_ids, cached_meta = captured[0]
         self.assertEqual(cached_ids, set())
+        self.assertEqual(cached_claim_ids, set())
         self.assertEqual(cached_meta, {})
         self.assertEqual(watcher._claimable_task_ids, set())
 

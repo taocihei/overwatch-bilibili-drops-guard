@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import queue
 import unittest
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -34,6 +33,64 @@ class RoundedPanelLayoutTest(_HiddenRootCase):
         configured_height = int(panel.cget("height"))
         self.assertGreater(configured_height, 30)
         self.assertLess(configured_height, 80)
+
+
+class SmallWindowLayoutRegressionTest(unittest.TestCase):
+    def test_default_window_shows_complete_settings_and_expanded_log_area(self) -> None:
+        app = gui.App(preview_mode=True)
+        try:
+            app.geometry("1280x840+0+0")
+            for _ in range(5):
+                app.update()
+
+            first, last = app.settings_canvas.yview()
+            self.assertAlmostEqual(first, 0.0, places=3)
+            self.assertAlmostEqual(last, 1.0, places=3)
+            self.assertLessEqual(
+                app.controls.winfo_y() + app.controls.winfo_height(),
+                app.commandbar.winfo_height() + 1,
+            )
+            self.assertGreaterEqual(app.log_wrap.winfo_height(), 300)
+            self.assertEqual(app.log_empty_canvas.winfo_manager(), "place")
+            self.assertEqual(app.log_empty_label.winfo_manager(), "place")
+            self.assertLess(app.log_empty_label.winfo_y(), 80)
+        finally:
+            app.destroy()
+
+    def test_primary_and_account_actions_are_reachable_at_minimum_size(self) -> None:
+        app = gui.App(preview_mode=True)
+        try:
+            app.geometry("1080x660+0+0")
+            for _ in range(5):
+                app.update()
+
+            self.assertLessEqual(
+                app.controls.winfo_rootx() + app.controls.winfo_width(),
+                app.winfo_rootx() + app.winfo_width(),
+            )
+
+            app.settings_canvas.yview_moveto(1.0)
+            for _ in range(5):
+                app.update()
+            wanted = {"保存账号", "新增账号", "验证", "清空", "▶ 开始挂宝", "领取奖励"}
+            found: dict[str, tk.Misc] = {}
+
+            def collect(widget: tk.Misc) -> None:
+                for child in widget.winfo_children():
+                    text = getattr(child, "text", "")
+                    if text in wanted:
+                        found[str(text)] = child
+                    collect(child)
+
+            collect(app)
+            self.assertEqual(set(found), wanted)
+            root_right = app.winfo_rootx() + app.winfo_width()
+            root_bottom = app.winfo_rooty() + app.winfo_height()
+            for name, widget in found.items():
+                self.assertLessEqual(widget.winfo_rootx() + widget.winfo_width(), root_right, name)
+                self.assertLessEqual(widget.winfo_rooty() + widget.winfo_height(), root_bottom, name)
+        finally:
+            app.destroy()
 
 
 class WatchStatusCardCollapsedTest(_HiddenRootCase):
