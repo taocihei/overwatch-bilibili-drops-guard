@@ -9,10 +9,13 @@ import base64
 import urllib.parse
 from collections.abc import Iterator
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
+from email.utils import parsedate_to_datetime
 from http.cookies import SimpleCookie
 from typing import Any, Dict, List
 from uuid import uuid4
 
+import json5
 import requests
 
 
@@ -32,6 +35,7 @@ DEVICE_COOKIE_NAMES = {
     "b_lsid",
     "b_nut",
 }
+BILIBILI_TIMEZONE = timezone(timedelta(hours=8))
 
 MIXIN_KEY_ENC_TAB = [
     46, 47, 18, 2, 53, 8, 23, 32,
@@ -387,6 +391,10 @@ class BilibiliClient:
                     )
                     if checkpoint_tasks:
                         for checkpoint_task in checkpoint_tasks:
+                            if group.get("active_start") is not None:
+                                checkpoint_task["active_start"] = group["active_start"]
+                            if group.get("active_end") is not None:
+                                checkpoint_task["active_end"] = group["active_end"]
                             task_id = checkpoint_task["task_id"]
                             if task_id in seen:
                                 continue
@@ -394,22 +402,29 @@ class BilibiliClient:
                             tasks.append(checkpoint_task)
                     elif parent_task_id not in seen:
                         seen.add(parent_task_id)
-                        tasks.append(
-                            _activity_task_from_page_task(
-                                task,
-                                parent_task_id,
-                                task_group_label,
-                                group_index,
-                            )
+                        page_task = _activity_task_from_page_task(
+                            task,
+                            parent_task_id,
+                            task_group_label,
+                            group_index,
                         )
+                        if group.get("active_start") is not None:
+                            page_task["active_start"] = group["active_start"]
+                        if group.get("active_end") is not None:
+                            page_task["active_end"] = group["active_end"]
+                        tasks.append(page_task)
 
         if not tasks:
             raise RuntimeError("直播页没有找到活动任务 ID，请确认直播间页面有本次掉宝任务")
-        return {
+        result = {
             "tasks": tasks,
             "tracking_task_ids": tracking_task_ids,
             "groups": group_records,
         }
+        server_time = _response_server_timestamp(response)
+        if server_time is not None:
+            result["server_time"] = server_time
+        return result
 
     def get_activity_task_progress(self, task_ids: list[str]) -> Dict[str, Any]:
         normalized_task_ids = [str(task_id).strip() for task_id in task_ids if str(task_id).strip()]
@@ -571,6 +586,19 @@ def _decode_json_response(response: requests.Response) -> Dict[str, Any]:
     return payload
 
 
+def _response_server_timestamp(response: requests.Response) -> float | None:
+    date_header = str(response.headers.get("Date") or "").strip()
+    if not date_header:
+        return None
+    try:
+        server_time = parsedate_to_datetime(date_header)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if server_time.tzinfo is None:
+        server_time = server_time.replace(tzinfo=timezone.utc)
+    return server_time.timestamp()
+
+
 def _extract_live_activity_states(html: str) -> list[dict[str, Any]]:
     states: list[dict[str, Any]] = []
     seen_raw: set[str] = set()
@@ -582,10 +610,46 @@ def _extract_live_activity_states(html: str) -> list[dict[str, Any]]:
             try:
                 value = json.loads(raw)
             except ValueError:
-                continue
+                try:
+                    value = json5.loads(_normalize_js_boolean_shorthand(raw))
+                except ValueError:
+                    continue
             if isinstance(value, dict):
                 states.append(value)
     return states
+
+
+def _normalize_js_boolean_shorthand(text: str) -> str:
+    """Convert Bilibili's ``!0``/``!1`` booleans without touching string content."""
+
+    output: list[str] = []
+    index = 0
+    quote = ""
+    escaped = False
+    while index < len(text):
+        char = text[index]
+        if quote:
+            output.append(char)
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == quote:
+                quote = ""
+            index += 1
+            continue
+        if char in {'"', "'"}:
+            quote = char
+            output.append(char)
+            index += 1
+            continue
+        if char == "!" and index + 1 < len(text) and text[index + 1] in {"0", "1"}:
+            output.append("true" if text[index + 1] == "0" else "false")
+            index += 2
+            continue
+        output.append(char)
+        index += 1
+    return "".join(output)
 
 
 def _extract_json_assignments(text: str, marker: str) -> list[str]:
@@ -602,8 +666,12 @@ def _extract_json_assignments(text: str, marker: str) -> list[str]:
             start = cursor
             continue
         equal_index = cursor
-        brace_index = text.find("{", equal_index + 1)
-        if brace_index < 0:
+        brace_index = equal_index + 1
+        while brace_index < len(text) and text[brace_index].isspace():
+            brace_index += 1
+        # Only accept a direct object-literal assignment. Searching for the next
+        # brace would misread Object.assign({}, ...) or Promise.resolve({...}).
+        if brace_index >= len(text) or text[brace_index] != "{":
             start = equal_index + 1
             continue
         end_index = _find_json_object_end(text, brace_index)
@@ -809,31 +877,87 @@ def _extract_era_task_groups(state: dict[str, Any]) -> list[dict[str, Any]]:
             if _is_task_group(group):
                 groups.append(group)
 
-    def visit(value: Any, panel_label: str = "") -> None:
+    def visit(
+        value: Any,
+        panel_label: str = "",
+        panel_period: dict[str, int] | None = None,
+    ) -> None:
         if isinstance(value, list):
             for child in value:
-                visit(child, panel_label)
+                visit(child, panel_label, panel_period)
             return
         if not isinstance(value, dict):
             return
 
         name = value.get("name")
         current_label = panel_label
+        current_period = panel_period
         if name == "EvaTabs.Panel":
             current_label = _tab_panel_label(value) or panel_label
+            current_period = _activity_period_from_panel(value) or panel_period
         if name == "EraTasklistPc":
             props = value.get("props") if isinstance(value.get("props"), dict) else {}
             if _is_task_group(props):
                 group = dict(props)
                 if current_label:
                     group.setdefault("group_label", current_label)
+                if current_period:
+                    group.update(current_period)
                 groups.append(group)
             return
         for child in value.values():
-            visit(child, current_label)
+            visit(child, current_label, current_period)
 
     visit(state)
     return groups
+
+
+def _activity_period_from_panel(panel: dict[str, Any]) -> dict[str, int]:
+    stack: list[Any] = [panel]
+    while stack:
+        node = stack.pop()
+        if isinstance(node, list):
+            stack.extend(reversed(node))
+            continue
+        if not isinstance(node, dict):
+            continue
+        if node is not panel and node.get("name") == "EvaTabs.Panel":
+            # A parent tab must not borrow the validity window from a nested tab.
+            continue
+        if node.get("name") != "EvaText":
+            stack.extend(reversed(list(node.values())))
+            continue
+        props = node.get("props") if isinstance(node.get("props"), dict) else {}
+        content = str(props.get("content") or "")
+        if "有效统计时间" in content:
+            period = _parse_activity_period(content)
+            if period:
+                return period
+    return {}
+
+
+def _parse_activity_period(text: str) -> dict[str, int]:
+    match = re.search(
+        r"(\d{4})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日\s*"
+        r"(\d{1,2})\s*[:：]\s*(\d{2})\s*[-~—–至]\s*"
+        r"(\d{4})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日\s*"
+        r"(\d{1,2})\s*[:：]\s*(\d{2})",
+        text,
+    )
+    if not match:
+        return {}
+    values = [int(value) for value in match.groups()]
+    try:
+        start = datetime(*values[:5], tzinfo=BILIBILI_TIMEZONE)
+        end = datetime(*values[5:], tzinfo=BILIBILI_TIMEZONE)
+    except ValueError:
+        return {}
+    if end <= start:
+        return {}
+    return {
+        "active_start": int(start.timestamp()),
+        "active_end": int(end.timestamp()),
+    }
 
 
 def _iter_nested_dicts(value: Any) -> Iterator[dict[str, Any]]:

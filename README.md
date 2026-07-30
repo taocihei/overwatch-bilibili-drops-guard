@@ -1,6 +1,6 @@
 ﻿# 守望先锋 B 站直播挂宝 / Overwatch Bilibili Live Drops Guard
 
-当前版本：`v0.5.1`
+当前版本：`v0.5.3`
 
 开源地址：<https://github.com/taocihei/overwatch-bilibili-drops-guard>
 
@@ -24,7 +24,7 @@
 
 1. 打开项目页面：<https://github.com/taocihei/overwatch-bilibili-drops-guard>
 2. 进入右侧或页面中的 `Releases`。
-3. 下载 `OverwatchBiliDrops-v0.5.1.exe`。
+3. 下载 `OverwatchBiliDrops-v0.5.3.exe`。
 4. 双击运行。
 5. 如果 Windows 提示“未知发布者”或“Windows 已保护你的电脑”，点击“更多信息”，再点“仍要运行”。这是个人开源软件常见提示，不代表一定有病毒。
 6. 第一次使用先点“自动获取 Cookie”，在弹出的独立 Edge/Chrome 窗口里登录 B 站。
@@ -47,6 +47,21 @@
 - `通知 URL`：可留空。填写后，启动、检测到可领取、领取成功、领取失败、Cookie 获取成功等关键事件会向该地址发送 JSON POST。
 - `观看进度`：优先显示本次观看进度，比如“还差 48 分钟”“已完成，待领取”“已领取”。
 - `运行日志`：保留登录、计时、任务识别和领取记录，适合排查异常。
+
+## v0.5.3 新增与修复
+
+- **新增低打扰赞助入口**：页脚只保留一个“支持作者”入口，不在启动、挂宝或领奖过程中弹窗；赞助完全自愿且不影响任何功能。
+- **接入 YunGouOS 二维码流程**：可选择 ¥3 / ¥6 / ¥10，生成微信扫码支付二维码并轮询订单状态；确认付款后显示 QQ 群 `1012969672` 并支持一键复制。
+- **减少界面重复信息**：版本号只在窗口标题显示，移除品牌区和页脚的重复版本；页脚也不再重复直播间号和任务 ID。
+- **修复运行日志重复刷屏**：相同任务摘要即使跨过检查周期也只记录一次，只有进度或状态实际变化时才追加日志。
+
+## v0.5.2 修复
+
+- **修复新版活动页误报“暂无掉宝任务”**：兼容 B 站将 `window.__BILIACT_EVAPAGEDATA__` 从标准 JSON 改成 JavaScript 对象字面量的输出方式。
+- **兼容压缩布尔值**：可解析活动页里的 `!0` / `!1`，并确保字符串内容不会被误替换。
+- **修复跨午夜选错活动日期**：以 B站响应的服务器时间为时钟基准，再按页面公布的 UTC+8“有效统计时间”选择当前任务组；不受电脑本地时区影响，也不会在午夜提前显示尚未开始的下一日奖励。
+- **明确显示任务有效期**：日志同时显示 B站当前时间，以及当前活动任务实际有效到几点，避免把“B站已经过午夜”和“下一日任务已经开始”混为一谈。
+- **实时页面验证**：房间 `23612045` 当前页面可重新识别 8 个父进度任务和 38 个 checkpoint 领取任务。
 
 ## v0.5.1 修复
 
@@ -278,16 +293,15 @@ dist\OverwatchBiliDrops.exe
 发布时会同时生成带版本号的文件，例如：
 
 ```text
-dist\OverwatchBiliDrops-v0.5.1.exe
+dist\OverwatchBiliDrops-v0.5.3.exe
 ```
 ## 赞助
 
-如果这个工具帮到了你，可以扫码赞助。
+如果这个工具帮到了你，可以点击软件页脚的“支持作者”，选择金额后生成 YunGouOS 微信支付二维码。付款成功后，界面会显示 QQ 群 `1012969672`。
 
-再次说明：赞助没有任何功能效果，不会解锁功能、不会提高成功率、不会获得优先支持，也不会影响掉宝或领奖结果。它只是给作者点了一次赞。
+赞助完全自愿，不解锁功能、不提高成功率、不提供优先支持，也不影响挂宝或领奖结果。
 
-
-![赞助二维码](assets/sponsor.jpg)
+> 维护者配置：桌面端通过环境变量 `BILI_DROPS_SPONSOR_API_URL` 连接公开赞助服务。商户密钥只允许保存在服务端；服务端负责调用 YunGouOS `nativePay`、接收支付回调并提供 `/orders` 创建订单及 `/orders/{order_id}` 状态查询接口。
 
 ---
 
@@ -295,7 +309,7 @@ dist\OverwatchBiliDrops-v0.5.1.exe
 
 Project name: **守望先锋 B 站直播挂宝 / Overwatch Bilibili Live Drops Guard**
 
-Version: `v0.5.1`
+Version: `v0.5.3`
 
 Repository: <https://github.com/taocihei/overwatch-bilibili-drops-guard>
 
@@ -315,7 +329,7 @@ Default room: `23612045`.
 
 1. Open the repository page: <https://github.com/taocihei/overwatch-bilibili-drops-guard>
 2. Open `Releases`.
-3. Download `OverwatchBiliDrops-v0.5.1.exe`.
+3. Download `OverwatchBiliDrops-v0.5.3.exe`.
 4. Double-click to run it.
 5. If Windows shows an unknown-publisher warning, click `More info`, then `Run anyway`.
 6. Click `自动获取 Cookie`, then sign in to Bilibili in the independent Edge/Chrome window opened by the app.
@@ -359,6 +373,6 @@ dist\OverwatchBiliDrops.exe
 Release builds are also copied with a versioned file name, for example:
 
 ```text
-dist\OverwatchBiliDrops-v0.5.1.exe
+dist\OverwatchBiliDrops-v0.5.3.exe
 ```
 
