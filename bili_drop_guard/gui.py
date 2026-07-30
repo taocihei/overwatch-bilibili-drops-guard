@@ -8,6 +8,7 @@ import traceback
 import tkinter as tk
 import webbrowser
 from datetime import datetime
+from io import BytesIO
 from pathlib import Path
 from tkinter import messagebox, ttk
 from typing import Callable
@@ -22,6 +23,7 @@ from .bilibili import normalize_room_id
 from .config import APP_DIR, DEFAULT_ROOM_ID, MAX_CHECK_INTERVAL, MAX_WATCH_THREADS, MIN_CHECK_INTERVAL, AccountProfile, AppConfig, load_config, parse_task_ids, sanitize_config, save_config
 from .cookie_capture import capture_bilibili_cookie, open_bilibili_login_page
 from .notifier import send_notification
+from .sponsor import SPONSOR_QQ_GROUP, SponsorClient, SponsorError, SponsorOrder, SponsorOrderStatus
 from .watcher import LiveWatcher, WatchWorkerStatus
 from .multi_account import MultiAccountWatcher, build_account_options
 
@@ -945,6 +947,13 @@ class App(tk.Tk):
         self.notification_failure_history: dict[str, float] = {}
         self.notification_pending: set[str] = set()
         self._ui_images: list[object] = []
+        self._sponsor_window: tk.Toplevel | None = None
+        self._sponsor_order: SponsorOrder | None = None
+        self._sponsor_client: SponsorClient | None = None
+        self._sponsor_poll_job: str | None = None
+        self._sponsor_generation = 0
+        self._sponsor_loading = False
+        self._sponsor_success_shown = False
 
         self.cookie_var = tk.StringVar(value=self.config_data.cookie)
         self.selected_account_var = tk.StringVar(value=self.config_data.account_name)
@@ -977,7 +986,6 @@ class App(tk.Tk):
         self.reward_title_var = tk.StringVar(value="未开始")
         self.reward_detail_var = tk.StringVar(value="开始后检查是否有奖励可领取")
         self.advanced_visible_var = tk.BooleanVar(value=True)
-        self.version_var = tk.StringVar(value=f"v{__version__}")
         self.status_label: ttk.Label | None = None
         self._compact_layout = False
         self._narrow_layout = False
@@ -1093,7 +1101,6 @@ class App(tk.Tk):
         sub = tk.Frame(brand, bg=HEADER_BG, highlightthickness=0, borderwidth=0)
         sub.grid(row=1, column=1, sticky="w", pady=(2, 0))
         tk.Label(sub, text="Bilibili Drops Helper", bg=HEADER_BG, fg=MUTED, font=("Microsoft YaHei UI", 9)).pack(side="left")
-        tk.Label(sub, textvariable=self.version_var, bg="#edf3fb", fg=TEXT, font=("Microsoft YaHei UI", 8, "bold"), padx=10, pady=2).pack(side="left", padx=(12, 0))
 
         controls = tk.Frame(commandbar, bg=HEADER_BG, highlightthickness=0, borderwidth=0)
         self.controls = controls
@@ -1188,14 +1195,12 @@ class App(tk.Tk):
         status_left = tk.Frame(statusbar, bg=HEADER_BG, highlightthickness=0, borderwidth=0)
         status_left.grid(row=0, column=0, sticky="w", padx=28)
         self._computer_icon(status_left, background=HEADER_BG).pack(side="left", padx=(0, 8))
-        tk.Label(status_left, text="Cookie 仅本机保存", bg=HEADER_BG, fg=MUTED, font=("Microsoft YaHei UI", 9, "bold")).pack(side="left", padx=(0, 16))
-        tk.Label(status_left, textvariable=self.room_status_var, bg=HEADER_BG, fg=MUTED, font=("Microsoft YaHei UI", 9)).pack(side="left", padx=(0, 14))
-        tk.Label(status_left, textvariable=self.task_id_status_var, bg=HEADER_BG, fg=MUTED, font=("Microsoft YaHei UI", 9)).pack(side="left", padx=(0, 14))
-        tk.Label(status_left, textvariable=self.version_var, bg=HEADER_BG, fg=FAINT, font=("Microsoft YaHei UI", 9)).pack(side="left")
+        tk.Label(status_left, text="Cookie 仅本机保存", bg=HEADER_BG, fg=MUTED, font=("Microsoft YaHei UI", 9, "bold")).pack(side="left")
 
         status_right = tk.Frame(statusbar, bg=HEADER_BG, highlightthickness=0, borderwidth=0)
         status_right.grid(row=0, column=1, sticky="e", padx=28)
-        tk.Label(status_right, text="本软件完全免费，请勿购买；购买请找商家退款。", bg=HEADER_BG, fg="#a97412", font=("Microsoft YaHei UI", 9)).pack(side="left", padx=(0, 16))
+        tk.Label(status_right, text="永久免费 · 赞助不影响功能", bg=HEADER_BG, fg="#a97412", font=("Microsoft YaHei UI", 9)).pack(side="left", padx=(0, 16))
+        self._footer_link(status_right, "支持作者", self._show_sponsor_dialog, icon="sponsor", accent=True).pack(side="left", padx=(0, 14))
         self._footer_link(status_right, "开源地址", self._open_source_url, icon="source", accent=True).pack(side="left", padx=(0, 14))
         self._footer_link(status_right, "帮助", self._show_onboarding_guide, icon="help").pack(side="left", padx=(0, 14))
         self._footer_link(status_right, "关于", self._show_about_dialog, icon="about").pack(side="left")
@@ -2495,6 +2500,320 @@ class App(tk.Tk):
         self.clipboard_append(SOURCE_URL)
         self._log("开源地址已复制")
 
+    def _show_sponsor_dialog(self) -> tk.Toplevel:
+        if self._sponsor_window is not None:
+            try:
+                if self._sponsor_window.winfo_exists():
+                    self._sponsor_window.deiconify()
+                    self._sponsor_window.lift()
+                    self._sponsor_window.focus_set()
+                    return self._sponsor_window
+            except tk.TclError:
+                self._sponsor_window = None
+
+        top = tk.Toplevel(self)
+        self._sponsor_window = top
+        self._sponsor_generation += 1
+        self._sponsor_order = None
+        self._sponsor_client = None
+        self._sponsor_loading = False
+        self._sponsor_success_shown = False
+        top.title("支持作者")
+        top.geometry("460x610")
+        top.resizable(False, False)
+        top.configure(bg=APP_BG)
+        try:
+            top.transient(self)
+        except tk.TclError:
+            pass
+        top.protocol("WM_DELETE_WINDOW", self._close_sponsor_dialog)
+
+        container = tk.Frame(top, bg=APP_BG, padx=26, pady=22)
+        container.pack(fill="both", expand=True)
+        tk.Label(container, text="支持作者", bg=APP_BG, fg=TEXT, font=("Microsoft YaHei UI", 18, "bold")).pack(anchor="w")
+        tk.Label(
+            container,
+            text="完全自愿，不解锁功能，也不影响挂宝和领奖。",
+            bg=APP_BG,
+            fg=MUTED,
+            font=("Microsoft YaHei UI", 9),
+        ).pack(anchor="w", pady=(3, 16))
+
+        amount_panel = RoundedPanel(
+            container,
+            fill=SURFACE,
+            background=APP_BG,
+            radius=16,
+            padding=(16, 14),
+            min_height=82,
+            outline=SUBTLE_OUTLINE,
+            shadow=False,
+            auto_height=False,
+        )
+        amount_panel.pack(fill="x")
+        tk.Label(amount_panel.inner, text="选择金额", bg=SURFACE, fg=TEXT, font=("Microsoft YaHei UI", 10, "bold")).pack(anchor="w")
+        amount_row = tk.Frame(amount_panel.inner, bg=SURFACE, highlightthickness=0, borderwidth=0)
+        amount_row.pack(fill="x", pady=(9, 0))
+        self._sponsor_amount_var = tk.StringVar(value="6.00")
+        for index, amount in enumerate(("3.00", "6.00", "10.00")):
+            amount_row.columnconfigure(index, weight=1, uniform="sponsor_amount")
+            tk.Radiobutton(
+                amount_row,
+                text=f"¥{amount.removesuffix('.00')}",
+                value=amount,
+                variable=self._sponsor_amount_var,
+                indicatoron=False,
+                selectcolor=ACCENT_SOFT,
+                bg=SECONDARY,
+                fg=TEXT,
+                activebackground=ACCENT_SOFT_ACTIVE,
+                activeforeground=ACCENT,
+                relief="flat",
+                offrelief="flat",
+                overrelief="flat",
+                borderwidth=0,
+                highlightthickness=1,
+                highlightbackground=SUBTLE_OUTLINE,
+                highlightcolor=ACCENT_BORDER,
+                font=("Microsoft YaHei UI", 10, "bold"),
+                padx=12,
+                pady=7,
+                cursor="hand2",
+            ).grid(row=0, column=index, sticky="ew", padx=(0 if index == 0 else 5, 0 if index == 2 else 5))
+
+        qr_panel = RoundedPanel(
+            container,
+            fill=SURFACE,
+            background=APP_BG,
+            radius=18,
+            padding=(16, 14),
+            min_height=300,
+            outline=SUBTLE_OUTLINE,
+            shadow=True,
+            auto_height=False,
+        )
+        qr_panel.pack(fill="x", pady=(14, 0))
+        qr_panel.inner.columnconfigure(0, weight=1)
+        self._sponsor_qr_label = tk.Label(
+            qr_panel.inner,
+            text="点击下方按钮生成微信支付二维码",
+            bg=FIELD_BG,
+            fg=MUTED,
+            width=28,
+            height=12,
+            justify="center",
+            font=("Microsoft YaHei UI", 10, "bold"),
+        )
+        self._sponsor_qr_label.grid(row=0, column=0, sticky="n", pady=(0, 10))
+        self._sponsor_status_var = tk.StringVar(value="二维码由 YunGouOS 生成，付款状态自动确认")
+        tk.Label(
+            qr_panel.inner,
+            textvariable=self._sponsor_status_var,
+            bg=SURFACE,
+            fg=MUTED,
+            font=("Microsoft YaHei UI", 9),
+            wraplength=350,
+            justify="center",
+        ).grid(row=1, column=0, sticky="ew")
+
+        self._sponsor_success_frame = tk.Frame(container, bg=SUCCESS, padx=14, pady=11)
+        success_title = tk.Label(
+            self._sponsor_success_frame,
+            text=f"QQ群：{SPONSOR_QQ_GROUP}",
+            bg=SUCCESS,
+            fg="#ffffff",
+            font=("Microsoft YaHei UI", 12, "bold"),
+        )
+        success_title.pack(side="left")
+        tk.Button(
+            self._sponsor_success_frame,
+            text="复制群号",
+            command=self._copy_sponsor_group,
+            bg="#ffffff",
+            fg=SUCCESS_ACTIVE,
+            activebackground="#effcf5",
+            activeforeground=SUCCESS_ACTIVE,
+            relief="flat",
+            borderwidth=0,
+            padx=12,
+            pady=5,
+            cursor="hand2",
+            font=("Microsoft YaHei UI", 9, "bold"),
+        ).pack(side="right")
+
+        self._sponsor_generate_button = tk.Button(
+            container,
+            text="生成赞助二维码",
+            command=self._start_sponsor_order,
+            bg=ACCENT,
+            fg="#ffffff",
+            activebackground=ACCENT_ACTIVE,
+            activeforeground="#ffffff",
+            relief="flat",
+            borderwidth=0,
+            padx=18,
+            pady=10,
+            cursor="hand2",
+            font=("Microsoft YaHei UI", 10, "bold"),
+        )
+        self._sponsor_generate_button.pack(fill="x", pady=(14, 0))
+        return top
+
+    def _start_sponsor_order(self) -> None:
+        if self._sponsor_loading:
+            return
+        self._cancel_sponsor_poll()
+        self._sponsor_loading = True
+        self._sponsor_generation += 1
+        generation = self._sponsor_generation
+        amount = self._sponsor_amount_var.get()
+        self._sponsor_order = None
+        self._sponsor_success_shown = False
+        self._sponsor_success_frame.pack_forget()
+        self._sponsor_status_var.set("正在创建 YunGouOS 支付订单…")
+        self._sponsor_qr_label.configure(image="", text="正在生成二维码…", fg=ACCENT)
+        self._sponsor_generate_button.configure(text="正在生成…", bg=FAINT, cursor="arrow")
+
+        def create_order() -> None:
+            try:
+                client = SponsorClient.from_environment()
+                order = client.create_order(amount, app_version=__version__)
+                qr_data = client.download_qr(order.qr_url)
+            except SponsorError as exc:
+                message = str(exc)
+                self.after(0, lambda: self._finish_sponsor_error(generation, message))
+                return
+            except Exception:
+                self.after(0, lambda: self._finish_sponsor_error(generation, "二维码生成失败，请稍后重试"))
+                return
+            self.after(0, lambda: self._finish_sponsor_order(generation, client, order, qr_data))
+
+        threading.Thread(target=create_order, name="SponsorOrder", daemon=True).start()
+
+    def _finish_sponsor_order(
+        self,
+        generation: int,
+        client: SponsorClient,
+        order: SponsorOrder,
+        qr_data: bytes,
+    ) -> None:
+        if generation != self._sponsor_generation or not self._sponsor_dialog_exists():
+            return
+        try:
+            if Image is None or ImageTk is None:
+                raise RuntimeError("缺少图片组件")
+            image = Image.open(BytesIO(qr_data)).convert("RGB")
+            image.thumbnail((220, 220), Image.Resampling.LANCZOS)
+            canvas = Image.new("RGB", (232, 232), "#ffffff")
+            canvas.paste(image, ((232 - image.width) // 2, (232 - image.height) // 2))
+            self._sponsor_qr_image = ImageTk.PhotoImage(canvas)
+            self._sponsor_qr_label.configure(image=self._sponsor_qr_image, text="", width=232, height=232)
+        except Exception:
+            self._finish_sponsor_error(generation, "二维码图片无法显示，请重新生成")
+            return
+        self._sponsor_client = client
+        self._sponsor_order = order
+        self._sponsor_loading = False
+        suffix = f" · 有效至 {order.expires_at}" if order.expires_at else ""
+        self._sponsor_status_var.set(f"请使用微信扫码支付，支付成功后自动显示群号{suffix}")
+        self._sponsor_generate_button.configure(text="重新生成二维码", bg=SECONDARY, fg=TEXT, cursor="hand2")
+        self._schedule_sponsor_poll(3000)
+
+    def _finish_sponsor_error(self, generation: int, message: str) -> None:
+        if generation != self._sponsor_generation or not self._sponsor_dialog_exists():
+            return
+        self._sponsor_loading = False
+        self._sponsor_status_var.set(message)
+        self._sponsor_qr_label.configure(image="", text="暂时无法生成二维码", fg=DANGER, width=28, height=12)
+        self._sponsor_generate_button.configure(text="重试", bg=ACCENT, fg="#ffffff", cursor="hand2")
+
+    def _schedule_sponsor_poll(self, delay_ms: int = 10000) -> None:
+        self._cancel_sponsor_poll()
+        if self._sponsor_dialog_exists():
+            self._sponsor_poll_job = self.after(delay_ms, self._poll_sponsor_order)
+
+    def _poll_sponsor_order(self) -> None:
+        self._sponsor_poll_job = None
+        client = self._sponsor_client
+        order = self._sponsor_order
+        if client is None or order is None or not self._sponsor_dialog_exists():
+            return
+        generation = self._sponsor_generation
+
+        def query_order() -> None:
+            try:
+                status = client.query_order(order.order_id)
+            except SponsorError:
+                self.after(0, lambda: self._schedule_sponsor_poll(10000))
+                return
+            except Exception:
+                self.after(0, lambda: self._schedule_sponsor_poll(10000))
+                return
+            self.after(0, lambda: self._apply_sponsor_status(generation, status))
+
+        threading.Thread(target=query_order, name="SponsorStatus", daemon=True).start()
+
+    def _apply_sponsor_status(self, generation: int, status: SponsorOrderStatus) -> None:
+        if generation != self._sponsor_generation or not self._sponsor_dialog_exists():
+            return
+        if status.paid:
+            self._cancel_sponsor_poll()
+            self._sponsor_status_var.set("付款成功，感谢支持")
+            self._sponsor_success_frame.pack(fill="x", pady=(12, 0), before=self._sponsor_generate_button)
+            self._sponsor_generate_button.pack_forget()
+            if not self._sponsor_success_shown:
+                self._sponsor_success_shown = True
+                messagebox.showinfo(
+                    "赞助成功",
+                    f"感谢支持！\n\nQQ群：{SPONSOR_QQ_GROUP}",
+                    parent=self._sponsor_window,
+                )
+            return
+        if status.state == "expired":
+            self._sponsor_status_var.set("二维码已过期，请重新生成")
+            self._sponsor_generate_button.configure(text="重新生成二维码", bg=ACCENT, fg="#ffffff", cursor="hand2")
+            return
+        if status.state == "closed":
+            self._sponsor_status_var.set("订单已关闭，请重新生成")
+            self._sponsor_generate_button.configure(text="重新生成二维码", bg=ACCENT, fg="#ffffff", cursor="hand2")
+            return
+        self._sponsor_status_var.set(status.message or "等待付款确认…")
+        self._schedule_sponsor_poll(10000)
+
+    def _copy_sponsor_group(self) -> None:
+        self.clipboard_clear()
+        self.clipboard_append(SPONSOR_QQ_GROUP)
+        if self._sponsor_dialog_exists():
+            self._sponsor_status_var.set("群号已复制")
+
+    def _cancel_sponsor_poll(self) -> None:
+        if self._sponsor_poll_job is None:
+            return
+        try:
+            self.after_cancel(self._sponsor_poll_job)
+        except tk.TclError:
+            pass
+        self._sponsor_poll_job = None
+
+    def _sponsor_dialog_exists(self) -> bool:
+        try:
+            return self._sponsor_window is not None and bool(self._sponsor_window.winfo_exists())
+        except tk.TclError:
+            return False
+
+    def _close_sponsor_dialog(self) -> None:
+        self._sponsor_generation += 1
+        self._cancel_sponsor_poll()
+        if self._sponsor_window is not None:
+            try:
+                self._sponsor_window.destroy()
+            except tk.TclError:
+                pass
+        self._sponsor_window = None
+        self._sponsor_order = None
+        self._sponsor_client = None
+        self._sponsor_loading = False
+
     def _focus_setup_area(self) -> None:
         if hasattr(self, "room_entry"):
             self.room_entry.focus_set()
@@ -3190,11 +3509,7 @@ class App(tk.Tk):
             if hasattr(self, "cookie_validation_var"):
                 self.cookie_validation_var.set("Cookie 已登录")
             return
-        no_activity_task = (
-            "暂时没有读到可跟踪的掉宝任务" in text
-            or "当前直播页没有本次活动任务" in text
-        )
-        if no_activity_task:
+        if "当前直播页没有本次活动任务" in text:
             self._activity_target_minutes = []
             self.progress_snapshot = ""
             self._progress_terminal = True
@@ -3206,7 +3521,11 @@ class App(tk.Tk):
                 self.reward_detail_var.set("当前直播页没有可自动跟踪的掉宝任务")
                 self.reward_status_var.set("领奖：无任务")
             return
-        if "没有读到活动任务列表" in text or "任务进度检查失败" in text:
+        if (
+            "暂时没有读到可跟踪的掉宝任务" in text
+            or "没有读到活动任务列表" in text
+            or "任务进度检查失败" in text
+        ):
             self._progress_terminal = False
             self.progress_ring.set_state(text="等待", caption="任务列表", value=0.16, color=ACCENT)
             self.progress_title_var.set("等待任务进度")

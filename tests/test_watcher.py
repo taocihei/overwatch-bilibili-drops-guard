@@ -3,8 +3,9 @@ from __future__ import annotations
 import threading
 import time
 import unittest
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from threading import Lock
+from unittest.mock import patch
 
 from bili_drop_guard.bilibili import LoginInfo, RoomInfo
 from bili_drop_guard import watcher
@@ -437,7 +438,7 @@ class LiveWatcherTest(unittest.TestCase):
     def test_activity_task_progress_auto_discovers_ids_from_live_page(self) -> None:
         logs: list[str] = []
         calls: list[list[str]] = []
-        today = date.today()
+        today = watcher._bilibili_today()
         yesterday = today - timedelta(days=1)
         today_label = f"{today.month}月{today.day}日"
         yesterday_label = f"{yesterday.month}月{yesterday.day}日"
@@ -851,6 +852,48 @@ class LiveWatcherTest(unittest.TestCase):
         self.assertEqual(live_watcher._activity_task_meta["new-task"]["group_label"], "5月25日")
         self.assertTrue(any("活动任务已更新" in message for message in logs))
 
+    def test_activity_discovery_anchors_clock_to_bilibili_server_time(self) -> None:
+        class FakeClient:
+            def discover_live_activity_tasks(self, room_id: str) -> dict[str, object]:
+                return {
+                    "server_time": 2_000.0,
+                    "tasks": [{"task_id": "task-a", "current": 0, "target": 60}],
+                }
+
+        live_watcher = LiveWatcher(WatchOptions(cookie="a=b", room_id="23612045"), lambda _message: None)
+
+        with patch("bili_drop_guard.watcher.time.time", return_value=1_000.0):
+            live_watcher._discover_activity_task_ids(FakeClient(), announce_progress=False)
+            server_now = live_watcher._bilibili_now_timestamp()
+
+        self.assertEqual(live_watcher._bilibili_time_offset_seconds, 1_000.0)
+        self.assertEqual(server_now, 2_000.0)
+
+    def test_activity_discovery_logs_bilibili_server_clock_once(self) -> None:
+        class FakeClient:
+            def discover_live_activity_tasks(self, room_id: str) -> dict[str, object]:
+                return {
+                    "server_time": datetime(
+                        2026,
+                        7,
+                        30,
+                        16,
+                        53,
+                        tzinfo=timezone.utc,
+                    ).timestamp(),
+                    "tasks": [{"task_id": "task-a", "current": 0, "target": 60}],
+                }
+
+        logs: list[str] = []
+        live_watcher = LiveWatcher(WatchOptions(cookie="a=b", room_id="23612045"), logs.append)
+
+        live_watcher._discover_activity_task_ids(FakeClient(), announce_progress=False)
+        live_watcher._discover_activity_task_ids(FakeClient(), announce_progress=False)
+
+        server_time_logs = [message for message in logs if message.startswith("B站时间已同步")]
+        self.assertEqual(len(server_time_logs), 1)
+        self.assertIn("7月31日 00:53:00", server_time_logs[0])
+
     def test_activity_discovery_clears_stale_task_ids_when_page_has_no_tasks(self) -> None:
         class FakeClient:
             def discover_live_activity_tasks(self, room_id: str) -> dict[str, object]:
@@ -876,7 +919,7 @@ class LiveWatcherTest(unittest.TestCase):
         self.assertEqual(live_watcher._claimable_task_ids, set())
         self.assertTrue(any("已清空旧任务缓存" in message for message in logs))
 
-    def test_activity_discovery_clears_stale_task_ids_on_no_task_error(self) -> None:
+    def test_activity_discovery_preserves_stale_task_ids_on_parse_error(self) -> None:
         class FakeClient:
             def discover_live_activity_tasks(self, room_id: str) -> dict[str, object]:
                 raise RuntimeError("直播页没有找到活动任务 ID，请确认直播间页面有本次掉宝任务")
@@ -895,11 +938,12 @@ class LiveWatcherTest(unittest.TestCase):
         found_claimable = live_watcher._check_activity_task_progress(FakeClient())
 
         self.assertFalse(found_claimable)
-        self.assertEqual(live_watcher._activity_task_ids, set())
-        self.assertEqual(live_watcher._activity_claim_task_ids, set())
-        self.assertEqual(live_watcher._activity_task_meta, {})
-        self.assertEqual(live_watcher._claimable_task_ids, set())
-        self.assertTrue(any("已清空旧任务缓存" in message for message in logs))
+        self.assertEqual(live_watcher._activity_task_ids, {"old-task"})
+        self.assertEqual(live_watcher._activity_claim_task_ids, {"old-claim"})
+        self.assertEqual(live_watcher._activity_task_meta["old-task"]["group_label"], "5月22日")
+        self.assertEqual(live_watcher._activity_task_meta["old-claim"]["group_label"], "5月22日")
+        self.assertEqual(live_watcher._claimable_task_ids, {"old-task", "old-claim"})
+        self.assertFalse(any("已清空旧任务缓存" in message for message in logs))
         self.assertTrue(any("暂时没有读到可跟踪的掉宝任务" in message for message in logs))
 
     def test_claimable_task_id_goes_to_specific_queue(self) -> None:
@@ -1074,8 +1118,25 @@ class LiveWatcherTest(unittest.TestCase):
         live_watcher = LiveWatcher(WatchOptions(cookie="a=b", room_id="1"), logs.append)
         progress = {"tasks": [{"task_id": "task-a", "name": "观看 30 分钟", "current": 10, "target": 30}]}
 
-        live_watcher._record_task_progress(progress, announce_claimable=False)
-        live_watcher._record_task_progress(progress, announce_claimable=False)
+        with patch("bili_drop_guard.watcher.time.time", side_effect=[100.0, 1000.0]):
+            live_watcher._record_task_progress(progress, announce_claimable=False)
+            live_watcher._record_task_progress(progress, announce_claimable=False)
+
+        self.assertEqual(sum(1 for message in logs if message.startswith("掉宝任务：")), 1)
+
+    def test_record_task_progress_deduplicates_unchanged_detected_summary(self) -> None:
+        logs: list[str] = []
+        live_watcher = LiveWatcher(WatchOptions(cookie="a=b", room_id="1"), logs.append)
+        progress = {
+            "tasks": [
+                {"task_id": f"task-{index}", "name": f"奖励 {index}", "current": 0, "target": minutes}
+                for index, minutes in enumerate((30, 60, 120, 180), start=1)
+            ]
+        }
+
+        with patch("bili_drop_guard.watcher.time.time", side_effect=[100.0, 100.0, 1000.0, 1000.0]):
+            live_watcher._record_task_progress(progress, announce_claimable=False)
+            live_watcher._record_task_progress(progress, announce_claimable=False)
 
         self.assertEqual(sum(1 for message in logs if message.startswith("掉宝任务：")), 1)
 
@@ -1109,7 +1170,7 @@ class LiveWatcherTest(unittest.TestCase):
 
     def test_task_summary_focuses_today_activity_group(self) -> None:
         live_watcher = LiveWatcher(WatchOptions(cookie="a=b", room_id="1"), lambda _message: None)
-        today = date.today()
+        today = watcher._bilibili_today()
         yesterday = today - timedelta(days=1)
         today_label = f"{today.month}月{today.day}日"
         yesterday_label = f"{yesterday.month}月{yesterday.day}日"
@@ -1142,12 +1203,94 @@ class LiveWatcherTest(unittest.TestCase):
         self.assertIn("第二天奖励", summary)
         self.assertNotIn("第一天奖励", summary)
 
+    def test_task_summary_prefers_current_active_period_over_calendar_day(self) -> None:
+        live_watcher = LiveWatcher(WatchOptions(cookie="a=b", room_id="1"), lambda _message: None)
+        now = time.time()
+        today = watcher._bilibili_today()
+        previous = today - timedelta(days=1)
+        active_label = f"{previous.month}月{previous.day}日"
+        upcoming_label = f"{today.month}月{today.day}日"
+        progress = {
+            "list": [
+                {
+                    "task_id": "active-task",
+                    "award_name": "当前有效奖励",
+                    "group_label": active_label,
+                    "group_index": 0,
+                    "task_status": 1,
+                    "current": 10,
+                    "target": 60,
+                    "active_start": now - 3600,
+                    "active_end": now + 3600,
+                },
+                {
+                    "task_id": "future-task",
+                    "award_name": "尚未开始奖励",
+                    "group_label": upcoming_label,
+                    "group_index": 1,
+                    "task_status": 1,
+                    "current": 0,
+                    "target": 60,
+                    "active_start": now + 3600,
+                    "active_end": now + 7200,
+                },
+            ]
+        }
+
+        summary = live_watcher._summarize_task(progress)
+
+        self.assertIn(f"当前可挂：{active_label}", summary)
+        self.assertIn("当前有效奖励", summary)
+        self.assertNotIn("尚未开始奖励", summary)
+
+    def test_task_summary_handles_period_boundaries_and_gap(self) -> None:
+        live_watcher = LiveWatcher(WatchOptions(cookie="a=b", room_id="1"), lambda _message: None)
+        progress = {
+            "list": [
+                {
+                    "task_id": "day-1",
+                    "award_name": "第一场",
+                    "group_label": "7月30日",
+                    "group_index": 0,
+                    "task_status": 1,
+                    "current": 10,
+                    "target": 60,
+                    "active_start": 100.0,
+                    "active_end": 200.0,
+                },
+                {
+                    "task_id": "day-2",
+                    "award_name": "第二场",
+                    "group_label": "7月31日",
+                    "group_index": 1,
+                    "task_status": 1,
+                    "current": 0,
+                    "target": 60,
+                    "active_start": 230.0,
+                    "active_end": 330.0,
+                },
+            ]
+        }
+
+        with patch("bili_drop_guard.watcher.time.time", return_value=199.0):
+            summary = live_watcher._summarize_task(progress)
+            self.assertIn("当前可挂：7月30日", summary)
+            self.assertIn("B站当前生效", summary)
+        with patch("bili_drop_guard.watcher.time.time", return_value=200.0):
+            self.assertIn("最近一场：7月30日", live_watcher._summarize_task(progress))
+        with patch("bili_drop_guard.watcher.time.time", return_value=215.0):
+            self.assertIn("最近一场：7月30日", live_watcher._summarize_task(progress))
+        with patch("bili_drop_guard.watcher.time.time", return_value=230.0):
+            self.assertIn("当前可挂：7月31日", live_watcher._summarize_task(progress))
+        with patch("bili_drop_guard.watcher.time.time", return_value=50.0):
+            self.assertIn("下一场：7月30日", live_watcher._summarize_task(progress))
+
     def test_task_summary_merges_today_groups_split_across_indexes(self) -> None:
         # B 站把同一天的任务拆进多个 EraTasklistPc 组（组数 > 日期 Tab 数），
         # 这些组共用同一个日期标签但 group_index 不同。聚焦今天时必须把它们合并，
         # 否则高档位奖励（在第二个组里）会被整组隐藏。
         live_watcher = LiveWatcher(WatchOptions(cookie="a=b", room_id="1"), lambda _message: None)
-        today = date.today()
+        today = watcher._bilibili_today()
         today_label = f"{today.month}月{today.day}日"
         progress = {
             "list": [
@@ -1182,7 +1325,7 @@ class LiveWatcherTest(unittest.TestCase):
         live_watcher = LiveWatcher(WatchOptions(cookie="a=b", room_id="1"), lambda _message: None)
         # 用相对的过去日期，确保两个标签都不是“今天”，否则今天恰好等于硬编码日期时
         # 会走进 today 分支，测不到这里要验证的回退逻辑。
-        today = date.today()
+        today = watcher._bilibili_today()
         older_label = f"{(today - timedelta(days=3)).month}月{(today - timedelta(days=3)).day}日"
         newer_label = f"{(today - timedelta(days=2)).month}月{(today - timedelta(days=2)).day}日"
         progress = {
@@ -1213,6 +1356,11 @@ class LiveWatcherTest(unittest.TestCase):
         self.assertIn(f"当前可挂：{older_label}", summary)
         self.assertIn("第一天奖励", summary)
         self.assertNotIn("第二天奖励", summary)
+
+    def test_bilibili_today_uses_utc_plus_eight_across_local_day_boundary(self) -> None:
+        utc_time = datetime(2026, 7, 30, 16, 30, tzinfo=timezone.utc)
+
+        self.assertEqual(watcher._bilibili_today(utc_time), date(2026, 7, 31))
 
     def test_task_summary_skips_empty_placeholder_task(self) -> None:
         live_watcher = LiveWatcher(WatchOptions(cookie="a=b", room_id="1"), lambda _message: None)

@@ -1,16 +1,20 @@
 from __future__ import annotations
 
 import unittest
+from datetime import datetime, timedelta, timezone
 
 import requests
 
 from bili_drop_guard.bilibili import (
     BilibiliClient,
+    _activity_period_from_panel,
     _decode_json_response,
+    _extract_json_assignments,
     _extract_tab_labels,
     _group_label_for_index,
     _iter_nested_dicts,
     _normalize_activity_task_progress,
+    _response_server_timestamp,
     normalize_room_id,
 )
 
@@ -72,6 +76,17 @@ class BilibiliRoomTest(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "HTTP 412"):
             _decode_json_response(response)
 
+    def test_response_server_timestamp_reads_http_date(self) -> None:
+        response = requests.Response()
+        response.headers["Date"] = "Thu, 30 Jul 2026 16:53:00 GMT"
+
+        server_time = _response_server_timestamp(response)
+
+        self.assertEqual(
+            server_time,
+            datetime(2026, 7, 30, 16, 53, tzinfo=timezone.utc).timestamp(),
+        )
+
     def test_extract_tab_labels_and_maps_extra_groups_to_last_date(self) -> None:
         state = {
             "EvaTabs.Panel": [
@@ -88,6 +103,51 @@ class BilibiliRoomTest(unittest.TestCase):
         self.assertEqual(_group_label_for_index(labels, 1), "5月23日")
         self.assertEqual(_group_label_for_index(labels, 2), "5月24日")
         self.assertEqual(_group_label_for_index(labels, 3), "5月24日")
+
+    def test_extract_json_assignments_ignores_wrapped_object_arguments(self) -> None:
+        html = """
+        window.__initialState=Object.assign({}, source);
+        window.__initialState=Promise.resolve({taskId:"not-direct"});
+        """
+
+        self.assertEqual(_extract_json_assignments(html, "window.__initialState"), [])
+
+    def test_activity_period_does_not_leak_from_nested_panel(self) -> None:
+        panel = {
+            "name": "EvaTabs.Panel",
+            "slots": [
+                {
+                    "children": [
+                        {
+                            "name": "EvaText",
+                            "props": {
+                                "content": "赛程说明：2026年7月1日 10:00-2026年7月2日 10:00",
+                            },
+                        },
+                        {
+                            "name": "EvaTabs.Panel",
+                            "slots": [
+                                {
+                                    "children": [
+                                        {
+                                            "name": "EvaText",
+                                            "props": {
+                                                "content": (
+                                                    "活动任务有效统计时间："
+                                                    "2026年7月30日 17:30-2026年7月31日 17:00"
+                                                ),
+                                            },
+                                        }
+                                    ]
+                                }
+                            ],
+                        },
+                    ]
+                }
+            ],
+        }
+
+        self.assertEqual(_activity_period_from_panel(panel), {})
 
     def test_discover_live_activity_tasks_reads_eva_page_data(self) -> None:
         html = """
@@ -241,6 +301,76 @@ class BilibiliRoomTest(unittest.TestCase):
         self.assertEqual(result["tasks"][1]["award_name"], "战令等级直升")
         self.assertEqual(result["tasks"][1]["target"], 120)
         self.assertEqual(result["tasks"][1]["task_status"], 2)
+
+    def test_discover_live_activity_tasks_accepts_javascript_object_literal(self) -> None:
+        html = """
+        <script>
+        window.__initialState={BaseInfo:{title:'B站直播OW'}},
+        window.__BILIACT_EVAPAGEDATA__={
+            layerTree:[{
+                name:"EvaTabs.Panel",
+                props:{
+                    tabItem:{
+                        tabItemProps:{textContent:{content:"DAY2观赛奖励"}}
+                    }
+                },
+                slots:[{children:[{
+                    name:"EvaText",
+                    props:{
+                        content:"Day2活动任务有效统计时间：2026年7月30日 17:30-2026年7月31日 17:00"
+                    }
+                },{
+                    fakeHiddenInLayer:!1,
+                    hiddenInLayer:!1,
+                    name:"EraTasklistPc",
+                    props:{
+                        tasklist:[{
+                            taskId:"parent-day-2",
+                            taskName:"7月30日 观看 !0 守望先锋电竞直播间",
+                            showBtn:!0,
+                            checkpoints:[{
+                                alias:"观看 !0 直播60分钟",
+                                awardname:'电竞补给',
+                                ztasksid:"claim-day-2-60",
+                                status:1,
+                                list:[{cur_value:0,limit:60}]
+                            }]
+                        }]
+                    }
+                }]}]
+            }]
+        };
+        </script>
+        """
+        response = requests.Response()
+        response.status_code = 200
+        response.url = "https://live.bilibili.com/23612045"
+        response.headers["Date"] = "Thu, 30 Jul 2026 16:53:00 GMT"
+        response._content = html.encode("utf-8")
+        client = BilibiliClient("")
+        client.session.get = lambda *_args, **_kwargs: response  # type: ignore[method-assign]
+
+        result = client.discover_live_activity_tasks("23612045")
+
+        self.assertEqual(result["tracking_task_ids"], ["parent-day-2"])
+        self.assertEqual(result["tasks"][0]["task_id"], "claim-day-2-60")
+        self.assertEqual(result["tasks"][0]["award_name"], "电竞补给")
+        self.assertIn("!0", result["tasks"][0]["task_name"])
+        self.assertEqual(result["tasks"][0]["group_label"], "7月30日")
+        self.assertEqual(result["tasks"][0]["target"], 60)
+        self.assertEqual(
+            result["server_time"],
+            datetime(2026, 7, 30, 16, 53, tzinfo=timezone.utc).timestamp(),
+        )
+        china_timezone = timezone(timedelta(hours=8))
+        self.assertEqual(
+            result["tasks"][0]["active_start"],
+            int(datetime(2026, 7, 30, 17, 30, tzinfo=china_timezone).timestamp()),
+        )
+        self.assertEqual(
+            result["tasks"][0]["active_end"],
+            int(datetime(2026, 7, 31, 17, 0, tzinfo=china_timezone).timestamp()),
+        )
 
     def test_normalize_totalv2_uses_parent_for_tracking_and_sid_for_claim(self) -> None:
         progress = {

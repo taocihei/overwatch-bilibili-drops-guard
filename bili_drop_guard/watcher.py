@@ -4,7 +4,7 @@ import re
 import threading
 import time
 from dataclasses import dataclass
-from datetime import date
+from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Optional
 
 from .bilibili import BilibiliClient, RoomInfo, make_session_buvid, make_session_device_uuid
@@ -18,6 +18,16 @@ CLAIM_RATE_LIMIT_ATTEMPTS = 3
 WATCH_START_BATCH_SIZE = 1
 ACTIVITY_DISCOVERY_SUCCESS_TTL_SECONDS = 300.0
 ACTIVITY_DISCOVERY_RETRY_TTL_SECONDS = 60.0
+BILIBILI_TIMEZONE = timezone(timedelta(hours=8))
+
+
+def _bilibili_today(now: datetime | None = None):
+    """Return the calendar day used by Bilibili activities (UTC+8)."""
+
+    current = now or datetime.now(timezone.utc)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=timezone.utc)
+    return current.astimezone(BILIBILI_TIMEZONE).date()
 
 
 @dataclass
@@ -61,6 +71,7 @@ class LiveWatcher:
         self._activity_task_ids: set[str] = set()
         self._activity_claim_task_ids: set[str] = set()
         self._activity_task_meta: dict[str, dict[str, Any]] = {}
+        self._bilibili_time_offset_seconds: float | None = None
         self._claimable_general = False
         self._claim_lock = threading.Lock()
         self._claim_run_lock = threading.Lock()
@@ -612,7 +623,6 @@ class LiveWatcher:
             progress = client.discover_live_activity_tasks(self.options.room_id)
         except Exception as exc:
             if self._is_no_activity_task_error(exc):
-                self._clear_activity_task_cache()
                 self.log(f"当前直播页暂时没有读到可跟踪的掉宝任务：{self._friendly_error(exc)}")
             else:
                 self.log(f"没有读到活动任务列表，稍后会自动再试：{self._friendly_error(exc)}")
@@ -623,6 +633,20 @@ class LiveWatcher:
             self._clear_activity_task_cache()
             self.log("当前直播页暂时没有读到可跟踪的掉宝任务，稍后会自动再试")
             return []
+        try:
+            server_time = float(progress.get("server_time"))
+        except (TypeError, ValueError):
+            server_time = None
+        if server_time is not None:
+            first_server_time_sync = self._bilibili_time_offset_seconds is None
+            self._bilibili_time_offset_seconds = server_time - time.time()
+            if first_server_time_sync:
+                server_datetime = datetime.fromtimestamp(server_time, tz=BILIBILI_TIMEZONE)
+                self.log(
+                    "B站时间已同步："
+                    f"{server_datetime.month}月{server_datetime.day}日 "
+                    f"{server_datetime:%H:%M:%S}，任务日期按活动有效统计时间判断"
+                )
         with self._claim_lock:
             current_task_ids = set(task_ids)
             previous_task_ids = set(self._activity_task_ids)
@@ -644,6 +668,8 @@ class LiveWatcher:
                         "group_index": node.get("group_index"),
                         "task_name": node.get("task_name") or node.get("name") or node.get("title") or "",
                         "award_name": node.get("award_name") or "",
+                        "active_start": node.get("active_start"),
+                        "active_end": node.get("active_end"),
                     }
             self._activity_task_meta = next_meta
         if new_task_ids:
@@ -701,6 +727,10 @@ class LiveWatcher:
             if meta.get("task_name"):
                 if not node.get("task_name"):
                     node["task_name"] = meta["task_name"]
+            if meta.get("active_start") is not None and node.get("active_start") is None:
+                node["active_start"] = meta["active_start"]
+            if meta.get("active_end") is not None and node.get("active_end") is None:
+                node["active_end"] = meta["active_end"]
 
     def _record_task_progress(self, progress: dict[str, Any], announce_claimable: bool) -> bool:
         summary = self._summarize_task(progress)
@@ -711,15 +741,13 @@ class LiveWatcher:
             progress_score = self._task_summary_progress_score(progress)
             if self._should_defer_zero_task_summary(progress, claimable_tasks, progress_score, now):
                 detected_summary = self._summarize_detected_tasks(progress)
-                if detected_summary:
-                    if not self._last_task_summary:
-                        self._last_task_summary = detected_summary
-                        self._last_task_summary_at = now
-                        self._log_task_waiting_progress("活动任务已识别，等待 B 站返回真实进度")
-                    if now - self._last_detected_log_at >= 45:
-                        self._last_detected_log_at = now
-                        self.log(f"掉宝任务：\n{detected_summary}")
-            elif summary != self._last_task_summary or now - self._last_task_summary_at >= 60:
+                if detected_summary and detected_summary != self._last_task_summary:
+                    self._last_task_summary = detected_summary
+                    self._last_task_summary_at = now
+                    self._last_detected_log_at = now
+                    self._log_task_waiting_progress("活动任务已识别，等待 B 站返回真实进度")
+                    self.log(f"掉宝任务：\n{detected_summary}")
+            elif summary != self._last_task_summary:
                 self._last_task_summary = summary
                 self._last_task_summary_at = now
                 self._last_task_progress_score = progress_score
@@ -1106,8 +1134,7 @@ class LiveWatcher:
         if not text_parts:
             return ""
         if group_label:
-            hidden_note = f"，已隐藏其他日期 {hidden_count} 个任务" if hidden_count else ""
-            header = f"当前可挂：{group_label}，共 {len(text_parts)} 个奖励{hidden_note}"
+            header = self._task_group_summary_header(nodes, group_label, len(text_parts), hidden_count)
             return "\n".join([header, *text_parts])
         return "\n".join(text_parts)
 
@@ -1117,7 +1144,8 @@ class LiveWatcher:
             return ""
         hidden_note = f"，已隐藏其他日期 {hidden_count} 个任务" if hidden_count else ""
         if group_label:
-            return f"全部奖励已领取：{group_label}，共 {len(visible_nodes)} 个奖励{hidden_note}"
+            display_label = self._task_group_display_label(nodes, group_label)
+            return f"全部奖励已领取：{display_label}，共 {len(visible_nodes)} 个奖励{hidden_note}"
         return f"全部奖励已领取：共 {len(visible_nodes)} 个奖励"
 
     def _summarize_task_steps(self, nodes: list[dict[str, Any]], group_label: str, hidden_count: int) -> str:
@@ -1148,8 +1176,9 @@ class LiveWatcher:
         max_target = max(target for _node, _current, target in step_nodes)
         header_parts: list[str] = []
         if group_label:
-            hidden_note = f"，已隐藏其他日期 {hidden_count} 个任务" if hidden_count else ""
-            header_parts.append(f"当前可挂：{group_label}，共 {len(step_nodes)} 个奖励{hidden_note}")
+            header_parts.append(
+                self._task_group_summary_header(nodes, group_label, len(step_nodes), hidden_count)
+            )
         header_parts.append(f"{base_names[0]}（当前：{self._format_progress_value(max_current)} 分钟）")
 
         lines = [*header_parts]
@@ -1199,7 +1228,11 @@ class LiveWatcher:
             return nodes, "", 0
 
         chosen_key: tuple[int, str] | None = None
-        chosen_key = self._today_task_group_key(groups)
+        chosen_key = self._active_task_group_key(groups)
+        if chosen_key is None:
+            chosen_key = self._nearest_period_task_group_key(groups)
+        if chosen_key is None:
+            chosen_key = self._today_task_group_key(groups)
         if chosen_key is None:
             active_keys = [key for key, group_nodes in groups.items() if any(self._task_has_visible_activity(node) for node in group_nodes)]
             if active_keys:
@@ -1222,8 +1255,99 @@ class LiveWatcher:
         hidden_count = max(0, len(nodes) - len(focused))
         return focused, chosen_label, hidden_count
 
+    def _active_task_group_key(
+        self,
+        groups: dict[tuple[int, str], list[dict[str, Any]]],
+    ) -> tuple[int, str] | None:
+        now = self._bilibili_now_timestamp()
+        active: list[tuple[float, tuple[int, str]]] = []
+        for key, nodes in groups.items():
+            for node in nodes:
+                try:
+                    start = float(node.get("active_start"))
+                    end = float(node.get("active_end"))
+                except (TypeError, ValueError):
+                    continue
+                if start <= now < end:
+                    active.append((start, key))
+                    break
+        if not active:
+            return None
+        return max(active, key=lambda item: item[0])[1]
+
+    def _nearest_period_task_group_key(
+        self,
+        groups: dict[tuple[int, str], list[dict[str, Any]]],
+    ) -> tuple[int, str] | None:
+        now = self._bilibili_now_timestamp()
+        past: list[tuple[float, tuple[int, str]]] = []
+        future: list[tuple[float, tuple[int, str]]] = []
+        for key, nodes in groups.items():
+            periods: list[tuple[float, float]] = []
+            for node in nodes:
+                try:
+                    periods.append((float(node.get("active_start")), float(node.get("active_end"))))
+                except (TypeError, ValueError):
+                    continue
+            if not periods:
+                continue
+            start = min(period[0] for period in periods)
+            end = max(period[1] for period in periods)
+            if end <= now:
+                past.append((end, key))
+            elif start > now:
+                future.append((start, key))
+        if past:
+            return max(past, key=lambda item: item[0])[1]
+        if future:
+            return min(future, key=lambda item: item[0])[1]
+        return None
+
+    def _task_group_summary_header(
+        self,
+        nodes: list[dict[str, Any]],
+        group_label: str,
+        reward_count: int,
+        hidden_count: int,
+    ) -> str:
+        now = self._bilibili_now_timestamp()
+        periods: list[tuple[float, float]] = []
+        for node in nodes:
+            try:
+                periods.append((float(node.get("active_start")), float(node.get("active_end"))))
+            except (TypeError, ValueError):
+                continue
+        if periods and all(end <= now for _start, end in periods):
+            prefix = "最近一场"
+        elif periods and all(start > now for start, _end in periods):
+            prefix = "下一场"
+        else:
+            prefix = "当前可挂"
+        hidden_note = f"，已隐藏其他日期 {hidden_count} 个任务" if hidden_count else ""
+        display_label = self._task_group_display_label(nodes, group_label)
+        return f"{prefix}：{display_label}，共 {reward_count} 个奖励{hidden_note}"
+
+    def _task_group_display_label(self, nodes: list[dict[str, Any]], group_label: str) -> str:
+        now = self._bilibili_now_timestamp()
+        periods: list[tuple[float, float]] = []
+        for node in nodes:
+            try:
+                periods.append((float(node.get("active_start")), float(node.get("active_end"))))
+            except (TypeError, ValueError):
+                continue
+        active_periods = [period for period in periods if period[0] <= now < period[1]]
+        if active_periods:
+            end = max(period[1] for period in active_periods)
+            end_datetime = datetime.fromtimestamp(end, tz=BILIBILI_TIMEZONE)
+            return (
+                f"{group_label}（B站当前生效，有效至 "
+                f"{end_datetime.month}月{end_datetime.day}日 {end_datetime:%H:%M}）"
+            )
+        return group_label
+
     def _today_task_group_key(self, groups: dict[tuple[int, str], list[dict[str, Any]]]) -> tuple[int, str] | None:
-        today = date.today()
+        server_now = datetime.fromtimestamp(self._bilibili_now_timestamp(), tz=timezone.utc)
+        today = _bilibili_today(server_now)
         today_labels = {
             f"{today.month}月{today.day}日",
             f"{today.month:02d}月{today.day}日",
@@ -1234,6 +1358,12 @@ class LiveWatcher:
             if key[1].strip() in today_labels:
                 return key
         return None
+
+    def _bilibili_now_timestamp(self) -> float:
+        local_now = time.time()
+        if self._bilibili_time_offset_seconds is None:
+            return local_now
+        return local_now + self._bilibili_time_offset_seconds
 
     def _task_group_key(self, node: dict[str, Any]) -> tuple[int, str] | None:
         group_label = str(node.get("group_label") or "").strip()

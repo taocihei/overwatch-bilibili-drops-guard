@@ -313,6 +313,22 @@ class ProgressVisualRoutingTest(unittest.TestCase):
         self.assertEqual(app.reward_status_var.get(), "领奖：无任务")
         self.assertTrue(app._progress_terminal)
 
+    def test_temporary_activity_parse_failure_stays_in_retry_state(self) -> None:
+        app = self._app()
+        app._activity_target_minutes = [60.0]
+        app.progress_snapshot = "[12:00]\n掉宝任务旧快照"
+        app._progress_terminal = True
+
+        gui.App._sync_progress_visual(
+            app,
+            "当前直播页暂时没有读到可跟踪的掉宝任务：活动配置解析失败",
+        )
+
+        self.assertEqual(app._activity_target_minutes, [60.0])
+        self.assertEqual(app.progress_snapshot, "[12:00]\n掉宝任务旧快照")
+        self.assertEqual(app.progress_title_var.get(), "等待任务进度")
+        self.assertFalse(app._progress_terminal)
+
     def test_incomplete_progress_updates_reward_remaining_minutes(self) -> None:
         app = self._app()
 
