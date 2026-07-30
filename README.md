@@ -1,6 +1,6 @@
 ﻿# 守望先锋 B 站直播挂宝 / Overwatch Bilibili Live Drops Guard
 
-当前版本：`v0.5.3`
+当前版本：`v0.5.4`
 
 开源地址：<https://github.com/taocihei/overwatch-bilibili-drops-guard>
 
@@ -24,7 +24,7 @@
 
 1. 打开项目页面：<https://github.com/taocihei/overwatch-bilibili-drops-guard>
 2. 进入右侧或页面中的 `Releases`。
-3. 下载 `OverwatchBiliDrops-v0.5.3.exe`。
+3. 下载 `OverwatchBiliDrops-v0.5.4.exe`。
 4. 双击运行。
 5. 如果 Windows 提示“未知发布者”或“Windows 已保护你的电脑”，点击“更多信息”，再点“仍要运行”。这是个人开源软件常见提示，不代表一定有病毒。
 6. 第一次使用先点“自动获取 Cookie”，在弹出的独立 Edge/Chrome 窗口里登录 B 站。
@@ -47,6 +47,13 @@
 - `通知 URL`：可留空。填写后，启动、检测到可领取、领取成功、领取失败、Cookie 获取成功等关键事件会向该地址发送 JSON POST。
 - `观看进度`：优先显示本次观看进度，比如“还差 48 分钟”“已完成，待领取”“已领取”。
 - `运行日志`：保留登录、计时、任务识别和领取记录，适合排查异常。
+
+## v0.5.4 新增与修复
+
+- **赞助服务开箱即用**：桌面端已内置公开 HTTPS 服务地址，无需再手动配置环境变量；仍支持环境变量覆盖，方便本地调试或迁移。
+- **完成 YunGouOS 生产接入**：商户号和支付密钥仅保存在服务端加密环境变量中，客户端与 GitHub 源码均不包含凭据。
+- **改用支付回调确认结果**：服务端校验 YunGouOS 回调签名、订单号和金额后才标记支付成功，桌面端只查询本服务状态，不再高频查询支付平台。
+- **增加二维码安全代理**：二维码统一通过本站 HTTPS 返回，并限制上游域名和图片类型，避免客户端加载不安全地址。
 
 ## v0.5.3 新增与修复
 
@@ -293,7 +300,7 @@ dist\OverwatchBiliDrops.exe
 发布时会同时生成带版本号的文件，例如：
 
 ```text
-dist\OverwatchBiliDrops-v0.5.3.exe
+dist\OverwatchBiliDrops-v0.5.4.exe
 ```
 ## 赞助
 
@@ -301,7 +308,7 @@ dist\OverwatchBiliDrops-v0.5.3.exe
 
 赞助完全自愿，不解锁功能、不提高成功率、不提供优先支持，也不影响挂宝或领奖结果。
 
-> 维护者配置：桌面端通过环境变量 `BILI_DROPS_SPONSOR_API_URL` 连接公开赞助服务。商户密钥只允许保存在服务端；服务端负责调用 YunGouOS `nativePay`、接收支付回调并提供 `/orders` 创建订单及 `/orders/{order_id}` 状态查询接口。
+> 维护者配置：桌面端默认连接项目公开赞助服务；如需本地调试或迁移，可用环境变量 `BILI_DROPS_SPONSOR_API_URL` 覆盖。商户密钥只保存在服务端环境变量中；服务端负责调用 YunGouOS `nativePay`、验证支付回调，并提供 `/orders` 创建订单及 `/orders/{order_id}` 状态查询接口。
 
 ---
 
@@ -309,7 +316,7 @@ dist\OverwatchBiliDrops-v0.5.3.exe
 
 Project name: **守望先锋 B 站直播挂宝 / Overwatch Bilibili Live Drops Guard**
 
-Version: `v0.5.3`
+Version: `v0.5.4`
 
 Repository: <https://github.com/taocihei/overwatch-bilibili-drops-guard>
 
@@ -329,7 +336,7 @@ Default room: `23612045`.
 
 1. Open the repository page: <https://github.com/taocihei/overwatch-bilibili-drops-guard>
 2. Open `Releases`.
-3. Download `OverwatchBiliDrops-v0.5.3.exe`.
+3. Download `OverwatchBiliDrops-v0.5.4.exe`.
 4. Double-click to run it.
 5. If Windows shows an unknown-publisher warning, click `More info`, then `Run anyway`.
 6. Click `自动获取 Cookie`, then sign in to Bilibili in the independent Edge/Chrome window opened by the app.
@@ -373,6 +380,6 @@ dist\OverwatchBiliDrops.exe
 Release builds are also copied with a versioned file name, for example:
 
 ```text
-dist\OverwatchBiliDrops-v0.5.3.exe
+dist\OverwatchBiliDrops-v0.5.4.exe
 ```
 
