@@ -1,0 +1,192 @@
+@import "tailwindcss";
+
+:root {
+  --ink: #102448;
+  --muted: #637493;
+  --line: #dfe7f2;
+  --blue: #2469e8;
+  --blue-soft: #edf4ff;
+  --green: #19a66b;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  min-height: 100%;
+  background: #f4f7fb;
+}
+
+body {
+  min-height: 100vh;
+  margin: 0;
+  color: var(--ink);
+  font-family: "Microsoft YaHei UI", "PingFang SC", "Noto Sans CJK SC", system-ui, sans-serif;
+  background:
+    radial-gradient(circle at 18% 8%, rgb(36 105 232 / 10%), transparent 28rem),
+    linear-gradient(145deg, #f8fafd 0%, #eef3f9 100%);
+}
+
+.shell {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 48px 20px;
+}
+
+.service-card {
+  width: min(100%, 720px);
+  padding: 48px;
+  border: 1px solid rgb(208 219 234 / 90%);
+  border-radius: 26px;
+  background: rgb(255 255 255 / 92%);
+  box-shadow: 0 24px 70px rgb(44 67 103 / 12%), 0 2px 8px rgb(44 67 103 / 5%);
+  backdrop-filter: blur(18px);
+}
+
+.eyebrow {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  padding: 7px 12px;
+  border: 1px solid #caeadc;
+  border-radius: 999px;
+  color: #167a51;
+  background: #f0fbf6;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--green);
+  box-shadow: 0 0 0 4px rgb(25 166 107 / 12%);
+}
+
+.brand-mark {
+  position: relative;
+  width: 56px;
+  height: 56px;
+  margin-top: 38px;
+  display: grid;
+  place-items: center;
+  border-radius: 17px;
+  background: linear-gradient(145deg, #3479f0, #174fae);
+  box-shadow: 0 10px 24px rgb(36 105 232 / 24%);
+}
+
+.brand-mark::before,
+.brand-mark::after,
+.brand-mark span {
+  content: "";
+  position: absolute;
+  border-radius: 50%;
+  border: 2px solid white;
+}
+
+.brand-mark::before {
+  width: 29px;
+  height: 29px;
+}
+
+.brand-mark::after {
+  width: 8px;
+  height: 8px;
+  transform: translate(12px, -12px);
+  background: white;
+}
+
+.brand-mark span {
+  width: 4px;
+  height: 4px;
+  background: white;
+}
+
+.product-name {
+  margin: 24px 0 5px;
+  color: var(--blue);
+  font-size: 13px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+h1 {
+  margin: 0;
+  font-size: clamp(32px, 6vw, 48px);
+  line-height: 1.15;
+  letter-spacing: -0.04em;
+}
+
+.lede {
+  max-width: 560px;
+  margin: 18px 0 0;
+  color: var(--muted);
+  font-size: 16px;
+  line-height: 1.85;
+}
+
+.divider {
+  height: 1px;
+  margin: 34px 0 12px;
+  background: var(--line);
+}
+
+.flow {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.flow li {
+  display: grid;
+  grid-template-columns: 44px 1fr;
+  gap: 16px;
+  align-items: start;
+  padding: 19px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.flow li > span {
+  width: 38px;
+  height: 38px;
+  display: grid;
+  place-items: center;
+  border-radius: 12px;
+  color: var(--blue);
+  background: var(--blue-soft);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.flow strong {
+  display: block;
+  margin: 1px 0 6px;
+  font-size: 15px;
+}
+
+.flow p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+footer {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  margin-top: 25px;
+  color: #8190a9;
+  font-size: 12px;
+}
+
+@media (max-width: 640px) {
+  .shell { padding: 18px; }
+  .service-card { padding: 30px 24px; border-radius: 22px; }
+  .brand-mark { margin-top: 30px; }
+  footer { flex-direction: column; gap: 7px; }
+}

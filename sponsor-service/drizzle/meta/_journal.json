@@ -1,0 +1,13 @@
+{
+  "version": "7",
+  "dialect": "sqlite",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "6",
+      "when": 1785434779181,
+      "tag": "0000_narrow_songbird",
+      "breakpoints": true
+    }
+  ]
+}

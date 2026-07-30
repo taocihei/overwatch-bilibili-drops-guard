@@ -9,6 +9,9 @@ import requests
 
 
 SPONSOR_API_ENV = "BILI_DROPS_SPONSOR_API_URL"
+DEFAULT_SPONSOR_API_URL = (
+    "https://overwatch-bili-drops-sponsor.wise-mint-4391.chatgpt.site/api/sponsor"
+)
 SPONSOR_QQ_GROUP = "1012969672"
 DEFAULT_TIMEOUT = (5, 15)
 ALLOWED_AMOUNTS = (Decimal("3.00"), Decimal("6.00"), Decimal("10.00"))
@@ -46,7 +49,7 @@ class SponsorOrderStatus:
 class SponsorClient:
     """桌面端赞助接口客户端。
 
-    商户密钥必须只放在服务端。服务端再调用 YunGouOS 原生扫码支付接口，
+    商户密钥只保存在服务端。服务端调用 YunGouOS 原生扫码支付接口，
     桌面端只接收二维码地址和脱敏后的订单状态。
     """
 
@@ -63,7 +66,8 @@ class SponsorClient:
 
     @classmethod
     def from_environment(cls) -> SponsorClient:
-        return cls(os.environ.get(SPONSOR_API_ENV, ""))
+        configured_url = os.environ.get(SPONSOR_API_ENV, "").strip()
+        return cls(configured_url or DEFAULT_SPONSOR_API_URL)
 
     def create_order(self, amount: str | Decimal, *, app_version: str) -> SponsorOrder:
         normalized_amount = normalize_amount(amount)
@@ -106,7 +110,10 @@ class SponsorClient:
         state = aliases.get(state, state)
         if state not in {"pending", "paid", "expired", "closed"}:
             raise SponsorError("赞助服务返回了未知订单状态")
-        return SponsorOrderStatus(state=state, message=str(payload.get("message") or "").strip())
+        return SponsorOrderStatus(
+            state=state,
+            message=str(payload.get("message") or "").strip(),
+        )
 
     def download_qr(self, qr_url: str) -> bytes:
         if not _is_safe_remote_url(qr_url):
@@ -140,7 +147,13 @@ class SponsorClient:
         if not isinstance(payload, dict):
             raise SponsorError("赞助服务返回的数据格式无效")
         if payload.get("ok") is False:
-            raise SponsorError(str(payload.get("message") or "赞助服务请求失败"))
+            raise SponsorError(
+                str(
+                    payload.get("error")
+                    or payload.get("message")
+                    or "赞助服务请求失败"
+                )
+            )
         data = payload.get("data", payload)
         if not isinstance(data, dict):
             raise SponsorError("赞助服务返回的数据格式无效")
