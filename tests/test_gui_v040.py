@@ -162,6 +162,22 @@ class WatchStatusCardExpandedTest(_HiddenRootCase):
 
 
 class AccountChecklistTest(_HiddenRootCase):
+    def _editor_app(self) -> gui.App:
+        app = object.__new__(gui.App)
+        app.config_data = SimpleNamespace(
+            accounts=[
+                gui.AccountProfile(name="主号", cookie="SESSDATA=a"),
+                gui.AccountProfile(name="小号", cookie="SESSDATA=b"),
+            ],
+            account_name="主号",
+            active_accounts=["主号"],
+        )
+        app.account_name_var = tk.StringVar(master=self.root, value="主号")
+        app.cookie_text = tk.Text(self.root)
+        app.cookie_text.insert("1.0", "SESSDATA=a")
+        app.editing_account_name = "主号"
+        return app
+
     def test_rebuild_preserves_unsaved_checked_accounts(self) -> None:
         app = object.__new__(gui.App)
         app._account_check_frame = tk.Frame(self.root)
@@ -185,6 +201,38 @@ class AccountChecklistTest(_HiddenRootCase):
 
         self.assertTrue(app.account_checks["主号"].get())
         self.assertTrue(app.account_checks["小号"].get())
+
+        row_buttons = [
+            child.text
+            for row in app._account_check_frame.winfo_children()
+            for child in row.winfo_children()
+            if isinstance(child, gui.LabelButton)
+        ]
+        self.assertEqual(row_buttons.count("删除"), 2)
+
+    def test_clearing_cookie_does_not_implicitly_delete_saved_account(self) -> None:
+        app = self._editor_app()
+        app.cookie_text.delete("1.0", "end")
+
+        accounts = gui.App._accounts_with_current_cookie(app)
+
+        self.assertEqual([(account.name, account.cookie) for account in accounts], [
+            ("主号", "SESSDATA=a"),
+            ("小号", "SESSDATA=b"),
+        ])
+
+    def test_rename_replaces_original_account_instead_of_duplicating_it(self) -> None:
+        app = self._editor_app()
+        app.account_name_var.set("主账号")
+        app.cookie_text.delete("1.0", "end")
+        app.cookie_text.insert("1.0", "SESSDATA=renamed")
+
+        accounts = gui.App._accounts_with_current_cookie(app)
+
+        self.assertEqual([(account.name, account.cookie) for account in accounts], [
+            ("主账号", "SESSDATA=renamed"),
+            ("小号", "SESSDATA=b"),
+        ])
 
 
 class ManualRefreshButtonTest(unittest.TestCase):

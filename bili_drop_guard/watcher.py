@@ -94,6 +94,7 @@ class LiveWatcher:
         self._last_task_summary_at = 0.0
         self._last_task_progress_score = 0.0
         self._last_task_progress_signature: tuple[str, ...] = ()
+        self._server_progress_samples: list[tuple[float, float]] = []
         self._last_task_waiting_log_at = 0.0
         self._manual_refresh_thread: Optional[threading.Thread] = None
         self._rediscover_thread: Optional[threading.Thread] = None
@@ -115,6 +116,7 @@ class LiveWatcher:
             self._heartbeat_count = 0
             self._watch_started_at = 0.0
             self._watch_stopped_at = 0.0
+            self._server_progress_samples = []
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
 
@@ -285,7 +287,7 @@ class LiveWatcher:
             if status.get("state") == "正常" and status.get("interval") is not None
         ]
 
-        parts = [f"{normal_count}/{worker_count} 正常"]
+        parts = [f"{normal_count}/{worker_count} 心跳已接受"]
         if starting_count:
             parts.append(f"{starting_count} 路启动中")
         if waiting_count:
@@ -300,8 +302,10 @@ class LiveWatcher:
                 interval_text = f"，下一次约 {min_interval} 秒后"
             else:
                 interval_text = f"，下一次约 {min_interval}-{max_interval} 秒后"
-        heartbeat_text = f"，心跳成功 {heartbeat_count} 次" if heartbeat_count else ""
-        return f"观看连接：{'，'.join(parts)}{interval_text}{heartbeat_text}", normal_count, failed_count + waiting_count
+        heartbeat_text = f"，请求成功 {heartbeat_count} 次" if heartbeat_count else ""
+        server_rate = self._server_credit_rate()
+        server_text = f"，B 站实绩约 {server_rate:.1f}x" if server_rate is not None else "，等待 B 站实绩样本"
+        return f"观看连接：{'，'.join(parts)}{interval_text}{heartbeat_text}{server_text}", normal_count, failed_count + waiting_count
 
     def _log_watch_status_summary(self, *, force: bool = False) -> None:
         summary, _normal_count, problem_count = self._watch_status_summary_info()
@@ -365,6 +369,33 @@ class LiveWatcher:
             if not self._watch_started_at:
                 self._watch_started_at = time.time()
             self._heartbeat_count += 1
+
+    def _record_server_progress(self, score: float, now: float) -> None:
+        """记录 totalv2 的真实分钟数，用滚动窗口估算服务端有效倍率。"""
+
+        if score <= 0:
+            return
+        with self._watch_status_lock:
+            samples = self._server_progress_samples
+            if samples and score < samples[-1][1]:
+                samples.clear()
+            if not samples or score != samples[-1][1] or now - samples[-1][0] >= 30:
+                samples.append((now, score))
+            cutoff = now - 600
+            while len(samples) > 2 and samples[1][0] < cutoff:
+                samples.pop(0)
+
+    def _server_credit_rate(self) -> float | None:
+        with self._watch_status_lock:
+            samples = list(self._server_progress_samples)
+        if len(samples) < 2:
+            return None
+        started_at, started_score = samples[0]
+        ended_at, ended_score = samples[-1]
+        elapsed_minutes = (ended_at - started_at) / 60.0
+        if elapsed_minutes < 1.0:
+            return None
+        return max(0.0, (ended_score - started_score) / elapsed_minutes)
 
     def get_local_watch_estimate_minutes(self) -> float:
         """Actual local wall-clock time since the first successful watch heartbeat."""
@@ -730,6 +761,9 @@ class LiveWatcher:
             if progress_signature != self._last_task_progress_signature:
                 self._last_task_progress_signature = progress_signature
                 self._last_task_progress_score = 0.0
+                with self._watch_status_lock:
+                    self._server_progress_samples = []
+            self._record_server_progress(progress_score, now)
             progress_went_backwards = (
                 bool(progress_signature)
                 and self._last_task_progress_score > 0

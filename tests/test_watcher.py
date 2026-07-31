@@ -53,7 +53,7 @@ class LiveWatcherTest(unittest.TestCase):
 
         self.assertEqual(normal_count, 20)
         self.assertEqual(problem_count, 0)
-        self.assertIn("20/20 正常", summary)
+        self.assertIn("20/20 心跳已接受", summary)
         self.assertIn("下一次约 60 秒后", summary)
 
     def test_watch_threads_allow_one_hundred_workers(self) -> None:
@@ -728,8 +728,20 @@ class LiveWatcherTest(unittest.TestCase):
         for _ in range(3):
             live_watcher._record_heartbeat()
         summary_after, _n2, _p2 = live_watcher._watch_status_summary_info()
-        self.assertIn("心跳成功 3 次", summary_after)
+        self.assertIn("请求成功 3 次", summary_after)
         self.assertNotIn("累计计时", summary_after)
+
+    def test_status_summary_reports_totalv2_effective_rate(self) -> None:
+        live_watcher = LiveWatcher(WatchOptions(cookie="a=b", room_id="1", watch_threads=40), lambda _m: None)
+        for worker_id in range(1, 41):
+            live_watcher._set_watch_status(worker_id, "正常", interval=60)
+        live_watcher._record_server_progress(100, 1_000.0)
+        live_watcher._record_server_progress(102, 1_120.0)
+
+        summary, _normal, _problem = live_watcher._watch_status_summary_info()
+
+        self.assertIn("40/40 心跳已接受", summary)
+        self.assertIn("B 站实绩约 1.0x", summary)
 
     def test_local_watch_estimate_does_not_multiply_heartbeat_intervals(self) -> None:
         live_watcher = LiveWatcher(WatchOptions(cookie="a=b", room_id="1", watch_threads=2), lambda _m: None)
