@@ -743,6 +743,16 @@ class LiveWatcherTest(unittest.TestCase):
         self.assertIn("40/40 心跳已接受", summary)
         self.assertIn("B 站实绩约 1.0x", summary)
 
+    def test_server_rate_uses_recent_window_instead_of_startup_burst(self) -> None:
+        live_watcher = LiveWatcher(WatchOptions(cookie="a=b", room_id="1"), lambda _m: None)
+        live_watcher._record_server_progress(100, 0.0)
+        live_watcher._record_server_progress(120, 60.0)
+        live_watcher._record_server_progress(121, 180.0)
+        live_watcher._record_server_progress(122, 240.0)
+        live_watcher._record_server_progress(123, 300.0)
+
+        self.assertAlmostEqual(live_watcher.get_server_credit_rate() or 0.0, 1.0, delta=0.01)
+
     def test_local_watch_estimate_does_not_multiply_heartbeat_intervals(self) -> None:
         live_watcher = LiveWatcher(WatchOptions(cookie="a=b", room_id="1", watch_threads=2), lambda _m: None)
         for _ in range(40):

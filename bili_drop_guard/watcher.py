@@ -16,6 +16,7 @@ CLAIM_SUBMIT_DELAY_SECONDS = 3.0
 CLAIM_RATE_LIMIT_DELAY_SECONDS = 12.0
 CLAIM_RATE_LIMIT_ATTEMPTS = 3
 WATCH_START_BATCH_SIZE = 1
+SERVER_RATE_WINDOW_SECONDS = 180.0
 ACTIVITY_DISCOVERY_SUCCESS_TTL_SECONDS = 300.0
 ACTIVITY_DISCOVERY_RETRY_TTL_SECONDS = 60.0
 BILIBILI_TIMEZONE = timezone(timedelta(hours=8))
@@ -381,8 +382,8 @@ class LiveWatcher:
                 samples.clear()
             if not samples or score != samples[-1][1] or now - samples[-1][0] >= 30:
                 samples.append((now, score))
-            cutoff = now - 600
-            while len(samples) > 2 and samples[1][0] < cutoff:
+            cutoff = now - SERVER_RATE_WINDOW_SECONDS
+            while len(samples) > 2 and samples[0][0] < cutoff:
                 samples.pop(0)
 
     def _server_credit_rate(self) -> float | None:
@@ -396,6 +397,34 @@ class LiveWatcher:
         if elapsed_minutes < 1.0:
             return None
         return max(0.0, (ended_score - started_score) / elapsed_minutes)
+
+    def get_server_credit_rate(self) -> float | None:
+        """返回最近三分钟 totalv2 实绩倍率，供多账号协调器和 UI 使用。"""
+
+        return self._server_credit_rate()
+
+    def wait_for_stop(self, timeout: float = 2.0) -> bool:
+        """在总超时内回收所有后台线程，避免逐线程等待导致 UI 长时间卡住。"""
+
+        deadline = time.monotonic() + max(0.0, timeout)
+        current = threading.current_thread()
+        candidates = [
+            self._thread,
+            *self._watch_threads,
+            self._claim_thread,
+            self._manual_refresh_thread,
+            self._rediscover_thread,
+        ]
+        seen: set[int] = set()
+        for thread in candidates:
+            if thread is None or thread is current or id(thread) in seen:
+                continue
+            seen.add(id(thread))
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            thread.join(timeout=remaining)
+        return not self.running
 
     def get_local_watch_estimate_minutes(self) -> float:
         """Actual local wall-clock time since the first successful watch heartbeat."""

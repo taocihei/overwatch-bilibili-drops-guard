@@ -146,6 +146,28 @@ class MultiAccountWatcherLifecycleTest(unittest.TestCase):
         self.assertTrue(all(w.stopped for w in FakeWatcher.instances))
         self.assertFalse(mw.running)
 
+    def test_stop_waits_for_child_cleanup_with_shared_budget(self) -> None:
+        waited: list[float] = []
+
+        class WaitingWatcher(FakeWatcher):
+            def wait_for_stop(self, timeout: float) -> bool:
+                waited.append(timeout)
+                return True
+
+        mw = MultiAccountWatcher(
+            self._pairs(),
+            log=lambda _m: None,
+            watcher_factory=WaitingWatcher,
+            stagger_seconds=0,
+        )
+        mw.start()
+        mw._await_start_for_test()
+
+        mw.stop()
+
+        self.assertEqual(len(waited), 2)
+        self.assertTrue(all(0 < timeout <= 2.0 for timeout in waited))
+
 
 class MultiAccountWatcherLogTest(unittest.TestCase):
     def test_child_logs_are_prefixed_with_account_name(self) -> None:
@@ -170,6 +192,32 @@ class MultiAccountWatcherLogTest(unittest.TestCase):
 
 
 class MultiAccountStatusTest(unittest.TestCase):
+    def test_summary_exposes_child_totalv2_rate(self) -> None:
+        rates = iter([1.0, 2.0])
+
+        class StatusWatcher:
+            def __init__(self, options, log):
+                self.running = True
+                self.rate = next(rates)
+            def start(self): ...
+            def stop(self): self.running = False
+            def get_server_credit_rate(self): return self.rate
+            def get_watch_status_snapshot(self):
+                return ([WatchWorkerStatus(worker_id=1, state="正常", interval=60, message="")], "")
+
+        mw = MultiAccountWatcher(
+            [("主号", WatchOptions(cookie="a", room_id="1")),
+             ("小号", WatchOptions(cookie="b", room_id="1"))],
+            log=lambda _m: None,
+            watcher_factory=StatusWatcher,
+            stagger_seconds=0,
+        )
+
+        _rows, summary = mw.get_watch_status_snapshot()
+
+        self.assertIn("2/2 心跳已接受", summary)
+        self.assertIn("各账号实绩约 1.0x-2.0x", summary)
+
     def test_snapshot_has_one_row_per_account_with_name(self) -> None:
         class StatusWatcher:
             def __init__(self, options, log, summary):

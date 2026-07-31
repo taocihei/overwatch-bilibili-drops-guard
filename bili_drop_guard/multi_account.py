@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import threading
+import time
 from typing import Callable
 
 from .bilibili import parse_cookie_header
@@ -12,6 +13,7 @@ from .watcher import LiveWatcher, WatchOptions, WatchWorkerStatus
 LogSink = Callable[[str], None]
 DuplicateAccountSink = Callable[[str, str], None]
 ACCOUNT_START_STAGGER_SECONDS = 2.0
+STOP_WAIT_TIMEOUT_SECONDS = 2.0
 
 
 def _account_identity(cookie: str) -> str:
@@ -143,6 +145,20 @@ class MultiAccountWatcher:
             self._stop.set()
             for _name, child in self._children:
                 child.stop()
+        # 所有 child 已同时收到停止信号，再共享一个总等待预算回收线程，避免账号数越多
+        # 停止越慢，也避免快速重启时遗留上一轮连接。
+        deadline = time.monotonic() + STOP_WAIT_TIMEOUT_SECONDS
+        for _name, child in self._children:
+            waiter = getattr(child, "wait_for_stop", None)
+            if not callable(waiter):
+                continue
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            try:
+                waiter(timeout=remaining)
+            except TypeError:
+                waiter(remaining)
         self._log("已请求停止全部账号")
 
     @property
@@ -155,6 +171,7 @@ class MultiAccountWatcher:
         normal_routes = 0
         total_routes = 0
         next_intervals: list[int] = []
+        server_rates: list[float] = []
         for _account_index, (name, child) in enumerate(self._children, start=1):
             child_rows: list[WatchWorkerStatus] = []
             getter = getattr(child, "get_watch_status_snapshot", None)
@@ -168,6 +185,14 @@ class MultiAccountWatcher:
                 except Exception:
                     # 单账号状态读取异常不应拖垮整体状态展示
                     child_rows = []
+            rate_getter = getattr(child, "get_server_credit_rate", None)
+            if callable(rate_getter):
+                try:
+                    rate = rate_getter()
+                    if rate is not None:
+                        server_rates.append(max(0.0, float(rate)))
+                except (TypeError, ValueError):
+                    pass
             if not child_rows:
                 child_rows = [WatchWorkerStatus(worker_id=1, state="启动中", interval=None, message=name)]
             for child_row in child_rows:
@@ -185,9 +210,16 @@ class MultiAccountWatcher:
                     interval=child_row.interval,
                     message="：".join(message_parts),
                 ))
-        summary = f"多账号并行：{len(self._children)} 个账号，观看连接：{normal_routes}/{total_routes} 路正常"
+        summary = f"多账号并行：{len(self._children)} 个账号，观看连接：{normal_routes}/{total_routes} 心跳已接受"
         if next_intervals:
             summary += f"，下一次约 {min(next_intervals)} 秒后"
+        if server_rates:
+            if len(server_rates) == 1 or max(server_rates) - min(server_rates) < 0.05:
+                summary += f"，B 站实绩约 {sum(server_rates) / len(server_rates):.1f}x"
+            else:
+                summary += f"，各账号实绩约 {min(server_rates):.1f}x-{max(server_rates):.1f}x"
+        else:
+            summary += "，等待 B 站实绩样本"
         return rows, summary
 
     def get_local_watch_estimate_minutes(self) -> float:
