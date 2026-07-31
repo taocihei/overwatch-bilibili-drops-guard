@@ -712,14 +712,14 @@ class LiveWatcherTest(unittest.TestCase):
         self.assertIn("manual-activity", live_watcher._activity_task_ids)
         self.assertIn("manual-activity", live_watcher._claimable_task_ids)
 
-    def test_watch_start_delay_uses_one_per_second_stagger(self) -> None:
+    def test_watch_start_delay_uses_fast_batched_stagger(self) -> None:
         live_watcher = LiveWatcher(WatchOptions(cookie="a=b", room_id="1"), lambda _m: None)
         self.assertEqual(live_watcher._watch_start_delay(1), 0.0)
-        self.assertEqual(live_watcher._watch_start_delay(5), 4.0)
-        self.assertEqual(live_watcher._watch_start_delay(6), 5.0)
-        self.assertEqual(live_watcher._watch_start_delay(10), 9.0)
-        self.assertEqual(live_watcher._watch_start_delay(11), 10.0)
-        self.assertEqual(live_watcher._watch_start_delay(42), 41.0)
+        self.assertEqual(live_watcher._watch_start_delay(5), 0.0)
+        self.assertEqual(live_watcher._watch_start_delay(10), 0.0)
+        self.assertEqual(live_watcher._watch_start_delay(11), 0.5)
+        self.assertEqual(live_watcher._watch_start_delay(42), 2.0)
+        self.assertEqual(live_watcher._watch_start_delay(100), 4.5)
 
     def test_heartbeat_count_appears_in_status_summary(self) -> None:
         live_watcher = LiveWatcher(WatchOptions(cookie="a=b", room_id="1", watch_threads=2), lambda _m: None)
@@ -741,6 +741,7 @@ class LiveWatcherTest(unittest.TestCase):
         summary, _normal, _problem = live_watcher._watch_status_summary_info()
 
         self.assertIn("40/40 心跳已接受", summary)
+        self.assertIn("目标 40x", summary)
         self.assertIn("B 站实绩约 1.0x", summary)
 
     def test_server_rate_uses_recent_window_instead_of_startup_burst(self) -> None:

@@ -216,7 +216,30 @@ class MultiAccountStatusTest(unittest.TestCase):
         _rows, summary = mw.get_watch_status_snapshot()
 
         self.assertIn("2/2 心跳已接受", summary)
+        self.assertIn("目标 2x", summary)
         self.assertIn("各账号实绩约 1.0x-2.0x", summary)
+
+    def test_summary_uses_requested_route_target(self) -> None:
+        class StatusWatcher:
+            def __init__(self, options, log):
+                self.running = True
+            def start(self): ...
+            def stop(self): self.running = False
+            def get_server_credit_rate(self): return 6.5
+            def get_watch_status_snapshot(self):
+                return ([WatchWorkerStatus(worker_id=1, state="正常", interval=60, message="")], "")
+
+        mw = MultiAccountWatcher(
+            [("主号", WatchOptions(cookie="a", room_id="1", watch_threads=100))],
+            log=lambda _m: None,
+            watcher_factory=StatusWatcher,
+            stagger_seconds=0,
+        )
+
+        _rows, summary = mw.get_watch_status_snapshot()
+
+        self.assertIn("目标 100x", summary)
+        self.assertIn("B 站实绩约 6.5x", summary)
 
     def test_snapshot_has_one_row_per_account_with_name(self) -> None:
         class StatusWatcher:

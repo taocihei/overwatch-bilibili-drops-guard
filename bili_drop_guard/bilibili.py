@@ -4,6 +4,7 @@ import hashlib
 import hmac
 import json
 import re
+import threading
 import time
 import urllib.parse
 from collections.abc import Iterator
@@ -25,6 +26,9 @@ USER_AGENT = (
 )
 
 BILIBILI_TIMEZONE = timezone(timedelta(hours=8))
+WBI_KEY_CACHE_TTL_SECONDS = 30 * 60
+_WBI_KEY_CACHE_LOCK = threading.Lock()
+_WBI_KEY_CACHE: tuple[tuple[str, str], float] | None = None
 
 MIXIN_KEY_ENC_TAB = [
     46, 47, 18, 2, 53, 8, 23, 32,
@@ -575,18 +579,27 @@ class BilibiliClient:
     def _get_wbi_keys(self) -> tuple[str, str]:
         if self._wbi_keys:
             return self._wbi_keys
-        response = self.session.get("https://api.bilibili.com/x/web-interface/nav", timeout=12)
-        payload = _decode_json_response(response)
-        data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
-        wbi_img = data.get("wbi_img") if isinstance(data.get("wbi_img"), dict) else {}
-        img_url = str(wbi_img.get("img_url") or "")
-        sub_url = str(wbi_img.get("sub_url") or "")
-        img_key = img_url.rsplit("/", 1)[-1].split(".", 1)[0]
-        sub_key = sub_url.rsplit("/", 1)[-1].split(".", 1)[0]
-        if not img_key or not sub_key:
-            raise RuntimeError("获取 WBI 签名密钥失败")
-        self._wbi_keys = (img_key, sub_key)
-        return self._wbi_keys
+        global _WBI_KEY_CACHE
+        now = time.time()
+        with _WBI_KEY_CACHE_LOCK:
+            if _WBI_KEY_CACHE is not None:
+                keys, expires_at = _WBI_KEY_CACHE
+                if now < expires_at:
+                    self._wbi_keys = keys
+                    return keys
+            response = self.session.get("https://api.bilibili.com/x/web-interface/nav", timeout=12)
+            payload = _decode_json_response(response)
+            data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+            wbi_img = data.get("wbi_img") if isinstance(data.get("wbi_img"), dict) else {}
+            img_url = str(wbi_img.get("img_url") or "")
+            sub_url = str(wbi_img.get("sub_url") or "")
+            img_key = img_url.rsplit("/", 1)[-1].split(".", 1)[0]
+            sub_key = sub_url.rsplit("/", 1)[-1].split(".", 1)[0]
+            if not img_key or not sub_key:
+                raise RuntimeError("获取 WBI 签名密钥失败")
+            self._wbi_keys = (img_key, sub_key)
+            _WBI_KEY_CACHE = (self._wbi_keys, now + WBI_KEY_CACHE_TTL_SECONDS)
+            return self._wbi_keys
 
 
 def _decode_json_response(response: requests.Response) -> Dict[str, Any]:

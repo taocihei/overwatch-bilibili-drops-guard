@@ -98,6 +98,7 @@ class MultiAccountWatcher:
         self._start_thread: threading.Thread | None = None
         self._claim_thread: threading.Thread | None = None
         self._children: list[tuple[str, object]] = []
+        self._target_route_count = 0
         identity_names: dict[str, str] = {}
         for name, options in account_options:
             identity = _account_identity(options.cookie)
@@ -108,6 +109,10 @@ class MultiAccountWatcher:
             identity_names[identity] = name
             child = watcher_factory(options, self._make_child_log(name))
             self._children.append((name, child))
+            try:
+                self._target_route_count += max(1, int(options.watch_threads or 1))
+            except (TypeError, ValueError):
+                self._target_route_count += 1
 
     def _make_child_log(self, name: str) -> LogSink:
         return lambda message, _name=name: self._log(f"[{_name}] {message}")
@@ -210,16 +215,17 @@ class MultiAccountWatcher:
                     interval=child_row.interval,
                     message="：".join(message_parts),
                 ))
+        target_routes = self._target_route_count or total_routes
         summary = f"多账号并行：{len(self._children)} 个账号，观看连接：{normal_routes}/{total_routes} 心跳已接受"
         if next_intervals:
             summary += f"，下一次约 {min(next_intervals)} 秒后"
         if server_rates:
             if len(server_rates) == 1 or max(server_rates) - min(server_rates) < 0.05:
-                summary += f"，B 站实绩约 {sum(server_rates) / len(server_rates):.1f}x"
+                summary += f"，目标 {target_routes}x / B 站实绩约 {sum(server_rates) / len(server_rates):.1f}x"
             else:
-                summary += f"，各账号实绩约 {min(server_rates):.1f}x-{max(server_rates):.1f}x"
+                summary += f"，目标 {target_routes}x / 各账号实绩约 {min(server_rates):.1f}x-{max(server_rates):.1f}x"
         else:
-            summary += "，等待 B 站实绩样本"
+            summary += f"，目标 {target_routes}x / 等待 B 站实绩样本"
         return rows, summary
 
     def get_local_watch_estimate_minutes(self) -> float:

@@ -58,8 +58,8 @@ class StartHeartbeatSessionCallsRoomEntryActionFirstTest(unittest.TestCase):
 
 
 class WorkerStaggerTest(unittest.TestCase):
-    def test_workers_stagger_start_one_per_second_by_worker_id(self) -> None:
-        # 保守错峰：每秒只启动一路。worker_id 6 应先 wait 5 秒。
+    def test_workers_stagger_start_in_fast_batches_by_worker_id(self) -> None:
+        # 快速错峰：每 0.5 秒启动一批。worker_id 11 应先 wait 0.5 秒。
         live_watcher = LiveWatcher(WatchOptions(cookie="a=b", room_id="1"), lambda _m: None)
         wait_calls: list[float] = []
 
@@ -71,11 +71,10 @@ class WorkerStaggerTest(unittest.TestCase):
 
         live_watcher._stop.wait = recording_wait  # type: ignore[method-assign]
 
-        # 模拟启动 worker #6
-        live_watcher._heartbeat_watch_worker(6, RoomInfo(room_id=1, live_status=1))
+        # 模拟启动 worker #11
+        live_watcher._heartbeat_watch_worker(11, RoomInfo(room_id=1, live_status=1))
 
-        # worker #6 应先错峰 wait 5 秒（6-1）
-        self.assertEqual(wait_calls[0], 5.0)
+        self.assertEqual(wait_calls[0], 0.5)
 
     def test_worker_id_one_does_not_stagger(self) -> None:
         live_watcher = LiveWatcher(WatchOptions(cookie="a=b", room_id="1"), lambda _m: None)

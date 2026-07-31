@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 
 import requests
 
+import bili_drop_guard.bilibili as bilibili_module
 from bili_drop_guard.bilibili import (
     BilibiliClient,
     _activity_period_from_panel,
@@ -86,6 +87,32 @@ class BilibiliRoomTest(unittest.TestCase):
             server_time,
             datetime(2026, 7, 30, 16, 53, tzinfo=timezone.utc).timestamp(),
         )
+
+    def test_wbi_keys_are_shared_between_clients(self) -> None:
+        bilibili_module._WBI_KEY_CACHE = None
+        response = requests.Response()
+        response.status_code = 200
+        response.headers["Content-Type"] = "application/json"
+        response._content = (
+            b'{"code":0,"data":{"wbi_img":{'
+            b'"img_url":"https://i0.hdslb.com/bfs/wbi/img_key.png",'
+            b'"sub_url":"https://i0.hdslb.com/bfs/wbi/sub_key.png"}}}'
+        )
+        calls = {"count": 0}
+
+        def fake_get(*_args, **_kwargs):
+            calls["count"] += 1
+            return response
+
+        first = BilibiliClient("")
+        second = BilibiliClient("")
+        first.session.get = fake_get  # type: ignore[method-assign]
+        second.session.get = fake_get  # type: ignore[method-assign]
+
+        self.assertEqual(first._get_wbi_keys(), ("img_key", "sub_key"))
+        self.assertEqual(second._get_wbi_keys(), ("img_key", "sub_key"))
+        self.assertEqual(calls["count"], 1)
+        bilibili_module._WBI_KEY_CACHE = None
 
     def test_extract_tab_labels_and_maps_extra_groups_to_last_date(self) -> None:
         state = {
