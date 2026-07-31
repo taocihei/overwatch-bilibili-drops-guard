@@ -5,7 +5,6 @@ import hmac
 import json
 import re
 import time
-import base64
 import urllib.parse
 from collections.abc import Iterator
 from dataclasses import dataclass
@@ -22,19 +21,9 @@ import requests
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) "
-    "Chrome/126.0 Safari/537.36"
+    "Chrome/122.0.0.0 Safari/537.36"
 )
 
-DEVICE_COOKIE_NAMES = {
-    "buvid3",
-    "buvid4",
-    "buvid_fp",
-    "buvid_fp_plain",
-    "LIVE_BUVID",
-    "_uuid",
-    "b_lsid",
-    "b_nut",
-}
 BILIBILI_TIMEZONE = timezone(timedelta(hours=8))
 
 MIXIN_KEY_ENC_TAB = [
@@ -131,35 +120,13 @@ def calc_heartbeat_sign(data: Dict[str, Any], secret_rule: List[int]) -> str:
 
 
 def make_session_buvid() -> str:
-    """生成一个全新的 live_buvid，模仿 B 站 buvid3 的 UUID+infoc 格式。
+    """生成一条 x25Kn 会话使用的 LIVE_BUVID 格式身份。"""
 
-    后台心跳里每个 worker 都用自己的 live_buvid，B 站才会把它们当作不同设备
-    分别累计观看时长。若所有 worker 共享 Cookie 里的 buvid3，B 站会把它们
-    去重成一个会话，结果 N 路心跳只算一路。
-    """
-
-    return str(uuid4()).upper() + "infoc"
+    return f"AUTO{uuid4().int % 10**16:016d}"
 
 
 def make_session_device_uuid() -> str:
-    return uuid4().hex
-
-
-def make_session_cookie_overrides(session_buvid: str, session_device_uuid: str) -> Dict[str, str]:
-    """Build an isolated device cookie set for one background watch route."""
-
-    now = int(time.time())
-    fingerprint = hashlib.md5(f"{session_buvid}:{session_device_uuid}:{now}".encode("utf-8")).hexdigest()
-    return {
-        "buvid3": session_buvid,
-        "buvid4": f"{session_buvid}-{now}",
-        "buvid_fp": fingerprint,
-        "buvid_fp_plain": fingerprint,
-        "LIVE_BUVID": f"AUTO{uuid4().int % 10**16:016d}",
-        "_uuid": str(uuid4()).upper() + "infoc",
-        "b_lsid": f"{uuid4().hex[:8].upper()}_{format(now, 'X')}",
-        "b_nut": str(now),
-    }
+    return str(uuid4())
 
 
 class BilibiliClient:
@@ -172,15 +139,12 @@ class BilibiliClient:
     ) -> None:
         self.cookie_header = cookie_header
         self.cookies = parse_cookie_header(cookie_header)
-        if session_buvid:
-            self._buvid = session_buvid
-        else:
-            self._buvid = self.cookies.get("buvid3") or self.cookies.get("buvid4") or str(uuid4())
-        if session_device_uuid:
-            self._device_uuid = session_device_uuid
-        else:
-            source = self.cookies.get("DedeUserID") or self._buvid
-            self._device_uuid = str(uuid4()).replace("-", "")[:8] + str(abs(hash(source)))[:8]
+        # 账号 Cookie 保持浏览器原始设备身份；每路 x25Kn 只隔离自己的
+        # LIVE_BUVID/page UUID。混改整组设备 Cookie 会造成签名身份不一致。
+        if "buvid3" not in self.cookies:
+            self.cookies["buvid3"] = f"{uuid4()}infoc"
+        self._buvid = session_buvid or make_session_buvid()
+        self._device_uuid = session_device_uuid or make_session_device_uuid()
         self._visit_id = uuid4().hex[:16]
         self.session = requests.Session()
         self._wbi_keys: tuple[str, str] | None = None
@@ -193,11 +157,7 @@ class BilibiliClient:
         )
         for key, value in self.cookies.items():
             self.session.cookies.set(key, value, domain=".bilibili.com")
-        if session_buvid:
-            # 覆盖整组设备 cookie，而不是只改 buvid3，让每路后台计时保持独立会话身份；
-            # 若 buvid4、buvid_fp、LIVE_BUVID 等仍复用原值，活动侧可能把多路合并。
-            for key, value in make_session_cookie_overrides(self._buvid, self._device_uuid).items():
-                self.session.cookies.set(key, value, domain=".bilibili.com")
+
 
     def close(self) -> None:
         """释放当前计时会话持有的连接池和套接字。"""
@@ -249,7 +209,13 @@ class BilibiliClient:
         try:
             response = self.session.get(
                 "https://api.live.bilibili.com/xlive/web-room/v1/index/getInfoByRoom",
-                params={"room_id": normalized_room_id},
+                params=self._wbi_signed_params(
+                    {
+                        "room_id": normalized_room_id,
+                        "web_location": "444.8",
+                    }
+                ),
+                headers=self._live_headers(int(normalized_room_id)),
                 timeout=12,
             )
             data = _decode_json_response(response)
@@ -279,35 +245,34 @@ class BilibiliClient:
 
         if not self.csrf:
             raise RuntimeError("Cookie 缺少 bili_jct，无法上报进入直播间动作")
-        data = {
+        body = {
             "room_id": room.room_id,
             "platform": "pc",
-            "csrf_token": self.csrf,
-            "csrf": self.csrf,
-            "visit_id": self.visit_id,
         }
-        return self._post_form(
+        return self._post_json(
             "https://api.live.bilibili.com/xlive/web-room/v1/index/roomEntryAction",
             room.room_id,
-            data,
+            body,
+            params=self._wbi_signed_params({"csrf": self.csrf}),
         )
 
     def enter_room_heartbeat(self, room: RoomInfo) -> Dict[str, Any]:
         data = {
             "id": _json_compact([room.parent_area_id, room.area_id, 0, room.room_id]),
             "device": _json_compact([self.buvid, self.device_uuid]),
+            "ruid": room.anchor_uid,
             "ts": int(time.time() * 1000),
             "is_patch": 0,
             "heart_beat": "[]",
             "ua": USER_AGENT,
-            "csrf_token": self.csrf,
+            "web_location": "444.8",
             "csrf": self.csrf,
-            "visit_id": self.visit_id,
         }
-        return self._post_form(
+        return self._post_wbi_query(
             "https://live-trace.bilibili.com/xlive/data-interface/v1/x25Kn/E",
             room.room_id,
             data,
+            lite=True,
         )
 
     def in_room_heartbeat(
@@ -319,27 +284,25 @@ class BilibiliClient:
         secret_key: str,
         secret_rule: List[int],
     ) -> Dict[str, Any]:
-        data: Dict[str, Any] = {
+        unsigned: Dict[str, Any] = {
             "id": _json_compact([room.parent_area_id, room.area_id, sequence, room.room_id]),
             "device": _json_compact([self.buvid, self.device_uuid]),
+            "ruid": room.anchor_uid,
             "ets": ets,
             "benchmark": secret_key,
             "time": interval,
             "ts": int(time.time() * 1000),
+            "trackid": -99998,
             "ua": USER_AGENT,
+            "web_location": "444.8",
+            "csrf": self.csrf,
         }
-        data.update(
-            {
-                "csrf_token": self.csrf,
-                "csrf": self.csrf,
-                "visit_id": self.visit_id,
-                "s": calc_heartbeat_sign(data, secret_rule),
-            }
-        )
-        return self._post_form(
+        data = {"s": calc_heartbeat_sign(unsigned, secret_rule), **unsigned}
+        return self._post_wbi_query(
             "https://live-trace.bilibili.com/xlive/data-interface/v1/x25Kn/X",
             room.room_id,
             data,
+            lite=True,
         )
 
     def get_user_task_progress(self, up_id: int, task_id: str | None = None) -> Dict[str, Any]:
@@ -504,12 +467,16 @@ class BilibiliClient:
                 errors.append(str(exc))
         raise RuntimeError("；".join(errors))
 
-    def web_live_heartbeat(self, room_id: int, interval: int = 60) -> Dict[str, Any]:
-        heartbeat = base64.b64encode(f"{max(10, int(interval or 60))}|{int(room_id)}|1|0".encode("utf-8")).decode("ascii")
-        return self._get_data(
-            "https://live-trace.bilibili.com/xlive/rdata-interface/v1/heartbeat/webHeartBeat",
-            params={"hb": heartbeat, "pf": "web"},
-        )
+    def _live_headers(self, room_id: int, *, lite: bool = False) -> Dict[str, str]:
+        if lite:
+            referer = f"https://live.bilibili.com/blanc/{room_id}?liteVersion=true"
+        else:
+            referer = f"https://live.bilibili.com/{room_id}"
+        return {
+            "Referer": referer,
+            "Origin": "https://live.bilibili.com",
+            "User-Agent": USER_AGENT,
+        }
 
     def _get_data(self, url: str, params: Dict[str, Any] | None = None) -> Dict[str, Any]:
         response = self.session.get(url, params=params, timeout=12)
@@ -518,6 +485,65 @@ class BilibiliClient:
             raise RuntimeError(str(payload.get("message", "接口返回异常")))
         data = payload.get("data")
         return data if isinstance(data, dict) else {"value": data}
+
+    def _post_json(
+        self,
+        url: str,
+        room_id: int,
+        body: Dict[str, Any],
+        params: Dict[str, Any] | None = None,
+    ) -> Dict[str, Any]:
+        response = self.session.post(
+            url,
+            headers=self._live_headers(room_id),
+            params=params,
+            json=body,
+            timeout=12,
+        )
+        payload = _decode_json_response(response)
+        if payload.get("code") != 0:
+            raise RuntimeError(str(payload.get("message", "接口返回异常")))
+        result = payload.get("data")
+        return result if isinstance(result, dict) else {"value": result}
+
+    def _post_wbi_query(
+        self,
+        url: str,
+        room_id: int,
+        data: Dict[str, Any],
+        *,
+        lite: bool = False,
+    ) -> Dict[str, Any]:
+        """POST an empty body with the complete x25Kn payload in a WBI query."""
+
+        payload: Dict[str, Any] = {}
+        for sign_attempt in range(2):
+            signed = self._wbi_signed_params(data)
+            response: requests.Response | None = None
+            for request_attempt, delay in enumerate((0.0, 0.35, 0.8)):
+                if delay:
+                    time.sleep(delay)
+                try:
+                    response = self.session.post(
+                        url,
+                        headers=self._live_headers(room_id, lite=lite),
+                        params=signed,
+                        timeout=12,
+                        allow_redirects=True,
+                    )
+                    break
+                except requests.RequestException:
+                    if request_attempt == 2:
+                        raise
+            if response is None:
+                raise RuntimeError("x25Kn 请求未获得响应")
+            payload = _decode_json_response(response)
+            if payload.get("code") == 0:
+                result = payload.get("data")
+                return result if isinstance(result, dict) else {"value": result}
+            if sign_attempt == 0:
+                self._wbi_keys = None
+        raise RuntimeError(str(payload.get("message", "接口返回异常")))
 
     def _post_form(self, url: str, room_id: int, data: Dict[str, Any], params: Dict[str, Any] | None = None) -> Dict[str, Any]:
         headers = {
