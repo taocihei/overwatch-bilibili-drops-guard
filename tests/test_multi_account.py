@@ -35,6 +35,30 @@ class BuildAccountOptionsTest(unittest.TestCase):
         names = [name for name, _opts in pairs]
         self.assertEqual(names, ["主号", "小号"])
 
+    def test_same_bilibili_uid_selected_twice_builds_one_option(self) -> None:
+        cfg = self._config(["主号", "小号"])
+        cfg.accounts = [
+            AccountProfile(name="主号", cookie="DedeUserID=42; SESSDATA=a; bili_jct=x; buvid3=one"),
+            AccountProfile(name="小号", cookie="buvid3=two; bili_jct=y; SESSDATA=b; DedeUserID=42"),
+        ]
+        duplicates: list[tuple[str, str]] = []
+
+        pairs = build_account_options(cfg, lambda duplicate, kept: duplicates.append((duplicate, kept)))
+
+        self.assertEqual([name for name, _opts in pairs], ["主号"])
+        self.assertEqual(duplicates, [("小号", "主号")])
+
+    def test_distinct_bilibili_uids_are_kept(self) -> None:
+        cfg = self._config(["主号", "小号"])
+        cfg.accounts = [
+            AccountProfile(name="主号", cookie="DedeUserID=41; SESSDATA=a"),
+            AccountProfile(name="小号", cookie="DedeUserID=42; SESSDATA=a"),
+        ]
+        self.assertEqual(
+            [name for name, _opts in build_account_options(cfg)],
+            ["主号", "小号"],
+        )
+
     def test_each_option_uses_account_cookie_and_shared_settings(self) -> None:
         pairs = build_account_options(self._config(["主号"]))
         _name, opts = pairs[0]
@@ -88,6 +112,22 @@ class MultiAccountWatcherLifecycleTest(unittest.TestCase):
         mw._await_start_for_test()
         self.assertEqual(len(FakeWatcher.instances), 2)
         self.assertTrue(all(w.started for w in FakeWatcher.instances))
+
+    def test_constructor_defensively_collapses_duplicate_accounts(self) -> None:
+        logs: list[str] = []
+        pairs = [
+            ("主号", WatchOptions(cookie="DedeUserID=42; SESSDATA=a", room_id="1")),
+            ("别名", WatchOptions(cookie="DedeUserID=42; SESSDATA=b", room_id="1")),
+        ]
+        MultiAccountWatcher(
+            pairs,
+            log=logs.append,
+            watcher_factory=FakeWatcher,
+            stagger_seconds=0,
+        )
+
+        self.assertEqual(len(FakeWatcher.instances), 1)
+        self.assertTrue(any("别名" in message and "合并" in message for message in logs))
 
     def test_running_true_when_any_child_running(self) -> None:
         mw = MultiAccountWatcher(self._pairs(), log=lambda _m: None,
@@ -146,7 +186,7 @@ class MultiAccountStatusTest(unittest.TestCase):
         summaries = iter(["后台计时状态：1/1 正常", "后台计时状态：0/1 正常，1 路等待开播"])
         mw = MultiAccountWatcher(
             pairs, log=lambda _m: None,
-            watcher_factory=lambda o, l: StatusWatcher(o, l, next(summaries)),
+            watcher_factory=lambda options, log: StatusWatcher(options, log, next(summaries)),
             stagger_seconds=0,
         )
         rows, summary = mw.get_watch_status_snapshot()
@@ -155,6 +195,27 @@ class MultiAccountStatusTest(unittest.TestCase):
         self.assertTrue(any("主号" in r.message for r in rows))
         self.assertTrue(any("小号" in r.message for r in rows))
         self.assertIn("账号", summary)
+
+    def test_local_watch_estimate_uses_wall_clock_max_not_account_sum(self) -> None:
+        values = iter([3.0, 5.0])
+
+        class EstimateWatcher:
+            def __init__(self, options, log):
+                self.value = next(values)
+                self.running = False
+
+            def get_local_watch_estimate_minutes(self):
+                return self.value
+
+        mw = MultiAccountWatcher(
+            [("主号", WatchOptions(cookie="a", room_id="1")),
+             ("小号", WatchOptions(cookie="b", room_id="1"))],
+            log=lambda _m: None,
+            watcher_factory=EstimateWatcher,
+            stagger_seconds=0,
+        )
+
+        self.assertEqual(mw.get_local_watch_estimate_minutes(), 5.0)
 
 
 class MultiAccountDelegationTest(unittest.TestCase):
@@ -179,7 +240,7 @@ class MultiAccountDelegationTest(unittest.TestCase):
         names = iter(["主号", "小号"])
         mw = MultiAccountWatcher(
             pairs, log=lambda _m: None,
-            watcher_factory=lambda o, l: make(next(names))(o, l),
+            watcher_factory=lambda options, log: make(next(names))(options, log),
             stagger_seconds=0,
         )
         mw.claim_completed_tasks()
@@ -212,7 +273,7 @@ class MultiAccountDelegationTest(unittest.TestCase):
         logs: list[str] = []
         mw = MultiAccountWatcher(
             pairs, log=logs.append,
-            watcher_factory=lambda o, l: make(*next(specs))(o, l),
+            watcher_factory=lambda options, log: make(*next(specs))(options, log),
             stagger_seconds=0,
         )
         mw.refresh_progress_once()
@@ -263,7 +324,7 @@ class MultiAccountEdgeCaseTest(unittest.TestCase):
         factories = iter([BadWatcher, GoodWatcher])
         mw = MultiAccountWatcher(
             pairs, log=lambda _m: None,
-            watcher_factory=lambda o, l: next(factories)(o, l),
+            watcher_factory=lambda options, log: next(factories)(options, log),
             stagger_seconds=0,
         )
         rows, summary = mw.get_watch_status_snapshot()
@@ -299,7 +360,7 @@ class MultiAccountEdgeCaseTest(unittest.TestCase):
         names = iter(["主号", "小号"])
         mw = MultiAccountWatcher(
             pairs, log=lambda _m: None,
-            watcher_factory=lambda o, l: make(next(names))(o, l),
+            watcher_factory=lambda options, log: make(next(names))(options, log),
             stagger_seconds=0,
         )
         mw.stop()  # 先请求停止

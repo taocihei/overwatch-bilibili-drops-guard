@@ -409,6 +409,35 @@ class BilibiliRoomTest(unittest.TestCase):
         self.assertEqual(result["list"][1]["task_status"], 2)
         self.assertEqual(result["list"][1]["group_label"], "7月29日")
 
+    def test_normalize_totalv2_prefers_parent_indicator_current_minutes(self) -> None:
+        progress = {
+            "list": [{
+                "task_id": "parent-day-1",
+                "task_name": "7月31日 观看守望先锋电竞直播间",
+                "statistic_type": 1,
+                "indicators": [{"cur_value": 84, "limit": 300}],
+                "check_points": [
+                    {
+                        "alias": "观看直播60分钟",
+                        "sid": "claim-60",
+                        "status": 3,
+                        "list": [{"cur_value": 60, "limit": 60}],
+                    },
+                    {
+                        "alias": "观看直播120分钟",
+                        "sid": "claim-120",
+                        "status": 1,
+                        "list": [{"cur_value": 60, "limit": 120}],
+                    },
+                ],
+            }]
+        }
+
+        result = _normalize_activity_task_progress(progress, ["parent-day-1"])
+
+        self.assertEqual([task["current"] for task in result["list"]], [84, 84])
+        self.assertEqual([task["target"] for task in result["list"]], [60, 120])
+
     def test_normalize_totalv2_keeps_legacy_direct_single_checkpoint_parent_id(self) -> None:
         progress = {
             "list": [

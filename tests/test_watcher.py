@@ -735,14 +735,31 @@ class LiveWatcherTest(unittest.TestCase):
         for _ in range(3):
             live_watcher._record_heartbeat()
         summary_after, _n2, _p2 = live_watcher._watch_status_summary_info()
-        self.assertIn("累计计时 3 次", summary_after)
+        self.assertIn("心跳成功 3 次", summary_after)
+        self.assertNotIn("累计计时", summary_after)
 
-    def test_local_watch_estimate_uses_submitted_heartbeat_seconds(self) -> None:
+    def test_local_watch_estimate_does_not_multiply_heartbeat_intervals(self) -> None:
         live_watcher = LiveWatcher(WatchOptions(cookie="a=b", room_id="1", watch_threads=2), lambda _m: None)
-        live_watcher._record_heartbeat(60)
-        live_watcher._record_heartbeat(30)
+        for _ in range(40):
+            live_watcher._record_heartbeat(60)
+        live_watcher._watch_started_at = time.time() - 90
 
-        self.assertEqual(live_watcher.get_local_watch_estimate_minutes(), 1.5)
+        self.assertAlmostEqual(live_watcher.get_local_watch_estimate_minutes(), 1.5, delta=0.02)
+
+    def test_local_watch_estimate_freezes_after_stop_and_resets_on_restart(self) -> None:
+        live_watcher = LiveWatcher(WatchOptions(cookie="a=b", room_id="1"), lambda _m: None)
+        live_watcher._record_heartbeat()
+        live_watcher._watch_started_at = time.time() - 60
+        live_watcher.stop()
+        frozen = live_watcher.get_local_watch_estimate_minutes()
+        time.sleep(0.01)
+        self.assertAlmostEqual(live_watcher.get_local_watch_estimate_minutes(), frozen, delta=0.001)
+
+        with patch("bili_drop_guard.watcher.threading.Thread") as thread_class:
+            thread_class.return_value = unittest.mock.MagicMock()
+            live_watcher.start()
+        self.assertEqual(live_watcher._heartbeat_count, 0)
+        self.assertEqual(live_watcher.get_local_watch_estimate_minutes(), 0.0)
 
     def test_status_summary_logs_only_on_problem_not_when_normal(self) -> None:
         logs: list[str] = []
@@ -753,7 +770,60 @@ class LiveWatcherTest(unittest.TestCase):
         self.assertFalse(any("后台计时状态" in message for message in logs))
         live_watcher._set_watch_status(3, "暂时失败", message="网络抖动")
         live_watcher._log_watch_status_summary(force=False)
-        self.assertTrue(any("后台计时状态" in message for message in logs))
+        self.assertTrue(any("观看连接" in message for message in logs))
+
+    def test_progress_polling_runs_when_auto_claim_is_disabled(self) -> None:
+        live_watcher = LiveWatcher(
+            WatchOptions(cookie="a=b", room_id="1", auto_claim=False),
+            lambda _message: None,
+        )
+        calls: list[str] = []
+
+        class FakeClient:
+            def check_login(self):
+                return LoginInfo(True, uname="tester", mid=1)
+
+            def get_room_info(self, _room_id):
+                live_watcher._stop.set()
+                return RoomInfo(room_id=1, live_status=1, anchor_uid=2)
+
+            def close(self):
+                pass
+
+        live_watcher._start_watch_threads = lambda _room: None  # type: ignore[method-assign]
+        live_watcher._check_activity_task_progress = lambda _client: calls.append("activity") or False  # type: ignore[method-assign]
+        live_watcher._check_and_claim_task = lambda _client, _up_id: calls.append("generic") or False  # type: ignore[method-assign]
+        live_watcher._check_explicit_task_ids = lambda _up_id: calls.append("explicit") or False  # type: ignore[method-assign]
+        live_watcher._start_auto_claim_thread = lambda: calls.append("claim")  # type: ignore[method-assign]
+
+        with patch("bili_drop_guard.watcher.BilibiliClient", return_value=FakeClient()):
+            live_watcher._run()
+
+        self.assertEqual(calls, ["activity", "generic", "explicit"])
+
+    def test_server_progress_rollback_keeps_last_confirmed_minutes(self) -> None:
+        logs: list[str] = []
+        live_watcher = LiveWatcher(WatchOptions(cookie="a=b", room_id="1"), logs.append)
+
+        def progress(current: int) -> dict:
+            return {
+                "list": [{
+                    "task_id": "parent",
+                    "task_name": "观看直播60分钟",
+                    "group_label": "7月31日",
+                    "current": current,
+                    "target": 60,
+                    "task_status": 1,
+                }]
+            }
+
+        live_watcher._record_task_progress(progress(30), announce_claimable=False)
+        confirmed_summary = live_watcher._last_task_summary
+        live_watcher._record_task_progress(progress(29), announce_claimable=False)
+
+        self.assertEqual(live_watcher._last_task_progress_score, 30)
+        self.assertEqual(live_watcher._last_task_summary, confirmed_summary)
+        self.assertTrue(any("保留上次已确认分钟数" in message for message in logs))
 
     def test_activity_progress_does_not_call_mission_info_when_totalv2_empty(self) -> None:
         logs: list[str] = []

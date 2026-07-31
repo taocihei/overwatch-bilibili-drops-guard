@@ -25,7 +25,7 @@ from .cookie_capture import capture_bilibili_cookie, open_bilibili_login_page
 from .notifier import send_notification
 from .sponsor import SPONSOR_QQ_GROUP, SponsorClient, SponsorError, SponsorOrder, SponsorOrderStatus
 from .watcher import LiveWatcher, WatchWorkerStatus
-from .multi_account import MultiAccountWatcher, build_account_options
+from .multi_account import MultiAccountWatcher, build_account_options, find_duplicate_active_accounts
 
 
 SOURCE_URL = "https://github.com/taocihei/overwatch-bilibili-drops-guard"
@@ -474,6 +474,141 @@ class LabelButton(tk.Canvas):
         return red // 256, green // 256, blue // 256, alpha
 
 
+class AppDialog(tk.Toplevel):
+    """与主界面一致的无边框弹窗。
+
+    系统标题栏在不同 Windows 版本上风格差异很大，所以由应用绘制标题栏，
+    同时保留拖动、Esc 关闭、父窗口居中和焦点管理。
+    """
+
+    def __init__(
+        self,
+        parent: tk.Misc,
+        *,
+        title: str,
+        width: int,
+        height: int,
+        on_close: Callable[[], None] | None = None,
+        modal: bool = False,
+    ) -> None:
+        super().__init__(parent)
+        self.withdraw()
+        self.title(title)
+        self._dialog_width = width
+        self._dialog_height = height
+        self._on_close = on_close
+        self._modal = modal
+        self._drag_offset = (0, 0)
+        self._closing = False
+
+        self.overrideredirect(True)
+        self.configure(bg=PANEL_SHADOW)
+        try:
+            self.transient(parent.winfo_toplevel())
+        except tk.TclError:
+            pass
+
+        shell = tk.Frame(
+            self,
+            bg=APP_BG,
+            highlightbackground=BORDER,
+            highlightcolor=BORDER,
+            highlightthickness=1,
+            borderwidth=0,
+        )
+        shell.pack(fill="both", expand=True)
+
+        self.titlebar = tk.Frame(shell, bg=SURFACE, height=48, cursor="fleur", highlightthickness=0, borderwidth=0)
+        self.titlebar.pack(fill="x")
+        self.titlebar.pack_propagate(False)
+        self.titlebar.columnconfigure(0, weight=1)
+        self.title_label = tk.Label(
+            self.titlebar,
+            text=title,
+            bg=SURFACE,
+            fg=TEXT,
+            font=("Microsoft YaHei UI", 11, "bold"),
+            cursor="fleur",
+        )
+        self.title_label.grid(row=0, column=0, sticky="w", padx=(18, 8), pady=13)
+        self.close_button = tk.Label(
+            self.titlebar,
+            text="×",
+            bg=SURFACE,
+            fg=MUTED,
+            activebackground=DANGER_BG,
+            activeforeground=DANGER,
+            width=4,
+            font=("Microsoft YaHei UI", 16),
+            cursor="hand2",
+        )
+        self.close_button.grid(row=0, column=1, sticky="nse", ipady=7)
+        tk.Frame(shell, bg=BORDER, height=1, highlightthickness=0, borderwidth=0).pack(fill="x")
+
+        self.content = tk.Frame(shell, bg=APP_BG, highlightthickness=0, borderwidth=0)
+        self.content.pack(fill="both", expand=True)
+
+        for widget in (self.titlebar, self.title_label):
+            widget.bind("<ButtonPress-1>", self._begin_move)
+            widget.bind("<B1-Motion>", self._move)
+        self.close_button.bind("<Button-1>", lambda _event: self.request_close())
+        self.close_button.bind("<Enter>", lambda _event: self.close_button.configure(bg=DANGER_BG, fg=DANGER))
+        self.close_button.bind("<Leave>", lambda _event: self.close_button.configure(bg=SURFACE, fg=MUTED))
+        self.bind("<Escape>", lambda _event: self.request_close())
+        self.protocol("WM_DELETE_WINDOW", self.request_close)
+        self.geometry(f"{width}x{height}")
+        self.after_idle(self._show_centered)
+
+    def _show_centered(self) -> None:
+        if not self.winfo_exists():
+            return
+        self.update_idletasks()
+        parent = self.master.winfo_toplevel()
+        try:
+            parent.update_idletasks()
+            parent_width = max(parent.winfo_width(), parent.winfo_reqwidth())
+            parent_height = max(parent.winfo_height(), parent.winfo_reqheight())
+            x = parent.winfo_rootx() + (parent_width - self._dialog_width) // 2
+            y = parent.winfo_rooty() + (parent_height - self._dialog_height) // 2
+        except tk.TclError:
+            x = (self.winfo_screenwidth() - self._dialog_width) // 2
+            y = (self.winfo_screenheight() - self._dialog_height) // 2
+
+        max_x = max(0, self.winfo_screenwidth() - self._dialog_width)
+        max_y = max(0, self.winfo_screenheight() - self._dialog_height)
+        x = max(0, min(x, max_x))
+        y = max(0, min(y, max_y))
+        self.geometry(f"{self._dialog_width}x{self._dialog_height}+{x}+{y}")
+        self.deiconify()
+        self.lift()
+        self.focus_force()
+        if self._modal:
+            try:
+                self.grab_set()
+            except tk.TclError:
+                pass
+
+    def _begin_move(self, event: tk.Event) -> None:
+        self._drag_offset = (event.x_root - self.winfo_x(), event.y_root - self.winfo_y())
+
+    def _move(self, event: tk.Event) -> None:
+        x = event.x_root - self._drag_offset[0]
+        y = event.y_root - self._drag_offset[1]
+        max_x = max(0, self.winfo_screenwidth() - self._dialog_width)
+        max_y = max(0, self.winfo_screenheight() - self._dialog_height)
+        self.geometry(f"+{max(0, min(x, max_x))}+{max(0, min(y, max_y))}")
+
+    def request_close(self) -> None:
+        if self._closing:
+            return
+        self._closing = True
+        callback = self._on_close
+        if callback is not None:
+            callback()
+        if self.winfo_exists():
+            self.destroy()
+
+
 class ProgressRing(tk.Canvas):
     def __init__(
         self,
@@ -710,7 +845,7 @@ class WatchStatusCard(tk.Frame):
     def __init__(self, parent: tk.Misc, *, background: str = APP_BG) -> None:
         super().__init__(parent, bg=background, highlightthickness=0, borderwidth=0)
         self._background = background
-        self.summary_var = tk.StringVar(value="后台计时状态：未启动")
+        self.summary_var = tk.StringVar(value="观看连接：未启动")
         self._snapshot: list[WatchWorkerStatus] = []
         self._detail_window: tk.Toplevel | None = None
         self._detail_text: tk.Text | None = None
@@ -718,7 +853,7 @@ class WatchStatusCard(tk.Frame):
         inner = self
         inner.columnconfigure(0, weight=1)
 
-        tk.Label(inner, text="后台计时状态", bg=background, fg=TEXT, font=("Microsoft YaHei UI", 12, "bold")).grid(row=0, column=0, sticky="w")
+        tk.Label(inner, text="观看连接", bg=background, fg=TEXT, font=("Microsoft YaHei UI", 12, "bold")).grid(row=0, column=0, sticky="w")
         tk.Label(inner, textvariable=self.summary_var, bg=background, fg=MUTED, font=("Microsoft YaHei UI", 9), wraplength=520, justify="left").grid(row=1, column=0, sticky="ew", pady=(4, 8))
         self._status_grid = tk.Frame(inner, bg=background, highlightthickness=0, borderwidth=0)
         self._status_grid.grid(row=2, column=0, sticky="ew")
@@ -749,16 +884,15 @@ class WatchStatusCard(tk.Frame):
             self._detail_window.focus_set()
             return self._detail_window
 
-        top = tk.Toplevel(self)
-        top.title("后台计时每路状态")
-        top.geometry("520x520")
-        top.configure(bg=APP_BG)
-        try:
-            top.transient(self.winfo_toplevel())
-        except tk.TclError:
-            pass
+        top = AppDialog(
+            self,
+            title="后台计时每路状态",
+            width=560,
+            height=560,
+            on_close=self._on_detail_closed,
+        )
 
-        container = tk.Frame(top, bg=APP_BG, padx=18, pady=14)
+        container = tk.Frame(top.content, bg=APP_BG, padx=22, pady=18)
         container.pack(fill="both", expand=True)
         container.columnconfigure(0, weight=1)
         container.rowconfigure(1, weight=1)
@@ -792,22 +926,23 @@ class WatchStatusCard(tk.Frame):
         text.tag_configure("muted", foreground=MUTED)
         text.tag_configure("danger", foreground=DANGER)
 
-        PillButton(container, "关闭", top.destroy, fill=ACCENT, active_fill=ACCENT_ACTIVE, height=32, width=100).grid(row=2, column=0, sticky="e", pady=(10, 0))
+        PillButton(container, "关闭", self._on_detail_closed, fill=ACCENT, active_fill=ACCENT_ACTIVE, height=34, width=104).grid(row=2, column=0, sticky="e", pady=(12, 0))
 
         self._detail_window = top
         self._detail_text = text
-        top.protocol("WM_DELETE_WINDOW", self._on_detail_closed)
         self._render_detail()
         return top
 
     def _on_detail_closed(self) -> None:
-        if self._detail_window is not None:
-            try:
-                self._detail_window.destroy()
-            except Exception:
-                pass
+        top = self._detail_window
         self._detail_window = None
         self._detail_text = None
+        if top is not None:
+            try:
+                if top.winfo_exists():
+                    top.destroy()
+            except Exception:
+                pass
 
     def update_snapshot(self, snapshot: list[WatchWorkerStatus], summary: str) -> None:
         self._snapshot = list(snapshot)
@@ -883,22 +1018,14 @@ class WatchStatusCard(tk.Frame):
 
 
 def build_onboarding_guide(parent: tk.Misc) -> tk.Toplevel:
-    top = tk.Toplevel(parent)
-    top.title("上手指引")
-    top.geometry("560x620")
-    top.configure(bg=APP_BG)
-    try:
-        top.transient(parent)
-        top.grab_set()
-    except tk.TclError:
-        pass
+    top = AppDialog(parent, title="上手指引", width=580, height=650, modal=True)
 
-    container = tk.Frame(top, bg=APP_BG, padx=24, pady=20)
+    container = tk.Frame(top.content, bg=APP_BG, padx=24, pady=20)
     container.pack(fill="both", expand=True)
     tk.Label(container, text="上手指引", bg=APP_BG, fg=TEXT, font=("Microsoft YaHei UI", 16, "bold")).pack(anchor="w")
     tk.Label(container, text="跟着 4 步走就能挂宝。", bg=APP_BG, fg=MUTED, font=("Microsoft YaHei UI", 10)).pack(anchor="w", pady=(2, 14))
 
-    PillButton(container, "我知道了", top.destroy, fill=ACCENT, active_fill=ACCENT_ACTIVE, height=36, width=120).pack(side="bottom", pady=(14, 0))
+    PillButton(container, "我知道了", top.request_close, fill=ACCENT, active_fill=ACCENT_ACTIVE, height=36, width=120).pack(side="bottom", pady=(14, 0))
 
     steps_frame = tk.Frame(container, bg=APP_BG, highlightthickness=0, borderwidth=0)
     steps_frame.pack(fill="both", expand=True)
@@ -918,6 +1045,72 @@ def build_onboarding_guide(parent: tk.Misc) -> tk.Toplevel:
         tk.Label(inner, text=title, bg=SURFACE, fg=TEXT, font=("Microsoft YaHei UI", 11, "bold")).grid(row=0, column=1, sticky="w")
         tk.Label(inner, text=detail, bg=SURFACE, fg=MUTED, font=("Microsoft YaHei UI", 9), wraplength=440, justify="left").grid(row=1, column=1, sticky="w", pady=(2, 0))
 
+    return top
+
+
+def build_text_dialog(
+    parent: tk.Misc,
+    *,
+    title: str,
+    heading: str,
+    body: str,
+    width: int = 540,
+    height: int = 480,
+) -> tk.Toplevel:
+    """显示应用内说明文本，避免回退到 Windows messagebox 样式。"""
+
+    top = AppDialog(parent, title=title, width=width, height=height, modal=True)
+    container = tk.Frame(top.content, bg=APP_BG, padx=24, pady=20)
+    container.pack(fill="both", expand=True)
+    container.columnconfigure(0, weight=1)
+    container.rowconfigure(2, weight=1)
+
+    tk.Label(container, text=heading, bg=APP_BG, fg=TEXT, font=("Microsoft YaHei UI", 16, "bold")).grid(row=0, column=0, sticky="w")
+    tk.Label(
+        container,
+        text="这些内容只用于说明，不会改变当前运行状态。",
+        bg=APP_BG,
+        fg=MUTED,
+        font=("Microsoft YaHei UI", 9),
+    ).grid(row=1, column=0, sticky="w", pady=(3, 14))
+
+    panel = RoundedPanel(
+        container,
+        fill=SURFACE,
+        background=APP_BG,
+        radius=16,
+        padding=(6, 6),
+        min_height=max(180, height - 190),
+        outline=BORDER,
+        shadow=False,
+        auto_height=False,
+    )
+    panel.grid(row=2, column=0, sticky="nsew")
+    panel.inner.columnconfigure(0, weight=1)
+    panel.inner.rowconfigure(0, weight=1)
+    text = tk.Text(
+        panel.inner,
+        wrap="word",
+        state="normal",
+        borderwidth=0,
+        relief="flat",
+        bg=SURFACE,
+        fg=TEXT,
+        highlightthickness=0,
+        padx=14,
+        pady=12,
+        font=("Microsoft YaHei UI", 10),
+        spacing1=3,
+        spacing3=3,
+        cursor="arrow",
+    )
+    text.grid(row=0, column=0, sticky="nsew")
+    text.insert("1.0", body)
+    text.configure(state="disabled")
+    scrollbar = ttk.Scrollbar(panel.inner, orient="vertical", command=text.yview, style="Vertical.TScrollbar")
+    scrollbar.grid(row=0, column=1, sticky="ns")
+    text.configure(yscrollcommand=scrollbar.set)
+    PillButton(container, "关闭", top.request_close, fill=ACCENT, active_fill=ACCENT_ACTIVE, height=36, width=112).grid(row=3, column=0, sticky="e", pady=(14, 0))
     return top
 
 
@@ -2511,33 +2704,29 @@ class App(tk.Tk):
             except tk.TclError:
                 self._sponsor_window = None
 
-        top = tk.Toplevel(self)
+        top = AppDialog(
+            self,
+            title="支持作者",
+            width=460,
+            height=610,
+            on_close=self._close_sponsor_dialog,
+        )
         self._sponsor_window = top
         self._sponsor_generation += 1
         self._sponsor_order = None
         self._sponsor_client = None
         self._sponsor_loading = False
         self._sponsor_success_shown = False
-        top.title("支持作者")
-        top.geometry("460x610")
-        top.resizable(False, False)
-        top.configure(bg=APP_BG)
-        try:
-            top.transient(self)
-        except tk.TclError:
-            pass
-        top.protocol("WM_DELETE_WINDOW", self._close_sponsor_dialog)
-
-        container = tk.Frame(top, bg=APP_BG, padx=26, pady=22)
+        container = tk.Frame(top.content, bg=APP_BG, padx=26, pady=20)
         container.pack(fill="both", expand=True)
-        tk.Label(container, text="支持作者", bg=APP_BG, fg=TEXT, font=("Microsoft YaHei UI", 18, "bold")).pack(anchor="w")
+        tk.Label(container, text="选择支持金额", bg=APP_BG, fg=TEXT, font=("Microsoft YaHei UI", 15, "bold")).pack(anchor="w")
         tk.Label(
             container,
-            text="完全自愿，不解锁功能，也不影响挂宝和领奖。",
+            text="选择金额后会自动刷新二维码 · 完全自愿，不解锁任何功能",
             bg=APP_BG,
             fg=MUTED,
             font=("Microsoft YaHei UI", 9),
-        ).pack(anchor="w", pady=(3, 16))
+        ).pack(anchor="w", pady=(3, 14))
 
         amount_panel = RoundedPanel(
             container,
@@ -2545,41 +2734,33 @@ class App(tk.Tk):
             background=APP_BG,
             radius=16,
             padding=(16, 14),
-            min_height=82,
+            min_height=66,
             outline=SUBTLE_OUTLINE,
             shadow=False,
             auto_height=False,
         )
         amount_panel.pack(fill="x")
-        tk.Label(amount_panel.inner, text="选择金额", bg=SURFACE, fg=TEXT, font=("Microsoft YaHei UI", 10, "bold")).pack(anchor="w")
         amount_row = tk.Frame(amount_panel.inner, bg=SURFACE, highlightthickness=0, borderwidth=0)
-        amount_row.pack(fill="x", pady=(9, 0))
+        amount_row.pack(fill="x")
         self._sponsor_amount_var = tk.StringVar(value="6.00")
+        self._sponsor_amount_buttons: dict[str, LabelButton] = {}
         for index, amount in enumerate(("3.00", "6.00", "10.00")):
             amount_row.columnconfigure(index, weight=1, uniform="sponsor_amount")
-            tk.Radiobutton(
+            selected = amount == self._sponsor_amount_var.get()
+            button = LabelButton(
                 amount_row,
                 text=f"¥{amount.removesuffix('.00')}",
-                value=amount,
-                variable=self._sponsor_amount_var,
-                indicatoron=False,
-                selectcolor=ACCENT_SOFT,
-                bg=SECONDARY,
-                fg=TEXT,
-                activebackground=ACCENT_SOFT_ACTIVE,
-                activeforeground=ACCENT,
-                relief="flat",
-                offrelief="flat",
-                overrelief="flat",
-                borderwidth=0,
-                highlightthickness=1,
-                highlightbackground=SUBTLE_OUTLINE,
-                highlightcolor=ACCENT_BORDER,
+                command=lambda value=amount: self._select_sponsor_amount(value),
+                fill=ACCENT_SOFT if selected else SECONDARY,
+                foreground=ACCENT if selected else MUTED,
+                active_fill=ACCENT_SOFT_ACTIVE if selected else SECONDARY_ACTIVE,
+                outline=ACCENT_BORDER if selected else SUBTLE_OUTLINE,
                 font=("Microsoft YaHei UI", 10, "bold"),
-                padx=12,
-                pady=7,
-                cursor="hand2",
-            ).grid(row=0, column=index, sticky="ew", padx=(0 if index == 0 else 5, 0 if index == 2 else 5))
+                height=40,
+                radius=10,
+            )
+            button.grid(row=0, column=index, sticky="ew", padx=(0 if index == 0 else 5, 0 if index == 2 else 5))
+            self._sponsor_amount_buttons[amount] = button
 
         qr_panel = RoundedPanel(
             container,
@@ -2587,7 +2768,7 @@ class App(tk.Tk):
             background=APP_BG,
             radius=18,
             padding=(16, 14),
-            min_height=300,
+            min_height=330,
             outline=SUBTLE_OUTLINE,
             shadow=True,
             auto_height=False,
@@ -2596,7 +2777,7 @@ class App(tk.Tk):
         qr_panel.inner.columnconfigure(0, weight=1)
         self._sponsor_qr_label = tk.Label(
             qr_panel.inner,
-            text="点击下方按钮生成微信支付二维码",
+            text="正在准备 ¥6 支付二维码…",
             bg=FIELD_BG,
             fg=MUTED,
             width=28,
@@ -2605,7 +2786,7 @@ class App(tk.Tk):
             font=("Microsoft YaHei UI", 10, "bold"),
         )
         self._sponsor_qr_label.grid(row=0, column=0, sticky="n", pady=(0, 10))
-        self._sponsor_status_var = tk.StringVar(value="二维码由 YunGouOS 生成，付款状态自动确认")
+        self._sponsor_status_var = tk.StringVar(value="正在创建安全支付订单…")
         tk.Label(
             qr_panel.inner,
             textvariable=self._sponsor_status_var,
@@ -2641,26 +2822,50 @@ class App(tk.Tk):
             font=("Microsoft YaHei UI", 9, "bold"),
         ).pack(side="right")
 
-        self._sponsor_generate_button = tk.Button(
+        self._sponsor_retry_button = PillButton(
             container,
-            text="生成赞助二维码",
-            command=self._start_sponsor_order,
-            bg=ACCENT,
-            fg="#ffffff",
-            activebackground=ACCENT_ACTIVE,
-            activeforeground="#ffffff",
-            relief="flat",
-            borderwidth=0,
-            padx=18,
-            pady=10,
-            cursor="hand2",
-            font=("Microsoft YaHei UI", 10, "bold"),
+            "重新获取二维码",
+            self._start_sponsor_order,
+            fill=SECONDARY,
+            foreground=TEXT,
+            active_fill=SECONDARY_ACTIVE,
+            outline=BUTTON_OUTLINE,
+            height=38,
         )
-        self._sponsor_generate_button.pack(fill="x", pady=(14, 0))
+        top.after(160, self._start_sponsor_order)
         return top
 
+    def _select_sponsor_amount(self, amount: str) -> None:
+        if amount == self._sponsor_amount_var.get() and self._sponsor_order is not None:
+            return
+        self._sponsor_amount_var.set(amount)
+        for value, button in self._sponsor_amount_buttons.items():
+            selected = value == amount
+            button.outline = ACCENT_BORDER if selected else SUBTLE_OUTLINE
+            button.set_appearance(
+                text=f"¥{value.removesuffix('.00')}",
+                fill=ACCENT_SOFT if selected else SECONDARY,
+                foreground=ACCENT if selected else MUTED,
+                active_fill=ACCENT_SOFT_ACTIVE if selected else SECONDARY_ACTIVE,
+            )
+        self._start_sponsor_order()
+
+    def _show_sponsor_retry(self, text: str = "重新获取二维码") -> None:
+        self._sponsor_retry_button.set_appearance(
+            text=text,
+            fill=SECONDARY,
+            foreground=TEXT,
+            active_fill=SECONDARY_ACTIVE,
+        )
+        if not self._sponsor_retry_button.winfo_manager():
+            self._sponsor_retry_button.pack(fill="x", pady=(12, 0))
+
+    def _hide_sponsor_retry(self) -> None:
+        if self._sponsor_retry_button.winfo_manager():
+            self._sponsor_retry_button.pack_forget()
+
     def _start_sponsor_order(self) -> None:
-        if self._sponsor_loading:
+        if not self._sponsor_dialog_exists():
             return
         self._cancel_sponsor_poll()
         self._sponsor_loading = True
@@ -2670,9 +2875,16 @@ class App(tk.Tk):
         self._sponsor_order = None
         self._sponsor_success_shown = False
         self._sponsor_success_frame.pack_forget()
-        self._sponsor_status_var.set("正在创建 YunGouOS 支付订单…")
-        self._sponsor_qr_label.configure(image="", text="正在生成二维码…", fg=ACCENT)
-        self._sponsor_generate_button.configure(text="正在生成…", bg=FAINT, cursor="arrow")
+        self._hide_sponsor_retry()
+        amount_label = amount.removesuffix(".00")
+        self._sponsor_status_var.set(f"正在创建 ¥{amount_label} 支付订单…")
+        self._sponsor_qr_label.configure(
+            image="",
+            text=f"正在生成 ¥{amount_label} 二维码…",
+            fg=ACCENT,
+            width=28,
+            height=12,
+        )
 
         def create_order() -> None:
             try:
@@ -2716,7 +2928,6 @@ class App(tk.Tk):
         self._sponsor_loading = False
         suffix = f" · 有效至 {order.expires_at}" if order.expires_at else ""
         self._sponsor_status_var.set(f"请使用微信扫码支付，支付成功后自动显示群号{suffix}")
-        self._sponsor_generate_button.configure(text="重新生成二维码", bg=SECONDARY, fg=TEXT, cursor="hand2")
         self._schedule_sponsor_poll(3000)
 
     def _finish_sponsor_error(self, generation: int, message: str) -> None:
@@ -2725,7 +2936,7 @@ class App(tk.Tk):
         self._sponsor_loading = False
         self._sponsor_status_var.set(message)
         self._sponsor_qr_label.configure(image="", text="暂时无法生成二维码", fg=DANGER, width=28, height=12)
-        self._sponsor_generate_button.configure(text="重试", bg=ACCENT, fg="#ffffff", cursor="hand2")
+        self._show_sponsor_retry("重试获取二维码")
 
     def _schedule_sponsor_poll(self, delay_ms: int = 10000) -> None:
         self._cancel_sponsor_poll()
@@ -2759,23 +2970,18 @@ class App(tk.Tk):
         if status.paid:
             self._cancel_sponsor_poll()
             self._sponsor_status_var.set("付款成功，感谢支持")
-            self._sponsor_success_frame.pack(fill="x", pady=(12, 0), before=self._sponsor_generate_button)
-            self._sponsor_generate_button.pack_forget()
-            if not self._sponsor_success_shown:
-                self._sponsor_success_shown = True
-                messagebox.showinfo(
-                    "赞助成功",
-                    f"感谢支持！\n\nQQ群：{SPONSOR_QQ_GROUP}",
-                    parent=self._sponsor_window,
-                )
+            self._sponsor_qr_label.configure(image="", text="✓\n支付成功", fg=SUCCESS, width=28, height=12)
+            self._sponsor_success_frame.pack(fill="x", pady=(12, 0))
+            self._hide_sponsor_retry()
+            self._sponsor_success_shown = True
             return
         if status.state == "expired":
             self._sponsor_status_var.set("二维码已过期，请重新生成")
-            self._sponsor_generate_button.configure(text="重新生成二维码", bg=ACCENT, fg="#ffffff", cursor="hand2")
+            self._show_sponsor_retry()
             return
         if status.state == "closed":
             self._sponsor_status_var.set("订单已关闭，请重新生成")
-            self._sponsor_generate_button.configure(text="重新生成二维码", bg=ACCENT, fg="#ffffff", cursor="hand2")
+            self._show_sponsor_retry()
             return
         self._sponsor_status_var.set(status.message or "等待付款确认…")
         self._schedule_sponsor_poll(10000)
@@ -2818,15 +3024,19 @@ class App(tk.Tk):
         if hasattr(self, "room_entry"):
             self.room_entry.focus_set()
 
-    def _show_about_dialog(self) -> None:
-        messagebox.showinfo(
-            "关于守望先锋 B站直播挂宝",
-            f"守望先锋 B站直播挂宝\n"
-            f"版本：v{__version__}\n"
-            "运行方式：Cookie 仅本机保存\n\n"
-            "本软件完全免费，请勿购买；购买请找商家退款。\n"
-            "凭据仅保存在本机，不会上传到任何服务器。\n\n"
-            f"开源地址：{SOURCE_URL}",
+    def _show_about_dialog(self) -> tk.Toplevel:
+        return build_text_dialog(
+            self,
+            title="关于",
+            heading="守望先锋 B 站直播挂宝",
+            body=(
+                f"版本：v{__version__}\n\n"
+                "Cookie 仅保存在本机，不会上传到任何服务器。\n\n"
+                "本软件完全免费，请勿从任何商家购买；如已购买，请向商家申请退款。\n\n"
+                f"开源地址\n{SOURCE_URL}"
+            ),
+            width=540,
+            height=430,
         )
 
     def _clear_cookie_text(self) -> None:
@@ -2883,21 +3093,27 @@ class App(tk.Tk):
         else:
             self.log_scrollbar.grid_remove()
 
-    def _show_manual_task_help(self) -> None:
-        messagebox.showinfo(
-            "手动填写方法",
-            "一般不用手动填写，程序会自动获取。只有任务进度一直无数据时再按下面处理。\n\n"
-            "房间号怎么填：\n"
-            "1. 打开 B 站直播间链接。\n"
-            "2. 复制 live.bilibili.com/ 后面的数字。\n"
-            "3. 例如 https://live.bilibili.com/23612045?... 只填 23612045。\n\n"
-            "任务 ID 怎么找：\n"
-            "1. 用浏览器登录 B 站，打开有掉宝任务的直播间或活动页。\n"
-            "2. 按 F12 打开开发者工具，切到“网络/Network”。\n"
-            "3. 刷新页面，搜索 totalv2 或 task。\n"
-            "4. 找到 x/task/totalv2 请求后，复制参数 task_ids= 后面的内容。\n"
-            "5. 多个任务 ID 用英文逗号分隔，粘贴到本软件“任务 ID”输入框。\n\n"
-            "如果找不到 totalv2，也可以在页面源码或网络响应里搜索 taskId。任务 ID 通常像 6ERAcwloghvqrb00 这样的字符串。",
+    def _show_manual_task_help(self) -> tk.Toplevel:
+        return build_text_dialog(
+            self,
+            title="手动填写方法",
+            heading="房间号与任务 ID",
+            body=(
+                "一般不用手动填写，程序会自动获取。只有任务进度长时间无数据时再按下面处理。\n\n"
+                "房间号怎么填\n"
+                "1. 打开 B 站直播间链接。\n"
+                "2. 复制 live.bilibili.com/ 后面的数字。\n"
+                "3. 例如 https://live.bilibili.com/23612045?... 只填 23612045。\n\n"
+                "任务 ID 怎么找\n"
+                "1. 用浏览器登录 B 站，打开有掉宝任务的直播间或活动页。\n"
+                "2. 按 F12 打开开发者工具，切到“网络 / Network”。\n"
+                "3. 刷新页面，搜索 totalv2 或 task。\n"
+                "4. 找到 x/task/totalv2 请求后，复制 task_ids= 后面的内容。\n"
+                "5. 多个任务 ID 用英文逗号分隔，粘贴到本软件“任务 ID”输入框。\n\n"
+                "如果找不到 totalv2，可以在页面源码或网络响应里搜索 taskId。"
+            ),
+            width=600,
+            height=620,
         )
 
     def _show_onboarding_guide(self) -> tk.Toplevel:
@@ -3117,6 +3333,8 @@ class App(tk.Tk):
             self._log("当前已经在运行")
             return
 
+        for duplicate, kept in find_duplicate_active_accounts(config):
+            self._log(f"检测到同一 B 站账号：{duplicate} 已与 {kept} 合并，本次只启动一组")
         account_options = build_account_options(config)
         if not account_options:
             messagebox.showwarning("没有可用账号", "请至少勾选一个已保存且含 Cookie 的账号。")
@@ -3213,6 +3431,8 @@ class App(tk.Tk):
                 messagebox.showwarning("没有勾选账号", "请至少勾选一个要领奖的账号。")
                 return
             config = self._save()
+            for duplicate, kept in find_duplicate_active_accounts(config):
+                self._log(f"检测到同一 B 站账号：{duplicate} 已与 {kept} 合并，本次只处理一次")
             account_options = build_account_options(config)
             if not account_options:
                 messagebox.showwarning("没有可用账号", "请至少勾选一个已保存且含 Cookie 的账号。")
@@ -3247,7 +3467,7 @@ class App(tk.Tk):
 
     def _log_kind(self, message: str) -> str:
         _prefix, body = self._split_account_prefix(str(message))
-        if body.startswith(("房间 ", "后台计时状态", "后台计时 ", "上报进入直播间")):
+        if body.startswith(("房间 ", "后台计时状态", "观看连接", "后台计时 ", "上报进入直播间")):
             return "room"
         if "直播中" in body and "人气" in body:
             return "room"
@@ -3428,10 +3648,36 @@ class App(tk.Tk):
             self.progress_title_var.set(f"{count} 个奖励可领取")
             self.progress_detail_var.set("自动领取开启时会自动提交，也可以手动点击领取。")
             return
-        progress_match = re.search(r"(\d+(?:\.\d+)?)\s*/\s*(\d+(?:\.\d+)?)\s*分钟", text)
-        if progress_match:
-            current = float(progress_match.group(1))
-            target = max(float(progress_match.group(2)), 0.01)
+        progress_matches = [
+            (float(current), max(float(target), 0.01))
+            for current, target in re.findall(
+                r"(\d+(?:\.\d+)?)\s*/\s*(\d+(?:\.\d+)?)\s*分钟",
+                text,
+            )
+        ]
+        if not progress_matches:
+            compact_current_match = re.search(
+                r"当前[：:]\s*(\d+(?:\.\d+)?)\s*分钟",
+                text,
+            )
+            compact_pending_targets = [
+                float(target)
+                for target in re.findall(
+                    r"(?:█|░)+\s*(\d+(?:\.\d+)?)\s*分钟\s+还差\s+\d+(?:\.\d+)?\s*分钟",
+                    text,
+                )
+            ]
+            if compact_current_match and compact_pending_targets:
+                progress_matches.append((
+                    float(compact_current_match.group(1)),
+                    min(compact_pending_targets),
+                ))
+        if progress_matches:
+            pending_matches = [item for item in progress_matches if item[0] < item[1]]
+            if pending_matches:
+                current, target = min(pending_matches, key=lambda item: item[1])
+            else:
+                current, target = max(progress_matches, key=lambda item: item[1])
             ratio = min(max(current / target, 0.0), 1.0)
             percent = int(round(ratio * 100))
             self.progress_ring.set_state(text=f"{percent}%", caption="当前进度", value=ratio, color=SUCCESS if ratio >= 1 else ACCENT)
@@ -3701,7 +3947,7 @@ class App(tk.Tk):
                 self.watch_status_card.update_snapshot(snapshot, summary)
                 self._refresh_backend_summary(snapshot)
             else:
-                self.watch_status_card.update_snapshot([], "后台计时状态：未启动")
+                self.watch_status_card.update_snapshot([], "观看连接：未启动")
                 self._refresh_backend_summary([])
                 if self.watcher is not None and self.status_var.get() == "运行中":
                     self._set_status("未运行")

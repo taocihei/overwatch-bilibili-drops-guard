@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import tkinter as tk
 
@@ -264,7 +264,9 @@ class OnboardingGuideTest(_HiddenRootCase):
         toplevel = gui.build_onboarding_guide(self.root)
         try:
             self.assertIsInstance(toplevel, tk.Toplevel)
+            self.assertIsInstance(toplevel, gui.AppDialog)
             self.assertEqual(toplevel.title(), "上手指引")
+            self.assertEqual(int(toplevel.overrideredirect()), 1)
         finally:
             toplevel.destroy()
 
@@ -298,6 +300,106 @@ class OnboardingGuideTest(_HiddenRootCase):
         toplevel.destroy()
 
         self.assertFalse(toplevel.winfo_exists())
+
+
+class AppDialogTest(_HiddenRootCase):
+    def test_dialog_is_centered_and_supports_titlebar_dragging(self) -> None:
+        dialog = gui.AppDialog(self.root, title="测试弹窗", width=360, height=260)
+        try:
+            self.root.update()
+            original_x = dialog.winfo_x()
+            original_y = dialog.winfo_y()
+            dialog._begin_move(SimpleNamespace(x_root=original_x + 20, y_root=original_y + 20))  # type: ignore[arg-type]
+            dialog._move(SimpleNamespace(x_root=original_x + 60, y_root=original_y + 55))  # type: ignore[arg-type]
+            self.root.update_idletasks()
+
+            self.assertGreaterEqual(dialog.winfo_x(), original_x)
+            self.assertGreaterEqual(dialog.winfo_y(), original_y)
+            self.assertIs(dialog.content.master, dialog.winfo_children()[0])
+        finally:
+            dialog.destroy()
+
+
+class SponsorDialogFlowTest(unittest.TestCase):
+    def test_default_amount_automatically_requests_qr_without_generate_button(self) -> None:
+        app = gui.App(preview_mode=True)
+        app.withdraw()
+        start_order = MagicMock()
+        app._start_sponsor_order = start_order  # type: ignore[method-assign]
+        try:
+            with patch.object(gui.AppDialog, "_show_centered"):
+                dialog = app._show_sponsor_dialog()
+                dialog.after(220, dialog.quit)
+                dialog.mainloop()
+
+            texts: list[str] = []
+
+            def collect(widget: tk.Misc) -> None:
+                for child in widget.winfo_children():
+                    text = getattr(child, "text", "")
+                    if text:
+                        texts.append(str(text))
+                    try:
+                        configured = child.cget("text")
+                    except tk.TclError:
+                        configured = ""
+                    if configured:
+                        texts.append(str(configured))
+                    collect(child)
+
+            collect(dialog)
+            start_order.assert_called_once_with()
+            self.assertNotIn("生成赞助二维码", texts)
+        finally:
+            app._close_sponsor_dialog()
+            app.destroy()
+
+    def test_selecting_another_amount_refreshes_chips_and_order(self) -> None:
+        amount_var = MagicMock()
+        amount_var.get.return_value = "6.00"
+        buttons = {amount: MagicMock() for amount in ("3.00", "6.00", "10.00")}
+        app = SimpleNamespace(
+            _sponsor_amount_var=amount_var,
+            _sponsor_order=object(),
+            _sponsor_amount_buttons=buttons,
+            _start_sponsor_order=MagicMock(),
+        )
+
+        gui.App._select_sponsor_amount(app, "10.00")
+
+        amount_var.set.assert_called_once_with("10.00")
+        app._start_sponsor_order.assert_called_once_with()
+        self.assertEqual(buttons["10.00"].outline, gui.ACCENT_BORDER)
+        self.assertEqual(buttons["6.00"].outline, gui.SUBTLE_OUTLINE)
+
+    def test_refreshing_amount_resets_qr_label_to_text_dimensions(self) -> None:
+        amount_var = MagicMock()
+        amount_var.get.return_value = "10.00"
+        qr_label = MagicMock()
+        app = SimpleNamespace(
+            _sponsor_dialog_exists=MagicMock(return_value=True),
+            _cancel_sponsor_poll=MagicMock(),
+            _hide_sponsor_retry=MagicMock(),
+            _sponsor_loading=False,
+            _sponsor_generation=3,
+            _sponsor_amount_var=amount_var,
+            _sponsor_order=object(),
+            _sponsor_success_shown=True,
+            _sponsor_success_frame=MagicMock(),
+            _sponsor_status_var=MagicMock(),
+            _sponsor_qr_label=qr_label,
+        )
+
+        with patch.object(gui.threading, "Thread"):
+            gui.App._start_sponsor_order(app)
+
+        qr_label.configure.assert_called_once_with(
+            image="",
+            text="正在生成 ¥10 二维码…",
+            fg=gui.ACCENT,
+            width=28,
+            height=12,
+        )
 
 
 if __name__ == "__main__":

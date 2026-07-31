@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import unittest
 
-from bili_drop_guard import watcher as watcher_module
 from bili_drop_guard.bilibili import RoomInfo
 from bili_drop_guard.watcher import HeartbeatState, LiveWatcher, WatchOptions
 
@@ -82,8 +81,6 @@ class WorkerStaggerTest(unittest.TestCase):
         live_watcher = LiveWatcher(WatchOptions(cookie="a=b", room_id="1"), lambda _m: None)
         live_watcher._stop.set()  # 立刻停，避免进入心跳循环
         wait_calls: list[float] = []
-        original_wait = live_watcher._stop.wait
-
         def recording_wait(timeout=None):
             wait_calls.append(float(timeout) if timeout is not None else -1.0)
             return True

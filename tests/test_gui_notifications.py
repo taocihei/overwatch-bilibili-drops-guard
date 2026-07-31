@@ -246,6 +246,34 @@ class ProgressVisualRoutingTest(unittest.TestCase):
         self.assertEqual(app.progress_title_var.get(), "257 / 300 分钟")
         self.assertTrue(app._progress_terminal)
 
+    def test_multi_reward_progress_selects_next_unfinished_target(self) -> None:
+        app = self._app()
+
+        gui.App._sync_progress_visual(
+            app,
+            "7月31日｜观看直播60分钟：84 / 60 分钟，已完成\n"
+            "7月31日｜观看直播120分钟：84 / 120 分钟，还差 36 分钟\n"
+            "7月31日｜观看直播180分钟：84 / 180 分钟，还差 96 分钟",
+        )
+
+        self.assertEqual(app.progress_title_var.get(), "84 / 120 分钟")
+        self.assertEqual(app.reward_detail_var.get(), "还差 36 分钟")
+
+    def test_compact_multi_reward_progress_uses_confirmed_current_minutes(self) -> None:
+        app = self._app()
+
+        gui.App._sync_progress_visual(
+            app,
+            "当前可挂：7月31日，共 5 个奖励\n"
+            "观看直播（当前：84 分钟）\n"
+            "  ████████████████████   60 分钟  ✓ 待领取\n"
+            "  ██████████████░░░░░░  120 分钟  还差 36 分钟\n"
+            "  █████████░░░░░░░░░░░  180 分钟  还差 96 分钟",
+        )
+
+        self.assertEqual(app.progress_title_var.get(), "84 / 120 分钟")
+        self.assertEqual(app.reward_detail_var.get(), "还差 36 分钟")
+
     def test_task_progress_failure_is_waiting_not_claim_failure(self) -> None:
         app = self._app()
 

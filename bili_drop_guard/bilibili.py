@@ -765,6 +765,7 @@ def _activity_checkpoint_tasks(
         return []
 
     parent_name = str(task.get("taskName") or task.get("task_name") or "").strip()
+    parent_indicator = _first_dict(task.get("indicators"))
     flattened: list[dict[str, Any]] = []
     for checkpoint in checkpoints:
         if not isinstance(checkpoint, dict):
@@ -779,6 +780,11 @@ def _activity_checkpoint_tasks(
         if not task_id:
             continue
         progress = _first_dict(checkpoint.get("list"))
+        # totalv2 的父任务 indicators[0].cur_value 是页面刷新按钮展示的权威观看分钟数。
+        # checkpoint.list 主要提供各档目标；旧缓存可能仍带较小的 cur_value，不能覆盖父任务实时值。
+        current_value = parent_indicator.get("cur_value")
+        if current_value is None:
+            current_value = progress.get("cur_value")
         task_name = str(checkpoint.get("alias") or parent_name or task_id).strip()
         award_name = str(
             checkpoint.get("awardname")
@@ -793,7 +799,7 @@ def _activity_checkpoint_tasks(
             "task_name": task_name,
             "award_name": award_name,
             "award_sid": checkpoint.get("awardsid") or checkpoint.get("award_sid") or "",
-            "current": progress.get("cur_value"),
+            "current": current_value,
             "target": progress.get("limit"),
             "task_status": checkpoint.get("status"),
             "group_label": group_label,

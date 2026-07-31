@@ -85,14 +85,15 @@ class LiveWatcher:
         self._last_watch_status_summary = ""
         self._last_watch_status_log_at = 0.0
         self._heartbeat_count = 0
-        self._heartbeat_seconds = 0.0
         self._watch_started_at = 0.0
+        self._watch_stopped_at = 0.0
         self._last_detected_log_at = 0.0
         self._last_room_log_key = ""
         self._last_room_log_at = 0.0
         self._last_task_summary = ""
         self._last_task_summary_at = 0.0
         self._last_task_progress_score = 0.0
+        self._last_task_progress_signature: tuple[str, ...] = ()
         self._last_task_waiting_log_at = 0.0
         self._manual_refresh_thread: Optional[threading.Thread] = None
         self._rediscover_thread: Optional[threading.Thread] = None
@@ -110,11 +111,17 @@ class LiveWatcher:
             self.log("已经在运行中")
             return
         self._stop.clear()
-        self._watch_started_at = time.time()
+        with self._watch_status_lock:
+            self._heartbeat_count = 0
+            self._watch_started_at = 0.0
+            self._watch_stopped_at = 0.0
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
 
     def stop(self) -> None:
+        with self._watch_status_lock:
+            if self._watch_started_at and not self._watch_stopped_at:
+                self._watch_stopped_at = time.time()
         self._stop.set()
         self.log("已请求停止")
 
@@ -199,11 +206,20 @@ class LiveWatcher:
                         self._start_watch_threads(room)
                         watch_started = True
 
-                    if self.options.auto_claim and room.anchor_uid:
-                        found_live_claimable = self._check_and_claim_task(client, room.anchor_uid)
+                    if room.anchor_uid:
+                        # 任务发现和 B 站真实分钟数必须始终刷新；auto_claim 只控制是否提交领取。
                         found_activity_claimable = self._check_activity_task_progress(client)
+                        with self._claim_lock:
+                            has_activity_tasks = bool(self._activity_task_ids)
+                        found_live_claimable = (
+                            False
+                            if has_activity_tasks
+                            else self._check_and_claim_task(client, room.anchor_uid)
+                        )
                         found_explicit_claimable = self._check_explicit_task_ids(room.anchor_uid)
-                        if found_live_claimable or found_activity_claimable or found_explicit_claimable:
+                        if self.options.auto_claim and (
+                            found_live_claimable or found_activity_claimable or found_explicit_claimable
+                        ):
                             self._start_auto_claim_thread()
                 except Exception as exc:
                     self.log(f"守护循环异常：{exc}")
@@ -284,8 +300,8 @@ class LiveWatcher:
                 interval_text = f"，下一次约 {min_interval} 秒后"
             else:
                 interval_text = f"，下一次约 {min_interval}-{max_interval} 秒后"
-        heartbeat_text = f"，累计计时 {heartbeat_count} 次" if heartbeat_count else ""
-        return f"后台计时状态：{'，'.join(parts)}{interval_text}{heartbeat_text}", normal_count, failed_count + waiting_count
+        heartbeat_text = f"，心跳成功 {heartbeat_count} 次" if heartbeat_count else ""
+        return f"观看连接：{'，'.join(parts)}{interval_text}{heartbeat_text}", normal_count, failed_count + waiting_count
 
     def _log_watch_status_summary(self, *, force: bool = False) -> None:
         summary, _normal_count, problem_count = self._watch_status_summary_info()
@@ -344,20 +360,15 @@ class LiveWatcher:
         return float((worker_id - 1) // WATCH_START_BATCH_SIZE)
 
     def _record_heartbeat(self, interval: int | float | None = None) -> None:
-        """累计一次成功的后台计时心跳，用于实时反映「真的有多少路在计时」。"""
-        try:
-            seconds = max(10.0, float(interval or 60))
-        except (TypeError, ValueError):
-            seconds = 60.0
+        """Record connection health only; accepted HTTP heartbeats are not credited minutes."""
         with self._watch_status_lock:
+            if not self._watch_started_at:
+                self._watch_started_at = time.time()
             self._heartbeat_count += 1
-            self._heartbeat_seconds += seconds
 
     def get_local_watch_estimate_minutes(self) -> float:
-        """Best-effort local estimate used when Bilibili has not synced task minutes."""
-        with self._watch_status_lock:
-            submitted_minutes = self._heartbeat_seconds / 60.0
-        return max(self._watch_elapsed_minutes(), submitted_minutes)
+        """Actual local wall-clock time since the first successful watch heartbeat."""
+        return self._watch_elapsed_minutes()
 
     def _heartbeat_watch_worker(self, worker_id: int, room: RoomInfo | None) -> None:
         # 先确定本会话的设备身份并构造客户端，让每个 worker 都有独立 cookie 和 buvid。
@@ -695,6 +706,7 @@ class LiveWatcher:
             self._claimable_task_ids.difference_update(stale_task_ids)
             self._last_task_summary = ""
             self._last_task_progress_score = 0.0
+            self._last_task_progress_signature = ()
         self.log("当前直播页没有本次活动任务，已清空旧任务缓存")
 
     def _is_no_activity_task_error(self, exc: Exception) -> bool:
@@ -739,7 +751,19 @@ class LiveWatcher:
         task_nodes = self._iter_task_nodes(progress)
         if summary:
             progress_score = self._task_summary_progress_score(progress)
-            if self._should_defer_zero_task_summary(progress, claimable_tasks, progress_score, now):
+            progress_signature = self._task_progress_signature(progress)
+            if progress_signature != self._last_task_progress_signature:
+                self._last_task_progress_signature = progress_signature
+                self._last_task_progress_score = 0.0
+            progress_went_backwards = (
+                bool(progress_signature)
+                and self._last_task_progress_score > 0
+                and progress_score < self._last_task_progress_score
+                and not claimable_tasks
+            )
+            if progress_went_backwards:
+                self._log_task_waiting_progress("B 站进度暂时延迟，继续保留上次已确认分钟数")
+            elif self._should_defer_zero_task_summary(progress, claimable_tasks, progress_score, now):
                 detected_summary = self._summarize_detected_tasks(progress)
                 if detected_summary and detected_summary != self._last_task_summary:
                     self._last_task_summary = detected_summary
@@ -841,11 +865,25 @@ class LiveWatcher:
                 continue
         return score
 
+    def _task_progress_signature(self, progress: dict[str, Any]) -> tuple[str, ...]:
+        nodes = sorted(self._iter_task_nodes(progress), key=self._task_sort_key)
+        nodes, group_label, _hidden_count = self._focus_task_nodes(nodes)
+        identities = [
+            self._task_id_from_node(node) or self._task_display_name(node)
+            for node in nodes
+            if not self._skip_task_summary_node(node)
+        ]
+        return tuple([group_label, *identities])
+
     def _watch_elapsed_minutes(self) -> float:
-        """本地实际运行时长（分钟）。"""
-        if not self._watch_started_at:
+        """本地首个成功心跳后的实际墙钟时长（分钟），停止后冻结。"""
+        with self._watch_status_lock:
+            started_at = self._watch_started_at
+            stopped_at = self._watch_stopped_at
+        if not started_at:
             return 0.0
-        return max(0.0, (time.time() - self._watch_started_at) / 60.0)
+        ended_at = stopped_at or time.time()
+        return max(0.0, (ended_at - started_at) / 60.0)
 
     def _local_task_status_text(self, node: dict[str, Any], target_value: float) -> str:
         if self._node_received(node):

@@ -1,27 +1,61 @@
 from __future__ import annotations
 
+import hashlib
 import threading
 from typing import Callable
 
+from .bilibili import parse_cookie_header
 from .config import AppConfig, parse_task_ids
 from .watcher import LiveWatcher, WatchOptions, WatchWorkerStatus
 
 
 LogSink = Callable[[str], None]
+DuplicateAccountSink = Callable[[str, str], None]
 ACCOUNT_START_STAGGER_SECONDS = 2.0
 
 
-def build_account_options(config: AppConfig) -> list[tuple[str, WatchOptions]]:
+def _account_identity(cookie: str) -> str:
+    """Return a privacy-safe identity used to collapse aliases of one Bilibili account."""
+
+    normalized_cookie = str(cookie or "").strip()
+    try:
+        parsed = parse_cookie_header(normalized_cookie)
+    except Exception:
+        parsed = {}
+    user_id = str(parsed.get("DedeUserID") or "").strip()
+    if user_id:
+        return f"uid:{user_id}"
+    auth_material = "\x1f".join(
+        str(parsed.get(key) or "").strip()
+        for key in ("SESSDATA", "bili_jct")
+    )
+    if auth_material.strip("\x1f"):
+        return "auth:" + hashlib.sha256(auth_material.encode("utf-8")).hexdigest()
+    return "cookie:" + hashlib.sha256(normalized_cookie.encode("utf-8")).hexdigest()
+
+
+def build_account_options(
+    config: AppConfig,
+    on_duplicate: DuplicateAccountSink | None = None,
+) -> list[tuple[str, WatchOptions]]:
     """把配置展开成「每个勾选账号一组 WatchOptions」。active_accounts 为空表示未选择。"""
     active = set(config.active_accounts or [])
     if not active:
         return []
     pairs: list[tuple[str, WatchOptions]] = []
+    identity_names: dict[str, str] = {}
     for account in config.accounts:
         if account.name not in active:
             continue
         if not account.cookie:
             continue
+        identity = _account_identity(account.cookie)
+        kept_name = identity_names.get(identity)
+        if kept_name is not None:
+            if on_duplicate is not None:
+                on_duplicate(account.name, kept_name)
+            continue
+        identity_names[identity] = account.name
         options = WatchOptions(
             cookie=account.cookie,
             room_id=config.room_id,
@@ -32,6 +66,14 @@ def build_account_options(config: AppConfig) -> list[tuple[str, WatchOptions]]:
         )
         pairs.append((account.name, options))
     return pairs
+
+
+def find_duplicate_active_accounts(config: AppConfig) -> list[tuple[str, str]]:
+    """Return ``(duplicate_name, kept_name)`` without exposing account credentials."""
+
+    duplicates: list[tuple[str, str]] = []
+    build_account_options(config, lambda duplicate, kept: duplicates.append((duplicate, kept)))
+    return duplicates
 
 
 class MultiAccountWatcher:
@@ -54,7 +96,14 @@ class MultiAccountWatcher:
         self._start_thread: threading.Thread | None = None
         self._claim_thread: threading.Thread | None = None
         self._children: list[tuple[str, object]] = []
+        identity_names: dict[str, str] = {}
         for name, options in account_options:
+            identity = _account_identity(options.cookie)
+            kept_name = identity_names.get(identity)
+            if kept_name is not None:
+                self._log(f"检测到同一 B 站账号：{name} 已与 {kept_name} 合并，本次只启动一组")
+                continue
+            identity_names[identity] = name
             child = watcher_factory(options, self._make_child_log(name))
             self._children.append((name, child))
 
@@ -136,22 +185,22 @@ class MultiAccountWatcher:
                     interval=child_row.interval,
                     message="：".join(message_parts),
                 ))
-        summary = f"多账号并行：{len(self._children)} 个账号，后台计时状态：{normal_routes}/{total_routes} 路正常"
+        summary = f"多账号并行：{len(self._children)} 个账号，观看连接：{normal_routes}/{total_routes} 路正常"
         if next_intervals:
             summary += f"，下一次约 {min(next_intervals)} 秒后"
         return rows, summary
 
     def get_local_watch_estimate_minutes(self) -> float:
-        total = 0.0
+        estimates: list[float] = []
         for _name, child in self._children:
             getter = getattr(child, "get_local_watch_estimate_minutes", None)
             if not callable(getter):
                 continue
             try:
-                total += max(0.0, float(getter()))
+                estimates.append(max(0.0, float(getter())))
             except (TypeError, ValueError):
                 continue
-        return total
+        return max(estimates, default=0.0)
 
     def claim_completed_tasks(self) -> None:
         with self._claim_lock:
