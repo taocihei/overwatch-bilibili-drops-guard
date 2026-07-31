@@ -1033,7 +1033,7 @@ def build_onboarding_guide(parent: tk.Misc) -> tk.Toplevel:
     steps = (
         ("01", "获取 Cookie", "点“自动获取 Cookie”，在弹出的 Edge/Chrome 里登录 B 站即可。"),
         ("02", "确认直播间", "默认 23612045 即可。要换直播间就粘贴链接，会自动保存成房间号。"),
-        ("03", "开始计时", "点“开始挂宝”。后台计时不会弹直播窗口。可调整“后台观看线程数”加速累计时长。"),
+        ("03", "开始计时", "点“开始挂宝”。后台计时不会弹直播窗口；连接数只表示请求连接，实际分钟数以 B 站返回为准。"),
         ("04", "领取奖励", "“自动领奖”开启时会按顺序领；也可手动点“领取奖励”。看右侧“任务进度”确认状态。"),
     )
     for number, title, detail in steps:
@@ -1114,6 +1114,34 @@ def build_text_dialog(
     return top
 
 
+def build_confirmation_dialog(
+    parent: tk.Misc,
+    *,
+    title: str,
+    heading: str,
+    body: str,
+    confirm_text: str,
+    on_confirm: Callable[[], None],
+) -> tk.Toplevel:
+    """显示与主界面一致的确认弹窗，避免使用系统 messagebox。"""
+
+    top = AppDialog(parent, title=title, width=460, height=260, modal=True)
+    container = tk.Frame(top.content, bg=APP_BG, padx=24, pady=20)
+    container.pack(fill="both", expand=True)
+    container.columnconfigure(0, weight=1)
+
+    tk.Label(container, text=heading, bg=APP_BG, fg=TEXT, font=("Microsoft YaHei UI", 15, "bold")).grid(row=0, column=0, columnspan=2, sticky="w")
+    tk.Label(container, text=body, bg=APP_BG, fg=MUTED, font=("Microsoft YaHei UI", 10), wraplength=400, justify="left").grid(row=1, column=0, columnspan=2, sticky="ew", pady=(10, 20))
+
+    def confirm() -> None:
+        top.request_close()
+        on_confirm()
+
+    LabelButton(container, "取消", top.request_close, fill=SECONDARY, foreground=TEXT, active_fill=SECONDARY_ACTIVE, height=36, width=104, radius=11, outline=SUBTLE_OUTLINE).grid(row=2, column=0, sticky="e", padx=(0, 8))
+    LabelButton(container, confirm_text, confirm, fill=DANGER_BG, foreground=DANGER, active_fill="#ffe4e6", height=36, width=104, radius=11, outline="#fecdd3").grid(row=2, column=1, sticky="e")
+    return top
+
+
 class App(tk.Tk):
     def __init__(self, *, preview_mode: bool = False) -> None:
         super().__init__()
@@ -1151,6 +1179,11 @@ class App(tk.Tk):
         self.cookie_var = tk.StringVar(value=self.config_data.cookie)
         self.selected_account_var = tk.StringVar(value=self.config_data.account_name)
         self.account_name_var = tk.StringVar(value=self.config_data.account_name)
+        self.editing_account_name: str | None = (
+            self.config_data.account_name
+            if any(account.name == self.config_data.account_name for account in self.config_data.accounts)
+            else None
+        )
         self.account_checks: dict[str, tk.BooleanVar] = {}
         self.notify_url_var = tk.StringVar(value=self.config_data.notify_url)
         self.room_var = tk.StringVar(value=self.config_data.room_id)
@@ -1309,7 +1342,7 @@ class App(tk.Tk):
         label_font = ("Microsoft YaHei UI", 9, "bold")
         label_pady = (0, 6)
         tk.Label(controls, text="直播间房号", bg=HEADER_BG, fg=TEXT, font=label_font).grid(row=0, column=0, sticky="sw", padx=(0, 22), pady=label_pady)
-        tk.Label(controls, text="观看线程", bg=HEADER_BG, fg=TEXT, font=label_font).grid(row=0, column=1, sticky="sw", padx=(0, 22), pady=label_pady)
+        tk.Label(controls, text="观看连接", bg=HEADER_BG, fg=TEXT, font=label_font).grid(row=0, column=1, sticky="sw", padx=(0, 22), pady=label_pady)
         tk.Label(controls, text="自动领取", bg=HEADER_BG, fg=TEXT, font=label_font).grid(row=0, column=2, sticky="sw", padx=(0, 24), pady=label_pady)
         tk.Label(controls, text="操作", bg=HEADER_BG, fg=TEXT, font=label_font).grid(row=0, column=3, sticky="sw", padx=(0, 14), pady=label_pady)
         tk.Label(controls, text="状态", bg=HEADER_BG, fg=TEXT, font=label_font).grid(row=0, column=4, sticky="sw", pady=label_pady)
@@ -1645,7 +1678,7 @@ class App(tk.Tk):
             row=1,
             column=1,
             title="直播与任务",
-            subtitle="后台观看线程用于并行累计时长；领奖请求固定由一个线程提交。",
+            subtitle="连接数表示独立观看请求；B 站可能合并入账，真实分钟数以任务进度为准。",
             sticky="nsew",
             subtitle_wrap=310,
             padx=(14, 0),
@@ -1670,7 +1703,7 @@ class App(tk.Tk):
         room_entry.grid(row=0, column=0, sticky="ew")
 
         ttk.Label(card, text="检查间隔（秒）", style="Body.TLabel").grid(row=4, column=0, sticky="w")
-        ttk.Label(card, text=f"观看线程数 (最多 {MAX_WATCH_THREADS})", style="Body.TLabel").grid(row=4, column=1, sticky="w", padx=(14, 0))
+        ttk.Label(card, text=f"观看连接数 (最多 {MAX_WATCH_THREADS})", style="Body.TLabel").grid(row=4, column=1, sticky="w", padx=(14, 0))
 
         NumberInput(card, self.interval_var, minimum=MIN_CHECK_INTERVAL, maximum=MAX_CHECK_INTERVAL).grid(row=5, column=0, sticky="ew", pady=(6, 6))
         NumberInput(card, self.watch_threads_var, minimum=1, maximum=MAX_WATCH_THREADS).grid(row=5, column=1, sticky="ew", padx=(14, 0), pady=(6, 6))
@@ -2099,6 +2132,7 @@ class App(tk.Tk):
         status_cell.grid(row=0, column=1, sticky="nsew", padx=12)
         status_pane = status_cell.inner
         status_pane.columnconfigure(0, weight=1)
+        status_pane.columnconfigure(1, weight=0)
         self._section_title(status_pane, "运行状态", "status", background=SURFACE).grid(row=0, column=0, sticky="w")
         status_grid = tk.Frame(status_pane, bg=SURFACE, highlightthickness=0, borderwidth=0)
         status_grid.grid(row=1, column=0, sticky="ew", pady=(10, 0))
@@ -2113,7 +2147,20 @@ class App(tk.Tk):
             tk.Label(status_grid, text=label, bg=SURFACE, fg=MUTED, font=("Microsoft YaHei UI", 9)).grid(row=index, column=1, sticky="w", padx=(8, 0), pady=3)
             tk.Label(status_grid, textvariable=variable, bg=SURFACE, fg=MUTED, font=("Microsoft YaHei UI", 8, "bold")).grid(row=index, column=2, sticky="e", pady=3)
         self.watch_status_card = WatchStatusCard(status_pane, background=SURFACE)
-        self.watch_status_card.grid(row=2, column=0, sticky="ew", pady=(8, 0))
+        # 完整连接卡在默认高度会被裁切；主卡只放可达入口，详细状态统一在应用内弹窗显示。
+        LabelButton(
+            status_pane,
+            "连接详情",
+            self.watch_status_card.show_detail_window,
+            fill=SECONDARY,
+            foreground=ACCENT,
+            active_fill=SECONDARY_ACTIVE,
+            height=26,
+            width=70,
+            font=("Microsoft YaHei UI", 8, "bold"),
+            radius=9,
+            outline=SUBTLE_OUTLINE,
+        ).grid(row=0, column=1, sticky="e")
 
         reward_cell = RoundedPanel(overview, fill=SURFACE, background=GLASS, radius=16, padding=(14, 14), min_height=176, outline=SUBTLE_OUTLINE, shadow=False, auto_height=False)
         reward_cell.grid(row=0, column=2, sticky="nsew", padx=(12, 0))
@@ -2387,9 +2434,16 @@ class App(tk.Tk):
     def _current_config(self) -> AppConfig:
         active_accounts = [name for name, var in self.account_checks.items() if var.get()]
         editing = self.account_name_var.get().strip()
+        original_name = self.__dict__.get("editing_account_name")
         if editing and editing not in self.account_checks:
-            # 新保存的账号默认参与并行
-            active_accounts.append(editing)
+            if original_name in self.account_checks:
+                # 改名时沿用原账号的勾选状态，而不是无条件重新勾选。
+                if self.account_checks[original_name].get():
+                    active_accounts.append(editing)
+                active_accounts = [name for name in active_accounts if name != original_name]
+            else:
+                # 新保存的账号默认参与挂机。
+                active_accounts.append(editing)
         return sanitize_config(AppConfig(
             cookie=self.cookie_text.get("1.0", "end").strip(),
             account_name=self.account_name_var.get().strip() or "默认账号",
@@ -2551,7 +2605,8 @@ class App(tk.Tk):
         elif any("等待" in state for state in states):
             self.backend_network_var.set("等待开播")
         elif any("正常" in state for state in states):
-            self.backend_network_var.set("正常")
+            accepted = sum(1 for row in rows if row.state == "正常")
+            self.backend_network_var.set(f"{accepted}/{len(rows)} 已接受")
         else:
             self.backend_network_var.set("检查中")
 
@@ -3128,12 +3183,13 @@ class App(tk.Tk):
     def _accounts_with_current_cookie(self) -> list[AccountProfile]:
         account_name = self.account_name_var.get().strip() or "默认账号"
         cookie = self.cookie_text.get("1.0", "end").strip()
+        original_name = self.__dict__.get("editing_account_name")
         accounts: list[AccountProfile] = []
         replaced = False
         for account in self.config_data.accounts:
-            if account.name == account_name:
-                if cookie:
-                    accounts.append(AccountProfile(name=account_name, cookie=cookie))
+            if original_name and account.name == original_name:
+                # 清空编辑框只表示尚未完成编辑，不能把已保存账号静默删除。
+                accounts.append(AccountProfile(name=account_name, cookie=cookie or account.cookie))
                 replaced = True
             else:
                 accounts.append(AccountProfile(name=account.name, cookie=account.cookie))
@@ -3181,7 +3237,8 @@ class App(tk.Tk):
                 bd=0,
                 font=("Microsoft YaHei UI", 10),
             ).grid(row=0, column=0, sticky="ew")
-            is_current = name == self.account_name_var.get().strip()
+            editing_name = self.__dict__.get("editing_account_name", self.account_name_var.get().strip())
+            is_current = name == editing_name
             LabelButton(
                 row,
                 "正在编辑" if is_current else "编辑",
@@ -3195,9 +3252,23 @@ class App(tk.Tk):
                 radius=9,
                 outline=SUBTLE_OUTLINE,
             ).grid(row=0, column=1, sticky="e", padx=(8, 0))
+            if any(account.name == name for account in self.config_data.accounts):
+                LabelButton(
+                    row,
+                    "删除",
+                    lambda n=name: self._delete_account(n),
+                    fill=DANGER_BG,
+                    foreground=DANGER,
+                    active_fill="#ffe4e6",
+                    height=24,
+                    width=46,
+                    font=("Microsoft YaHei UI", 8, "bold"),
+                    radius=9,
+                    outline="#fecdd3",
+                ).grid(row=0, column=2, sticky="e", padx=(6, 0))
 
     def _refresh_account_selector(self) -> None:
-        if hasattr(self, "_account_check_frame"):
+        if "_account_check_frame" in self.__dict__:
             self._build_account_checklist()
 
     def _saved_cookie_for(self, name: str) -> str:
@@ -3220,15 +3291,19 @@ class App(tk.Tk):
         self._log(f"{'已勾选' if checked else '已取消'}账号参与挂机：{name}")
 
     def _select_account_for_edit(self, name: str) -> None:
-        current = self.account_name_var.get().strip()
+        current = self.__dict__.get("editing_account_name", self.account_name_var.get().strip())
         editor = self.cookie_text.get("1.0", "end").strip()
         if name == current:
             self._log(f"正在编辑账号：{name}")
             self.cookie_text.focus_set()
             return
-        if current and editor and editor != self._saved_cookie_for(current):
+        if current and editor and (
+            editor != self._saved_cookie_for(current)
+            or self.account_name_var.get().strip() != current
+        ):
             saved = self._save()
             self._log(f"已先保存当前账号：{saved.account_name}")
+        self.editing_account_name = name
         self.account_name_var.set(name)
         self.cookie_text.delete("1.0", "end")
         self.cookie_text.insert("1.0", self._saved_cookie_for(name))
@@ -3240,31 +3315,75 @@ class App(tk.Tk):
         self._log(f"当前编辑账号：{name}")
 
     def _new_account(self) -> None:
-        current = self.account_name_var.get().strip()
+        current = self.__dict__.get("editing_account_name", self.account_name_var.get().strip())
         editor = self.cookie_text.get("1.0", "end").strip()
-        if current and editor and editor != self._saved_cookie_for(current):
+        if current and editor and (
+            editor != self._saved_cookie_for(current)
+            or self.account_name_var.get().strip() != current
+        ):
             saved = self._save()
             self._log(f"已先保存当前账号：{saved.account_name}")
         name = self._next_account_name()
+        self.editing_account_name = None
         self.account_name_var.set(name)
         self.cookie_text.delete("1.0", "end")
         if hasattr(self, "cookie_validation_var"):
             self.cookie_validation_var.set("Cookie 未填写")
         self._refresh_cookie_placeholder()
         self._refresh_summary_bar()
+        self._refresh_account_selector()
         self._log(f"已新建账号编辑位：{name}；请获取或粘贴 Cookie 后点击保存账号")
 
     def _save_account(self) -> None:
+        name = self.account_name_var.get().strip()
+        cookie = self.cookie_text.get("1.0", "end").strip()
+        if not name:
+            self._log("账号名称不能为空")
+            self.account_name_var.set(self.__dict__.get("editing_account_name") or self._next_account_name())
+            return
+        if not cookie:
+            self.cookie_validation_var.set("Cookie 未填写")
+            self._log("保存失败：Cookie 为空；如需移除账号请点击该账号右侧的“删除”")
+            self.cookie_text.focus_set()
+            return
+        original_name = self.__dict__.get("editing_account_name")
+        if any(account.name == name and account.name != original_name for account in self.config_data.accounts):
+            self._log(f"保存失败：账号名称“{name}”已存在")
+            return
         self._save()
+        self.editing_account_name = self.config_data.account_name
+        self._refresh_account_selector()
         self._log(f"账号已保存：{self.config_data.account_name}")
 
-    def _delete_account(self) -> None:
-        name = self.account_name_var.get().strip()
+    def _delete_account(self, name: str | None = None) -> None:
+        target_name = (name or self.account_name_var.get()).strip()
+        if not any(account.name == target_name for account in self.config_data.accounts):
+            self._log("没有可删除的账号")
+            return
+        build_confirmation_dialog(
+            self,
+            title="删除账号",
+            heading=f"删除“{target_name}”？",
+            body="只会删除本机保存的账号名称和 Cookie，不会影响 B 站账号本身。",
+            confirm_text="确认删除",
+            on_confirm=lambda: self._perform_delete_account(target_name),
+        )
+
+    def _perform_delete_account(self, name: str) -> None:
         accounts = [account for account in self.config_data.accounts if account.name != name]
         if len(accounts) == len(self.config_data.accounts):
             self._log("没有可删除的账号")
             return
-        next_account = accounts[0] if accounts else AccountProfile()
+        current_name = self.__dict__.get("editing_account_name")
+        if current_name == name:
+            original_names = [account.name for account in self.config_data.accounts]
+            deleted_index = original_names.index(name)
+            next_account = accounts[min(deleted_index, len(accounts) - 1)] if accounts else AccountProfile()
+        else:
+            next_account = next(
+                (account for account in accounts if account.name == current_name),
+                accounts[0] if accounts else AccountProfile(),
+            )
         surviving = {account.name for account in accounts}
         active_accounts = [n for n, var in self.account_checks.items() if var.get() and n in surviving]
         config = sanitize_config(AppConfig(
@@ -3281,11 +3400,15 @@ class App(tk.Tk):
         ))
         save_config(config)
         self.config_data = config
+        self.editing_account_name = config.account_name if accounts else None
         self.selected_account_var.set(config.account_name)
         self.account_name_var.set(config.account_name)
         self.cookie_text.delete("1.0", "end")
         self.cookie_text.insert("1.0", config.cookie)
+        self.cookie_validation_var.set("Cookie 已填写" if config.cookie else "Cookie 未填写")
+        self._refresh_cookie_placeholder()
         self._refresh_account_selector()
+        self._refresh_summary_bar()
         self._log(f"已删除账号：{name}")
 
     def _save(self) -> AppConfig:
@@ -3295,6 +3418,9 @@ class App(tk.Tk):
         self.room_var.set(config.room_id)
         self.selected_account_var.set(config.account_name)
         self.account_name_var.set(config.account_name)
+        self.editing_account_name = config.account_name if any(
+            account.name == config.account_name for account in config.accounts
+        ) else None
         self.notify_url_var.set(config.notify_url)
         if hasattr(self, "task_ids_text"):
             self.task_ids_text.delete("1.0", "end")
@@ -3328,7 +3454,7 @@ class App(tk.Tk):
 
         config = self._save()
         if requested_watch_threads != config.watch_threads:
-            self._log(f"后台观看线程数已调整为 {config.watch_threads}，当前版本最多支持 {MAX_WATCH_THREADS} 路")
+            self._log(f"观看连接数已调整为 {config.watch_threads}，当前版本最多支持 {MAX_WATCH_THREADS} 路")
         if self.watcher and self.watcher.running:
             self._log("当前已经在运行")
             return

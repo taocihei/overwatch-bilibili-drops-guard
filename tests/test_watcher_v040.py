@@ -21,7 +21,7 @@ class GetWatchStatusSnapshotTest(unittest.TestCase):
 
         self.assertEqual([row.worker_id for row in snapshot], [1, 2, 3, 4, 5])
         self.assertTrue(all(isinstance(row, WatchWorkerStatus) for row in snapshot))
-        self.assertIn("5/5 正常", summary)
+        self.assertIn("5/5 心跳已接受", summary)
 
     def test_snapshot_supports_one_hundred_workers(self) -> None:
         watcher = self._new_watcher(100)
@@ -31,7 +31,7 @@ class GetWatchStatusSnapshotTest(unittest.TestCase):
         self.assertEqual(len(snapshot), 100)
         self.assertEqual(snapshot[0].worker_id, 1)
         self.assertEqual(snapshot[-1].worker_id, 100)
-        self.assertIn("100/100 正常", summary)
+        self.assertIn("100/100 心跳已接受", summary)
 
     def test_snapshot_carries_interval_and_message(self) -> None:
         watcher = LiveWatcher(WatchOptions(cookie="a=b", room_id="1", watch_threads=2), lambda _m: None)

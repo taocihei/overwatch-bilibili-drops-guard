@@ -118,7 +118,7 @@ class WatcherEndToEndTest(unittest.TestCase):
         snapshot, summary = live_watcher.get_watch_status_snapshot()
         self.assertEqual(len(snapshot), 3)
         self.assertTrue(all(row.state == "正常" for row in snapshot), f"snapshot={snapshot}")
-        self.assertIn("3/3 正常", summary)
+        self.assertIn("3/3 心跳已接受", summary)
         client = self._client_holder["instance"]
         self.assertTrue(any(call.startswith("enter:") for call in client.heartbeat_calls))
 
