@@ -80,13 +80,6 @@ class LiveWatcherTest(unittest.TestCase):
         self.assertEqual(next_state.secret_key, "key")
         self.assertEqual(next_state.secret_rule, [1, 2])
 
-    def test_extract_web_heartbeat_interval_uses_next_interval(self) -> None:
-        live_watcher = LiveWatcher(WatchOptions(cookie="a=b", room_id="1"), lambda _message: None)
-
-        self.assertEqual(live_watcher._extract_web_heartbeat_interval({"next_interval": "45"}, 60), 45)
-        self.assertEqual(live_watcher._extract_web_heartbeat_interval({}, 60), 60)
-        self.assertEqual(live_watcher._extract_web_heartbeat_interval({"next_interval": "bad"}, 30), 30)
-
     def test_live_watch_uses_enter_and_in_room_heartbeat(self) -> None:
         calls: list[tuple[str, int]] = []
 
@@ -118,7 +111,7 @@ class LiveWatcherTest(unittest.TestCase):
         self.assertEqual(next_state.ets, 200)
         self.assertEqual(next_state.secret_key, "secret")
 
-    def test_live_watch_submits_page_heartbeat_alongside_x25kn(self) -> None:
+    def test_live_watch_uses_only_x25kn_without_legacy_page_heartbeat(self) -> None:
         calls: list[str] = []
 
         class FakeClient:
@@ -148,7 +141,7 @@ class LiveWatcherTest(unittest.TestCase):
         state = live_watcher._start_heartbeat_session(FakeClient(), room, watcher.HeartbeatState())
         live_watcher._continue_heartbeat_session(FakeClient(), room, 1, state)
 
-        self.assertEqual(calls, ["E", "WEB:23612045:30", "X1", "WEB:23612045:30"])
+        self.assertEqual(calls, ["E", "X1"])
 
     def test_claim_worker_uses_single_sequential_path(self) -> None:
         calls: list[tuple[int, str | None]] = []

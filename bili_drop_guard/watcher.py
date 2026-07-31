@@ -478,13 +478,6 @@ class LiveWatcher:
             secret_rule=raw_rule,
         )
 
-    def _extract_web_heartbeat_interval(self, data: dict[str, Any], fallback: int = 60) -> int:
-        value = data.get("next_interval") or data.get("heartbeat_interval") or data.get("interval") or fallback
-        try:
-            return max(10, int(value or fallback or 60))
-        except (TypeError, ValueError):
-            return max(10, int(fallback or 60))
-
     def _start_heartbeat_session(self, client: BilibiliClient, room: RoomInfo, fallback: HeartbeatState) -> HeartbeatState:
         # 先注册"进入直播间"动作，B 站才会把后续 x25Kn 心跳算到当前会话上。
         # 缺这一步是 v0.4.1 多路计时仍然只算一路的关键原因。
@@ -495,9 +488,7 @@ class LiveWatcher:
         except Exception:
             self._record_room_entry_failure()
         data = client.enter_room_heartbeat(room)
-        state = self._extract_heartbeat_state(data, fallback)
-        self._submit_page_heartbeat(client, room, state)
-        return state
+        return self._extract_heartbeat_state(data, fallback)
 
     def _record_room_entry_failure(self) -> None:
         # 每 N 次失败汇总写一条日志，避免 20 路同时报错刷屏。
@@ -523,25 +514,9 @@ class LiveWatcher:
                 secret_key=state.secret_key,
                 secret_rule=state.secret_rule,
             )
-            state = self._extract_heartbeat_state(data, state)
-            self._submit_page_heartbeat(client, room, state)
-            return state
+            return self._extract_heartbeat_state(data, state)
 
-        data = client.web_live_heartbeat(room.room_id, state.interval)
-        state.interval = self._extract_web_heartbeat_interval(data, state.interval)
-        return state
-
-    def _submit_page_heartbeat(self, client: BilibiliClient, room: RoomInfo, state: HeartbeatState) -> None:
-        """Send the light web page heartbeat that real live pages submit alongside x25Kn."""
-
-        heartbeat = getattr(client, "web_live_heartbeat", None)
-        if not callable(heartbeat):
-            return
-        try:
-            data = heartbeat(room.room_id, state.interval)
-        except Exception:
-            return
-        state.interval = self._extract_web_heartbeat_interval(data, state.interval)
+        raise RuntimeError("x25Kn 会话缺少签名参数，需要重新建立计时会话")
 
     def _start_auto_claim_thread(self) -> None:
         self._start_claim_thread(log_if_running=False)

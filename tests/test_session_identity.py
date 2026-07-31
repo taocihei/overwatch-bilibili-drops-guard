@@ -6,7 +6,6 @@ from bili_drop_guard import watcher as watcher_module
 from bili_drop_guard.bilibili import (
     BilibiliClient,
     RoomInfo,
-    make_session_cookie_overrides,
     make_session_buvid,
     make_session_device_uuid,
 )
@@ -21,13 +20,8 @@ COOKIE_WITH_BUVID = (
 
 
 class MakeSessionIdentityTest(unittest.TestCase):
-    def test_make_session_buvid_returns_uuid_with_infoc_suffix(self) -> None:
-        buvid = make_session_buvid()
-        self.assertTrue(buvid.endswith("infoc"), f"unexpected format: {buvid}")
-        prefix = buvid[: -len("infoc")]
-        # uuid string with 4 dashes
-        self.assertEqual(prefix.count("-"), 4)
-        self.assertEqual(prefix, prefix.upper())
+    def test_make_session_buvid_returns_live_buvid_shape(self) -> None:
+        self.assertRegex(make_session_buvid(), r"^AUTO\d{16}$")
 
     def test_make_session_buvid_is_unique_each_call(self) -> None:
         values = {make_session_buvid() for _ in range(50)}
@@ -36,85 +30,92 @@ class MakeSessionIdentityTest(unittest.TestCase):
     def test_make_session_device_uuid_is_unique_each_call(self) -> None:
         values = {make_session_device_uuid() for _ in range(50)}
         self.assertEqual(len(values), 50)
-
-    def test_make_session_cookie_overrides_refreshes_device_cookies(self) -> None:
-        overrides = make_session_cookie_overrides("MY-SESSION-BUVID", "device-1")
-
-        self.assertEqual(overrides["buvid3"], "MY-SESSION-BUVID")
-        self.assertIn("buvid4", overrides)
-        self.assertIn("buvid_fp", overrides)
-        self.assertIn("LIVE_BUVID", overrides)
-        self.assertIn("_uuid", overrides)
-        self.assertIn("b_lsid", overrides)
-        self.assertIn("b_nut", overrides)
+        for value in values:
+            self.assertEqual(len(value), 36)
+            self.assertEqual(value.count("-"), 4)
 
 
 class BilibiliClientSessionIdentityTest(unittest.TestCase):
-    def test_explicit_session_buvid_overrides_cookie_buvid(self) -> None:
+    def test_explicit_session_buvid_only_overrides_heartbeat_body_identity(self) -> None:
         client = BilibiliClient(COOKIE_WITH_BUVID, session_buvid="MY-SESSION-BUVID")
+        self.addCleanup(client.close)
 
-        self.assertEqual(client._buvid, "MY-SESSION-BUVID")
+        self.assertEqual(client.buvid, "MY-SESSION-BUVID")
+        self.assertEqual(
+            client.session.cookies.get("LIVE_BUVID", domain=".bilibili.com"),
+            "SHARED-LIVE",
+        )
 
     def test_explicit_session_device_uuid_overrides_default(self) -> None:
         client = BilibiliClient(
             COOKIE_WITH_BUVID,
             session_device_uuid="my-device-uuid-1234",
         )
+        self.addCleanup(client.close)
 
-        self.assertEqual(client._device_uuid, "my-device-uuid-1234")
+        self.assertEqual(client.device_uuid, "my-device-uuid-1234")
 
-    def test_without_overrides_falls_back_to_cookie_buvid(self) -> None:
+    def test_without_overrides_generates_live_buvid(self) -> None:
         client = BilibiliClient(COOKIE_WITH_BUVID)
+        self.addCleanup(client.close)
 
-        self.assertEqual(client._buvid, "SHARED-BUVID-FROM-COOKIE")
+        self.assertRegex(client.buvid, r"^AUTO\d{16}$")
+        self.assertEqual(client.session.cookies.get("LIVE_BUVID", domain=".bilibili.com"), "SHARED-LIVE")
 
-    def test_session_buvid_also_overrides_cookie_buvid3_in_http_session(self) -> None:
+    def test_session_identity_does_not_rewrite_cookie_buvid3(self) -> None:
         client = BilibiliClient(COOKIE_WITH_BUVID, session_buvid="MY-FRESH-SESSION-BUVID")
+        self.addCleanup(client.close)
 
-        # 关键：HTTP request 用的 cookie 里 buvid3 也得是 session 独立的，B 站去重多半看 cookie。
-        self.assertEqual(client.session.cookies.get("buvid3", domain=".bilibili.com"), "MY-FRESH-SESSION-BUVID")
+        self.assertEqual(
+            client.session.cookies.get("buvid3", domain=".bilibili.com"),
+            "SHARED-BUVID-FROM-COOKIE",
+        )
 
-    def test_session_buvid_overrides_shared_device_cookie_set(self) -> None:
+    def test_session_identity_preserves_authenticated_device_cookie_set(self) -> None:
         client = BilibiliClient(
             COOKIE_WITH_BUVID,
             session_buvid="MY-FRESH-SESSION-BUVID",
             session_device_uuid="device-1",
         )
+        self.addCleanup(client.close)
 
         for name, original in {
             "buvid4": "SHARED-BUVID4",
             "buvid_fp": "SHARED-FP",
-            "LIVE_BUVID": "SHARED-LIVE",
             "_uuid": "SHARED-UUID",
             "b_lsid": "SHARED-LSID",
             "b_nut": "1",
         }.items():
-            self.assertNotEqual(client.session.cookies.get(name, domain=".bilibili.com"), original)
-
-    def test_without_session_buvid_cookie_buvid3_keeps_original(self) -> None:
-        client = BilibiliClient(COOKIE_WITH_BUVID)
-
-        self.assertEqual(client.session.cookies.get("buvid3", domain=".bilibili.com"), "SHARED-BUVID-FROM-COOKIE")
+            self.assertEqual(
+                client.session.cookies.get(name, domain=".bilibili.com"),
+                original,
+            )
+        self.assertEqual(
+            client.session.cookies.get("LIVE_BUVID", domain=".bilibili.com"),
+            "SHARED-LIVE",
+        )
 
 
 class WatcherHeartbeatWorkerUsesUniqueSessionIdentityTest(unittest.TestCase):
-    def test_each_worker_creates_client_with_distinct_buvid(self) -> None:
+    def test_each_worker_creates_client_with_distinct_x25_identity(self) -> None:
         captured_buvids: list[str] = []
         captured_device_uuids: list[str] = []
         closed_clients: list[str] = []
-        orig_client_cls = watcher_module.BilibiliClient
+        original_client = watcher_module.BilibiliClient
 
         class RecordingClient:
-            def __init__(self, cookie_header: str, *, session_buvid: str | None = None, session_device_uuid: str | None = None) -> None:
+            def __init__(
+                self,
+                cookie_header: str,
+                *,
+                session_buvid: str | None = None,
+                session_device_uuid: str | None = None,
+            ) -> None:
                 self.cookie_header = cookie_header
                 self._buvid = session_buvid or "fallback"
                 self._device_uuid = session_device_uuid or "fallback-device"
                 captured_buvids.append(self._buvid)
                 captured_device_uuids.append(self._device_uuid)
-
-            def check_login(self):
-                from bili_drop_guard.bilibili import LoginInfo
-                return LoginInfo(False, message="skip")
 
             def close(self) -> None:
                 closed_clients.append(self._buvid)
@@ -123,23 +124,23 @@ class WatcherHeartbeatWorkerUsesUniqueSessionIdentityTest(unittest.TestCase):
         try:
             live_watcher = LiveWatcher(
                 WatchOptions(cookie=COOKIE_WITH_BUVID, room_id="1", watch_threads=5),
-                lambda _m: None,
+                lambda _message: None,
             )
-            live_watcher._stop.set()  # so worker loop exits immediately
+            live_watcher._stop.set()
             for worker_id in range(1, 6):
-                live_watcher._heartbeat_watch_worker(worker_id, RoomInfo(room_id=1, live_status=1))
+                live_watcher._heartbeat_watch_worker(
+                    worker_id,
+                    RoomInfo(room_id=1, live_status=1),
+                )
         finally:
-            watcher_module.BilibiliClient = orig_client_cls
+            watcher_module.BilibiliClient = original_client
 
-        # 5 workers ran → 5 clients created → 5 distinct buvids and device_uuids
         self.assertEqual(len(captured_buvids), 5)
-        self.assertEqual(len(set(captured_buvids)), 5, f"buvids not unique: {captured_buvids}")
-        self.assertEqual(len(set(captured_device_uuids)), 5, f"device_uuids not unique: {captured_device_uuids}")
+        self.assertEqual(len(set(captured_buvids)), 5)
+        self.assertEqual(len(set(captured_device_uuids)), 5)
         self.assertCountEqual(closed_clients, captured_buvids)
-        # And NONE should equal the cookie's shared buvid3
         for buvid in captured_buvids:
-            self.assertNotEqual(buvid, "SHARED-BUVID-FROM-COOKIE")
-            self.assertTrue(buvid.endswith("infoc"))
+            self.assertRegex(buvid, r"^AUTO\d{16}$")
 
 
 if __name__ == "__main__":
