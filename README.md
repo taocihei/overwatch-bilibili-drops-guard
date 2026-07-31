@@ -1,6 +1,6 @@
-﻿# 守望先锋 B 站直播挂宝 / Overwatch Bilibili Live Drops Guard
+# 守望先锋 B 站直播挂宝 / Overwatch Bilibili Live Drops Guard
 
-当前版本：`v0.5.8`
+当前版本：`v0.5.9`
 
 开源地址：<https://github.com/taocihei/overwatch-bilibili-drops-guard>
 
@@ -24,7 +24,7 @@
 
 1. 打开项目页面：<https://github.com/taocihei/overwatch-bilibili-drops-guard>
 2. 进入右侧或页面中的 `Releases`。
-3. 下载 `OverwatchBiliDrops-v0.5.8.exe`。
+3. 下载 `OverwatchBiliDrops-v0.5.9.exe`。
 4. 双击运行。
 5. 如果 Windows 提示“未知发布者”或“Windows 已保护你的电脑”，点击“更多信息”，再点“仍要运行”。这是个人开源软件常见提示，不代表一定有病毒。
 6. 第一次使用先点“自动获取 Cookie”，在弹出的独立 Edge/Chrome 窗口里登录 B 站。
@@ -47,6 +47,12 @@
 - `通知 URL`：可留空。填写后，启动、检测到可领取、领取成功、领取失败、Cookie 获取成功等关键事件会向该地址发送 JSON POST。
 - `观看进度`：优先显示本次观看进度，比如“还差 48 分钟”“已完成，待领取”“已领取”。
 - `运行日志`：保留登录、计时、任务识别和领取记录，适合排查异常。
+
+## v0.5.9 新增与修复
+
+- **100 路快启优化**：观看连接从逐秒单路启动改为每 0.5 秒一批，设置 100 路时约 5 秒内全部真实上线提交心跳。
+- **减少 100 路启动资源抖动**：WBI 签名密钥改为进程级缓存，避免每路连接各自请求 `nav` 拉取签名参数，100 路启动更稳。
+- **目标倍率与实绩同屏**：连接状态显示“目标 Nx / B 站实绩约 Mx”，验收口径只看 `totalv2` 的真实分钟数，避免把连接数误当成到账倍率。
 
 ## v0.5.8 新增与修复
 
@@ -334,7 +340,7 @@ dist\OverwatchBiliDrops.exe
 发布时会同时生成带版本号的文件，例如：
 
 ```text
-dist\OverwatchBiliDrops-v0.5.8.exe
+dist\OverwatchBiliDrops-v0.5.9.exe
 ```
 ## 赞助
 
@@ -350,7 +356,7 @@ dist\OverwatchBiliDrops-v0.5.8.exe
 
 Project name: **守望先锋 B 站直播挂宝 / Overwatch Bilibili Live Drops Guard**
 
-Version: `v0.5.8`
+Version: `v0.5.9`
 
 Repository: <https://github.com/taocihei/overwatch-bilibili-drops-guard>
 
@@ -370,7 +376,7 @@ Default room: `23612045`.
 
 1. Open the repository page: <https://github.com/taocihei/overwatch-bilibili-drops-guard>
 2. Open `Releases`.
-3. Download `OverwatchBiliDrops-v0.5.8.exe`.
+3. Download `OverwatchBiliDrops-v0.5.9.exe`.
 4. Double-click to run it.
 5. If Windows shows an unknown-publisher warning, click `More info`, then `Run anyway`.
 6. Click `自动获取 Cookie`, then sign in to Bilibili in the independent Edge/Chrome window opened by the app.
@@ -414,6 +420,5 @@ dist\OverwatchBiliDrops.exe
 Release builds are also copied with a versioned file name, for example:
 
 ```text
-dist\OverwatchBiliDrops-v0.5.8.exe
+dist\OverwatchBiliDrops-v0.5.9.exe
 ```
-

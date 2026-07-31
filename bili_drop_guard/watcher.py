@@ -15,7 +15,8 @@ LogSink = Callable[[str], None]
 CLAIM_SUBMIT_DELAY_SECONDS = 3.0
 CLAIM_RATE_LIMIT_DELAY_SECONDS = 12.0
 CLAIM_RATE_LIMIT_ATTEMPTS = 3
-WATCH_START_BATCH_SIZE = 1
+WATCH_START_BATCH_SIZE = 10
+WATCH_START_BATCH_INTERVAL_SECONDS = 0.5
 SERVER_RATE_WINDOW_SECONDS = 180.0
 ACTIVITY_DISCOVERY_SUCCESS_TTL_SECONDS = 300.0
 ACTIVITY_DISCOVERY_RETRY_TTL_SECONDS = 60.0
@@ -305,7 +306,11 @@ class LiveWatcher:
                 interval_text = f"，下一次约 {min_interval}-{max_interval} 秒后"
         heartbeat_text = f"，请求成功 {heartbeat_count} 次" if heartbeat_count else ""
         server_rate = self._server_credit_rate()
-        server_text = f"，B 站实绩约 {server_rate:.1f}x" if server_rate is not None else "，等待 B 站实绩样本"
+        server_text = (
+            f"，目标 {worker_count}x / B 站实绩约 {server_rate:.1f}x"
+            if server_rate is not None
+            else f"，目标 {worker_count}x / 等待 B 站实绩样本"
+        )
         return f"观看连接：{'，'.join(parts)}{interval_text}{heartbeat_text}{server_text}", normal_count, failed_count + waiting_count
 
     def _log_watch_status_summary(self, *, force: bool = False) -> None:
@@ -359,10 +364,10 @@ class LiveWatcher:
             self.log(message)
 
     def _watch_start_delay(self, worker_id: int) -> float:
-        """错峰启动：默认每秒只起 1 路，避免大量心跳同时进入后被合并或限频。"""
+        """错峰快启：每 0.5 秒启动一批，让 100 路在数秒内真实上线。"""
         if worker_id <= 1:
             return 0.0
-        return float((worker_id - 1) // WATCH_START_BATCH_SIZE)
+        return float((worker_id - 1) // WATCH_START_BATCH_SIZE) * WATCH_START_BATCH_INTERVAL_SECONDS
 
     def _record_heartbeat(self, interval: int | float | None = None) -> None:
         """Record connection health only; accepted HTTP heartbeats are not credited minutes."""
