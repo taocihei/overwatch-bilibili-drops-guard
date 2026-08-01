@@ -15,8 +15,7 @@ LogSink = Callable[[str], None]
 CLAIM_SUBMIT_DELAY_SECONDS = 3.0
 CLAIM_RATE_LIMIT_DELAY_SECONDS = 12.0
 CLAIM_RATE_LIMIT_ATTEMPTS = 3
-WATCH_START_BATCH_SIZE = 10
-WATCH_START_BATCH_INTERVAL_SECONDS = 0.5
+WATCH_START_INTERVAL_SECONDS = 1.0
 SERVER_RATE_WINDOW_SECONDS = 180.0
 ACTIVITY_DISCOVERY_SUCCESS_TTL_SECONDS = 300.0
 ACTIVITY_DISCOVERY_RETRY_TTL_SECONDS = 60.0
@@ -364,10 +363,10 @@ class LiveWatcher:
             self.log(message)
 
     def _watch_start_delay(self, worker_id: int) -> float:
-        """错峰快启：每 0.5 秒启动一批，让 100 路在数秒内真实上线。"""
+        """逐路错峰注册，避免 roomEntryAction 突发失败后产生“假正常”连接。"""
         if worker_id <= 1:
             return 0.0
-        return float((worker_id - 1) // WATCH_START_BATCH_SIZE) * WATCH_START_BATCH_INTERVAL_SECONDS
+        return float(worker_id - 1) * WATCH_START_INTERVAL_SECONDS
 
     def _record_heartbeat(self, interval: int | float | None = None) -> None:
         """Record connection health only; accepted HTTP heartbeats are not credited minutes."""
@@ -546,12 +545,13 @@ class LiveWatcher:
     def _start_heartbeat_session(self, client: BilibiliClient, room: RoomInfo, fallback: HeartbeatState) -> HeartbeatState:
         # 先注册"进入直播间"动作，B 站才会把后续 x25Kn 心跳算到当前会话上。
         # 缺这一步是 v0.4.1 多路计时仍然只算一路的关键原因。
-        # 失败不致命：网络抖动/代理偶尔断时跳过，让 x25Kn 心跳继续跑。
-        # 不在这里写日志，否则 20 路每次失败都会刷屏；用全局静默计数代替。
+        # roomEntryAction 与首次 x25Kn 必须同时成功才算一条有效观看连接；否则即使
+        # x25Kn 返回 HTTP 成功，totalv2 也可能完全不累计，不能再把这一路标成“正常”。
         try:
             client.room_entry_action(room)
-        except Exception:
+        except Exception as exc:
             self._record_room_entry_failure()
+            raise RuntimeError(f"进入直播间注册失败：{self._friendly_error(exc)}") from exc
         data = client.enter_room_heartbeat(room)
         return self._extract_heartbeat_state(data, fallback)
 

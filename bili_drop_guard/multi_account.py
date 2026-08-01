@@ -240,6 +240,22 @@ class MultiAccountWatcher:
                 continue
         return max(estimates, default=0.0)
 
+    def get_server_credit_rate(self) -> float | None:
+        """返回各账号 totalv2 实绩倍率之和，供主界面展示整体有效速度。"""
+
+        rates: list[float] = []
+        for _name, child in self._children:
+            getter = getattr(child, "get_server_credit_rate", None)
+            if not callable(getter):
+                continue
+            try:
+                rate = getter()
+                if rate is not None:
+                    rates.append(max(0.0, float(rate)))
+            except (TypeError, ValueError):
+                continue
+        return sum(rates) if rates else None
+
     def claim_completed_tasks(self) -> None:
         with self._claim_lock:
             if self._claim_thread is not None and self._claim_thread.is_alive():

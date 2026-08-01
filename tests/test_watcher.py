@@ -84,6 +84,10 @@ class LiveWatcherTest(unittest.TestCase):
         calls: list[tuple[str, int]] = []
 
         class FakeClient:
+            def room_entry_action(self, room: RoomInfo) -> dict[str, object]:
+                calls.append(("ENTRY", room.room_id))
+                return {}
+
             def enter_room_heartbeat(self, room: RoomInfo) -> dict[str, object]:
                 calls.append(("E", room.room_id))
                 return {"heartbeat_interval": 30, "timestamp": 100, "secret_key": "secret", "secret_rule": [0]}
@@ -106,7 +110,7 @@ class LiveWatcherTest(unittest.TestCase):
         state = live_watcher._start_heartbeat_session(FakeClient(), room, watcher.HeartbeatState())
         next_state = live_watcher._continue_heartbeat_session(FakeClient(), room, 1, state)
 
-        self.assertEqual(calls, [("E", 23612045), ("X1:30:100:secret:0", 23612045)])
+        self.assertEqual(calls, [("ENTRY", 23612045), ("E", 23612045), ("X1:30:100:secret:0", 23612045)])
         self.assertEqual(next_state.interval, 45)
         self.assertEqual(next_state.ets, 200)
         self.assertEqual(next_state.secret_key, "secret")
@@ -115,6 +119,10 @@ class LiveWatcherTest(unittest.TestCase):
         calls: list[str] = []
 
         class FakeClient:
+            def room_entry_action(self, room: RoomInfo) -> dict[str, object]:
+                calls.append("ENTRY")
+                return {}
+
             def enter_room_heartbeat(self, room: RoomInfo) -> dict[str, object]:
                 calls.append("E")
                 return {"heartbeat_interval": 30, "timestamp": 100, "secret_key": "secret", "secret_rule": [0]}
@@ -141,7 +149,7 @@ class LiveWatcherTest(unittest.TestCase):
         state = live_watcher._start_heartbeat_session(FakeClient(), room, watcher.HeartbeatState())
         live_watcher._continue_heartbeat_session(FakeClient(), room, 1, state)
 
-        self.assertEqual(calls, ["E", "X1"])
+        self.assertEqual(calls, ["ENTRY", "E", "X1"])
 
     def test_claim_worker_uses_single_sequential_path(self) -> None:
         calls: list[tuple[int, str | None]] = []
@@ -712,14 +720,14 @@ class LiveWatcherTest(unittest.TestCase):
         self.assertIn("manual-activity", live_watcher._activity_task_ids)
         self.assertIn("manual-activity", live_watcher._claimable_task_ids)
 
-    def test_watch_start_delay_uses_fast_batched_stagger(self) -> None:
+    def test_watch_start_delay_registers_one_route_per_second(self) -> None:
         live_watcher = LiveWatcher(WatchOptions(cookie="a=b", room_id="1"), lambda _m: None)
         self.assertEqual(live_watcher._watch_start_delay(1), 0.0)
-        self.assertEqual(live_watcher._watch_start_delay(5), 0.0)
-        self.assertEqual(live_watcher._watch_start_delay(10), 0.0)
-        self.assertEqual(live_watcher._watch_start_delay(11), 0.5)
-        self.assertEqual(live_watcher._watch_start_delay(42), 2.0)
-        self.assertEqual(live_watcher._watch_start_delay(100), 4.5)
+        self.assertEqual(live_watcher._watch_start_delay(5), 4.0)
+        self.assertEqual(live_watcher._watch_start_delay(10), 9.0)
+        self.assertEqual(live_watcher._watch_start_delay(11), 10.0)
+        self.assertEqual(live_watcher._watch_start_delay(42), 41.0)
+        self.assertEqual(live_watcher._watch_start_delay(100), 99.0)
 
     def test_heartbeat_count_appears_in_status_summary(self) -> None:
         live_watcher = LiveWatcher(WatchOptions(cookie="a=b", room_id="1", watch_threads=2), lambda _m: None)
