@@ -68,6 +68,29 @@ class FakeBoolVar:
         self.value = value
 
 
+class BackendNetworkLabelTest(unittest.TestCase):
+    def test_normal_routes_show_totalv2_rate_on_main_status(self) -> None:
+        rows = [
+            gui.WatchWorkerStatus(worker_id=index, state="正常", interval=60, message="")
+            for index in range(1, 101)
+        ]
+
+        self.assertEqual(gui._backend_network_label(rows, 2.4), "100/100｜B站 2.4x")
+
+    def test_normal_routes_show_sampling_before_totalv2_has_two_samples(self) -> None:
+        rows = [gui.WatchWorkerStatus(worker_id=1, state="正常", interval=60, message="")]
+
+        self.assertEqual(gui._backend_network_label(rows, None), "1/1｜实绩采样中")
+
+    def test_room_entry_failure_wins_over_accepted_routes(self) -> None:
+        rows = [
+            gui.WatchWorkerStatus(worker_id=1, state="正常", interval=60, message=""),
+            gui.WatchWorkerStatus(worker_id=2, state="暂时失败", interval=None, message="进入直播间注册失败"),
+        ]
+
+        self.assertEqual(gui._backend_network_label(rows, 1.0), "异常")
+
+
 class GuiNotificationTest(unittest.TestCase):
     def _new_app(self) -> gui.App:
         app = object.__new__(gui.App)

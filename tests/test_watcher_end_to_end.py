@@ -45,6 +45,10 @@ class FakeClient:
         self.heartbeat_calls.append(f"enter:{room.room_id}")
         return {"heartbeat_interval": 30, "timestamp": 100, "secret_key": "k", "secret_rule": [0]}
 
+    def room_entry_action(self, room: RoomInfo) -> dict:
+        self.heartbeat_calls.append(f"entry-action:{room.room_id}")
+        return {}
+
     def in_room_heartbeat(self, room: RoomInfo, sequence: int, interval: int, ets: int, secret_key: str, secret_rule: list[int]) -> dict:
         self.heartbeat_calls.append(f"in:{room.room_id}:{sequence}")
         return {"heartbeat_interval": 30, "timestamp": 200}

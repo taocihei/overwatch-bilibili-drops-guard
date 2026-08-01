@@ -1,6 +1,6 @@
 # 守望先锋 B 站直播挂宝 / Overwatch Bilibili Live Drops Guard
 
-当前版本：`v0.5.9`
+当前版本：`v0.5.10`
 
 开源地址：<https://github.com/taocihei/overwatch-bilibili-drops-guard>
 
@@ -24,7 +24,7 @@
 
 1. 打开项目页面：<https://github.com/taocihei/overwatch-bilibili-drops-guard>
 2. 进入右侧或页面中的 `Releases`。
-3. 下载 `OverwatchBiliDrops-v0.5.9.exe`。
+3. 下载 `OverwatchBiliDrops-v0.5.10.exe`。
 4. 双击运行。
 5. 如果 Windows 提示“未知发布者”或“Windows 已保护你的电脑”，点击“更多信息”，再点“仍要运行”。这是个人开源软件常见提示，不代表一定有病毒。
 6. 第一次使用先点“自动获取 Cookie”，在弹出的独立 Edge/Chrome 窗口里登录 B 站。
@@ -47,6 +47,13 @@
 - `通知 URL`：可留空。填写后，启动、检测到可领取、领取成功、领取失败、Cookie 获取成功等关键事件会向该地址发送 JSON POST。
 - `观看进度`：优先显示本次观看进度，比如“还差 48 分钟”“已完成，待领取”“已领取”。
 - `运行日志`：保留登录、计时、任务识别和领取记录，适合排查异常。
+
+## v0.5.10 新增与修复
+
+- **修复“100/100 已接受但只部分生效”**：只有 `roomEntryAction` 与首次 `x25Kn` 心跳都成功才把该路标记为正常；进入直播间注册失败会整路重试，不再把无效会话显示成成功。
+- **修复 100 路突发注册碰撞**：改为每秒注册一路，100 路在约 99 秒内逐步完成有效会话注册，避免数秒内集中请求导致部分进入动作失败。
+- **主状态卡显示真实倍率**：网络状态直接显示 `totalv2` 计算出的 `B站 Nx`；样本不足时明确显示“实绩采样中”，不再只显示心跳接受数。
+- **多账号实绩口径统一**：主状态卡汇总各账号的服务端实绩倍率，连接详情继续保留单账号倍率与范围。
 
 ## v0.5.9 新增与修复
 
@@ -340,7 +347,7 @@ dist\OverwatchBiliDrops.exe
 发布时会同时生成带版本号的文件，例如：
 
 ```text
-dist\OverwatchBiliDrops-v0.5.9.exe
+dist\OverwatchBiliDrops-v0.5.10.exe
 ```
 ## 赞助
 
@@ -356,7 +363,7 @@ dist\OverwatchBiliDrops-v0.5.9.exe
 
 Project name: **守望先锋 B 站直播挂宝 / Overwatch Bilibili Live Drops Guard**
 
-Version: `v0.5.9`
+Version: `v0.5.10`
 
 Repository: <https://github.com/taocihei/overwatch-bilibili-drops-guard>
 
@@ -376,7 +383,7 @@ Default room: `23612045`.
 
 1. Open the repository page: <https://github.com/taocihei/overwatch-bilibili-drops-guard>
 2. Open `Releases`.
-3. Download `OverwatchBiliDrops-v0.5.9.exe`.
+3. Download `OverwatchBiliDrops-v0.5.10.exe`.
 4. Double-click to run it.
 5. If Windows shows an unknown-publisher warning, click `More info`, then `Run anyway`.
 6. Click `自动获取 Cookie`, then sign in to Bilibili in the independent Edge/Chrome window opened by the app.
@@ -420,5 +427,5 @@ dist\OverwatchBiliDrops.exe
 Release builds are also copied with a versioned file name, for example:
 
 ```text
-dist\OverwatchBiliDrops-v0.5.9.exe
+dist\OverwatchBiliDrops-v0.5.10.exe
 ```

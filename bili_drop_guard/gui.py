@@ -63,6 +63,22 @@ PRIMARY = "#2467e8"
 PRIMARY_ACTIVE = "#1d55c9"
 
 
+def _backend_network_label(rows: list[WatchWorkerStatus], server_rate: float | None) -> str:
+    if not rows:
+        return "检查中"
+    states = {row.state for row in rows}
+    if any("失败" in state or "异常" in state for state in states):
+        return "异常"
+    if any("等待" in state for state in states):
+        return "等待开播"
+    accepted = sum(1 for row in rows if row.state == "正常")
+    if not accepted:
+        return "检查中"
+    if server_rate is None:
+        return f"{accepted}/{len(rows)}｜实绩采样中"
+    return f"{accepted}/{len(rows)}｜B站 {server_rate:.1f}x"
+
+
 def _resource_path(relative_path: str) -> Path:
     base = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[1]))
     return base / relative_path
@@ -2593,22 +2609,20 @@ class App(tk.Tk):
         elapsed_seconds = max(0, int((now - self.started_at).total_seconds()))
         rows = snapshot or []
         intervals = [row.interval for row in rows if row.interval is not None]
-        states = {row.state for row in rows}
+        server_rate: float | None = None
+        rate_getter = getattr(self.watcher, "get_server_credit_rate", None)
+        if callable(rate_getter):
+            try:
+                candidate_rate = rate_getter()
+                if candidate_rate is not None:
+                    server_rate = max(0.0, float(candidate_rate))
+            except (TypeError, ValueError):
+                server_rate = None
 
         self.backend_start_var.set(self.started_at.strftime("%H:%M:%S"))
         self.backend_elapsed_var.set(self._format_elapsed_time(elapsed_seconds))
         self.backend_next_var.set(f"约 {min(intervals)} 秒" if intervals else "等待返回")
-        if not rows:
-            self.backend_network_var.set("检查中")
-        elif any("失败" in state or "异常" in state for state in states):
-            self.backend_network_var.set("异常")
-        elif any("等待" in state for state in states):
-            self.backend_network_var.set("等待开播")
-        elif any("正常" in state for state in states):
-            accepted = sum(1 for row in rows if row.state == "正常")
-            self.backend_network_var.set(f"{accepted}/{len(rows)} 已接受")
-        else:
-            self.backend_network_var.set("检查中")
+        self.backend_network_var.set(_backend_network_label(rows, server_rate))
 
     def _format_elapsed_time(self, seconds: int) -> str:
         if seconds < 60:

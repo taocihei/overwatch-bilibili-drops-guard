@@ -26,23 +26,26 @@ class StartHeartbeatSessionCallsRoomEntryActionFirstTest(unittest.TestCase):
 
         self.assertEqual(calls, ["entry:23612045", "x25kn_enter:23612045"])
 
-    def test_room_entry_action_failure_does_not_abort_heartbeat(self) -> None:
+    def test_room_entry_action_failure_aborts_route_before_heartbeat(self) -> None:
         logs: list[str] = []
+        heartbeat_called = False
 
         class FlakyClient:
             def room_entry_action(self, room: RoomInfo) -> dict:
                 raise RuntimeError("activity api down")
 
             def enter_room_heartbeat(self, room: RoomInfo) -> dict:
+                nonlocal heartbeat_called
+                heartbeat_called = True
                 return {"heartbeat_interval": 30, "timestamp": 100, "secret_key": "k", "secret_rule": [0]}
 
         live_watcher = LiveWatcher(WatchOptions(cookie="a=b", room_id="1"), logs.append)
         room = RoomInfo(room_id=23612045, live_status=1)
 
-        state = live_watcher._start_heartbeat_session(FlakyClient(), room, HeartbeatState())
+        with self.assertRaisesRegex(RuntimeError, "进入直播间注册失败"):
+            live_watcher._start_heartbeat_session(FlakyClient(), room, HeartbeatState())
 
-        # 心跳能继续：interval 来自 enter_room_heartbeat 的成功返回
-        self.assertEqual(state.interval, 30)
+        self.assertFalse(heartbeat_called)
         # 第一次失败会写一条聚合日志（之后每 50 次再写一条，避免刷屏）
         self.assertTrue(any("上报进入直播间累计失败 1 次" in message for message in logs))
 
@@ -58,8 +61,8 @@ class StartHeartbeatSessionCallsRoomEntryActionFirstTest(unittest.TestCase):
 
 
 class WorkerStaggerTest(unittest.TestCase):
-    def test_workers_stagger_start_in_fast_batches_by_worker_id(self) -> None:
-        # 快速错峰：每 0.5 秒启动一批。worker_id 11 应先 wait 0.5 秒。
+    def test_workers_stagger_start_one_per_second_by_worker_id(self) -> None:
+        # 每路间隔 1 秒注册。worker_id 11 应先 wait 10 秒。
         live_watcher = LiveWatcher(WatchOptions(cookie="a=b", room_id="1"), lambda _m: None)
         wait_calls: list[float] = []
 
@@ -74,7 +77,7 @@ class WorkerStaggerTest(unittest.TestCase):
         # 模拟启动 worker #11
         live_watcher._heartbeat_watch_worker(11, RoomInfo(room_id=1, live_status=1))
 
-        self.assertEqual(wait_calls[0], 0.5)
+        self.assertEqual(wait_calls[0], 10.0)
 
     def test_worker_id_one_does_not_stagger(self) -> None:
         live_watcher = LiveWatcher(WatchOptions(cookie="a=b", room_id="1"), lambda _m: None)

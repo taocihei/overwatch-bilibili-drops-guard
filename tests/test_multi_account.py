@@ -218,6 +218,7 @@ class MultiAccountStatusTest(unittest.TestCase):
         self.assertIn("2/2 心跳已接受", summary)
         self.assertIn("目标 2x", summary)
         self.assertIn("各账号实绩约 1.0x-2.0x", summary)
+        self.assertEqual(mw.get_server_credit_rate(), 3.0)
 
     def test_summary_uses_requested_route_target(self) -> None:
         class StatusWatcher:
