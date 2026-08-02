@@ -5,7 +5,7 @@
 ## 接口
 
 - `GET /api/health`：健康检查。
-- `POST /api/sponsor/orders`：创建 ¥3、¥6 或 ¥10 的赞助订单。
+- `POST /api/sponsor/orders`：创建 ¥1–9999 的赞助订单；客户端预设 ¥5、¥10、¥20、¥50 和 ¥100，也可输入其他金额。
 - `GET /api/sponsor/orders/{order_id}`：查询本服务记录的订单状态。
 - `GET /api/sponsor/qr/{order_id}`：通过 HTTPS 返回支付二维码图片。
 - `POST /api/sponsor/callback`：接收并验证 YunGouOS 支付回调。

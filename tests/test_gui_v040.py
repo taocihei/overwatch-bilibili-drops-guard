@@ -57,6 +57,48 @@ class SmallWindowLayoutRegressionTest(unittest.TestCase):
         finally:
             app.destroy()
 
+    def test_default_runtime_metrics_keep_label_and_value_separated(self) -> None:
+        app = gui.App(preview_mode=True)
+        try:
+            app.geometry("1280x840+0+0")
+            for _ in range(5):
+                app.update()
+
+            labels: list[tk.Label] = []
+
+            def collect(widget: tk.Misc) -> None:
+                for child in widget.winfo_children():
+                    if isinstance(child, tk.Label) and child.cget("text") == "启动时间":
+                        labels.append(child)
+                    collect(child)
+
+            collect(app)
+            self.assertEqual(len(labels), 1)
+            label = labels[0]
+            value = label.master.grid_slaves(row=0, column=2)[0]
+            gap = value.winfo_rootx() - (label.winfo_rootx() + label.winfo_width())
+            self.assertGreaterEqual(gap, 8)
+            self.assertGreaterEqual(label.winfo_width(), label.winfo_reqwidth())
+            self.assertGreaterEqual(value.winfo_width(), value.winfo_reqwidth())
+        finally:
+            app.destroy()
+
+
+class SmallWindowAndButtonLayoutTest(_HiddenRootCase):
+    def test_button_without_explicit_width_requests_enough_space_for_text(self) -> None:
+        button = gui.LabelButton(
+            self.root,
+            "重试获取二维码",
+            lambda: None,
+            fill=gui.SECONDARY,
+        )
+        button.pack()
+        self.root.update_idletasks()
+        text_bounds = button.bbox("all")
+        self.assertIsNotNone(text_bounds)
+        assert text_bounds is not None
+        self.assertLessEqual(text_bounds[2], button.winfo_reqwidth())
+
     def test_primary_and_account_actions_are_reachable_at_minimum_size(self) -> None:
         app = gui.App(preview_mode=True)
         try:
@@ -367,6 +409,21 @@ class AppDialogTest(_HiddenRootCase):
         finally:
             dialog.destroy()
 
+    def test_visible_parent_dialog_uses_exact_parent_center(self) -> None:
+        self.root.deiconify()
+        self.root.geometry("900x640+140+90")
+        self.root.update()
+        dialog = gui.AppDialog(self.root, title="居中测试", width=420, height=300)
+        try:
+            for _ in range(3):
+                self.root.update()
+            expected_x = self.root.winfo_rootx() + (self.root.winfo_width() - 420) // 2
+            expected_y = self.root.winfo_rooty() + (self.root.winfo_height() - 300) // 2
+            self.assertLessEqual(abs(dialog.winfo_x() - expected_x), 1)
+            self.assertLessEqual(abs(dialog.winfo_y() - expected_y), 1)
+        finally:
+            dialog.destroy()
+
 
 class SponsorDialogFlowTest(unittest.TestCase):
     def test_default_amount_automatically_requests_qr_without_generate_button(self) -> None:
@@ -404,21 +461,68 @@ class SponsorDialogFlowTest(unittest.TestCase):
 
     def test_selecting_another_amount_refreshes_chips_and_order(self) -> None:
         amount_var = MagicMock()
-        amount_var.get.return_value = "6.00"
-        buttons = {amount: MagicMock() for amount in ("3.00", "6.00", "10.00")}
-        app = SimpleNamespace(
-            _sponsor_amount_var=amount_var,
-            _sponsor_order=object(),
-            _sponsor_amount_buttons=buttons,
-            _start_sponsor_order=MagicMock(),
-        )
+        buttons = {
+            amount: MagicMock()
+            for amount in ("5.00", "10.00", "20.00", "50.00", "100.00", "other")
+        }
+        app = object.__new__(gui.App)
+        app._sponsor_amount_var = amount_var
+        app._sponsor_amount_choice = "10.00"
+        app._sponsor_order = object()
+        app._sponsor_amount_buttons = buttons
+        app._sponsor_custom_frame = MagicMock()
+        app._sponsor_custom_frame.winfo_manager.return_value = ""
+        app._start_sponsor_order = MagicMock()
 
-        gui.App._select_sponsor_amount(app, "10.00")
+        gui.App._select_sponsor_amount(app, "20.00")
 
-        amount_var.set.assert_called_once_with("10.00")
+        amount_var.set.assert_called_once_with("20.00")
         app._start_sponsor_order.assert_called_once_with()
-        self.assertEqual(buttons["10.00"].outline, gui.ACCENT_BORDER)
-        self.assertEqual(buttons["6.00"].outline, gui.SUBTLE_OUTLINE)
+        self.assertEqual(buttons["20.00"].outline, gui.ACCENT_BORDER)
+        self.assertEqual(buttons["10.00"].outline, gui.SUBTLE_OUTLINE)
+
+    def test_sponsor_dialog_lists_requested_amounts_and_retry_button_fits(self) -> None:
+        app = gui.App(preview_mode=True)
+        app.geometry("1280x840+80+60")
+        start_order = MagicMock()
+        app._start_sponsor_order = start_order  # type: ignore[method-assign]
+        try:
+            dialog = app._show_sponsor_dialog()
+            for _ in range(4):
+                app.update()
+            self.assertEqual(
+                tuple(app._sponsor_amount_buttons),
+                ("5.00", "10.00", "20.00", "50.00", "100.00", "other"),
+            )
+            app._show_sponsor_retry("重试获取二维码")
+            for _ in range(3):
+                app.update()
+            button_bottom = (
+                app._sponsor_retry_button.winfo_rooty()
+                + app._sponsor_retry_button.winfo_height()
+            )
+            self.assertLessEqual(button_bottom, dialog.winfo_rooty() + dialog.winfo_height() - 12)
+        finally:
+            app._close_sponsor_dialog()
+            app.destroy()
+
+    def test_other_amount_is_validated_then_generates_order(self) -> None:
+        app = gui.App(preview_mode=True)
+        app.withdraw()
+        app._start_sponsor_order = MagicMock()  # type: ignore[method-assign]
+        try:
+            with patch.object(gui.AppDialog, "_show_centered"):
+                app._show_sponsor_dialog()
+            app._select_sponsor_amount("other")
+            app._sponsor_custom_amount_var.set("38.5")
+            app._confirm_custom_sponsor_amount()
+
+            self.assertEqual(app._sponsor_amount_var.get(), "38.50")
+            self.assertEqual(app._sponsor_amount_choice, "other")
+            app._start_sponsor_order.assert_called_once_with()
+        finally:
+            app._close_sponsor_dialog()
+            app.destroy()
 
     def test_refreshing_amount_resets_qr_label_to_text_dimensions(self) -> None:
         amount_var = MagicMock()

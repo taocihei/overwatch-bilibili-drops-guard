@@ -32,7 +32,7 @@ export async function GET(request: Request): Promise<Response> {
 
     const upstream = await fetch(providerUrl, {
       headers: { accept: "image/png,image/jpeg,image/webp,image/*;q=0.8" },
-      signal: AbortSignal.timeout(10_000),
+      signal: AbortSignal.timeout(4_000),
     });
     if (!upstream.ok || !upstream.body) {
       return json({ ok: false, error: "二维码加载失败。" }, { status: 502 });

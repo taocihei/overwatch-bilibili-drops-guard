@@ -3,11 +3,8 @@ import { createNativePayment } from "@/lib/payment";
 import { json, serviceError } from "@/lib/responses";
 import { getPaymentCredentials } from "@/lib/runtime";
 
-const ALLOWED_AMOUNTS = new Map([
-  ["3.00", 300],
-  ["6.00", 600],
-  ["10.00", 1000],
-]);
+const MIN_AMOUNT_CENTS = 100;
+const MAX_AMOUNT_CENTS = 999_900;
 const ORDER_LIFETIME_MS = 15 * 60 * 1000;
 
 type SponsorOrderRequest = {
@@ -25,14 +22,14 @@ export async function POST(request: Request): Promise<Response> {
     }
 
     const payload = (await request.json()) as SponsorOrderRequest;
-    const amount = normalizeAmount(payload.amount);
-    const amountCents = ALLOWED_AMOUNTS.get(amount);
-    if (!amountCents) {
+    const normalized = normalizeAmount(payload.amount);
+    if (!normalized) {
       return json(
-        { ok: false, error: "仅支持 3、6 或 10 元赞助档位。" },
+        { ok: false, error: "赞助金额需在 1–9999 元之间。" },
         { status: 400 },
       );
     }
+    const { amount, amountCents } = normalized;
 
     if (
       payload.provider !== undefined &&
@@ -78,7 +75,7 @@ export async function POST(request: Request): Promise<Response> {
       )
       .run();
 
-    const qrUrl = new URL(
+    const proxyQrUrl = new URL(
       `/api/sponsor/qr/${encodeURIComponent(id)}`,
       request.url,
     ).toString();
@@ -88,7 +85,8 @@ export async function POST(request: Request): Promise<Response> {
         ok: true,
         data: {
           order_id: id,
-          qr_url: qrUrl,
+          qr_url: providerQrUrl,
+          fallback_qr_url: proxyQrUrl,
           expires_at: new Date(expiresAt).toISOString(),
         },
       },
@@ -99,10 +97,16 @@ export async function POST(request: Request): Promise<Response> {
   }
 }
 
-function normalizeAmount(value: unknown): string {
+function normalizeAmount(
+  value: unknown,
+): { amount: string; amountCents: number } | null {
   const amount = Number(value);
-  if (!Number.isFinite(amount)) return "";
-  return amount.toFixed(2);
+  if (!Number.isFinite(amount)) return null;
+  const amountCents = Math.round(amount * 100);
+  if (amountCents < MIN_AMOUNT_CENTS || amountCents > MAX_AMOUNT_CENTS) {
+    return null;
+  }
+  return { amount: (amountCents / 100).toFixed(2), amountCents };
 }
 
 function safeText(value: unknown, maxLength: number): string {

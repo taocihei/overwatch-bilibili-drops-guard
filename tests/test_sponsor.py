@@ -11,6 +11,7 @@ from bili_drop_guard.sponsor import (
     SPONSOR_API_ENV,
     SponsorClient,
     SponsorError,
+    SponsorOrder,
     SponsorUnavailable,
     normalize_amount,
 )
@@ -78,6 +79,7 @@ class SponsorClientTest(unittest.TestCase):
                         "data": {
                             "order_id": "order-1",
                             "qr_url": "https://images.example.com/qr.png",
+                            "fallback_qr_url": "https://pay.example.com/api/sponsor/qr/order-1",
                             "expires_at": "2026-07-30T12:00:00Z",
                         },
                     }
@@ -96,6 +98,10 @@ class SponsorClientTest(unittest.TestCase):
         )
         self.assertEqual(kwargs["json"]["amount"], "6.00")
         self.assertEqual(kwargs["json"]["provider"], "yungouos")
+        self.assertEqual(
+            order.fallback_qr_url,
+            "https://pay.example.com/api/sponsor/qr/order-1",
+        )
 
     def test_query_order_normalizes_success_state(self) -> None:
         session = _Session([_Response({"data": {"status": "success"}})])
@@ -125,6 +131,31 @@ class SponsorClientTest(unittest.TestCase):
         with self.assertRaisesRegex(SponsorError, "没有返回图片"):
             client.download_qr("https://images.example.com/qr.png")
 
+    def test_download_order_qr_uses_fallback_after_direct_url_fails(self) -> None:
+        session = _Session(
+            [
+                _Response(content=b"<html>", content_type="text/html"),
+                _Response(content=b"\x89PNG\r\n\x1a\nimage", content_type="image/png"),
+            ]
+        )
+        client = SponsorClient("https://pay.example.com/api/sponsor", session=session)
+        order = SponsorOrder(
+            order_id="order-1",
+            qr_url="https://images.example.com/direct.png",
+            fallback_qr_url="https://pay.example.com/api/sponsor/qr/order-1",
+        )
+
+        content = client.download_order_qr(order)
+
+        self.assertTrue(content.startswith(b"\x89PNG"))
+        self.assertEqual(
+            [call[1] for call in session.calls],
+            [
+                "https://images.example.com/direct.png",
+                "https://pay.example.com/api/sponsor/qr/order-1",
+            ],
+        )
+
     def test_request_network_failure_is_friendly(self) -> None:
         class FailingSession:
             def request(self, *_args: object, **_kwargs: object) -> _Response:
@@ -147,10 +178,14 @@ class SponsorClientTest(unittest.TestCase):
         with self.assertRaisesRegex(SponsorError, "支付通道暂时繁忙"):
             client.create_order("3.00", app_version="0.5.4")
 
-    def test_amounts_are_restricted_to_visible_presets(self) -> None:
-        self.assertEqual(str(normalize_amount("3")), "3.00")
-        with self.assertRaisesRegex(SponsorError, "界面提供"):
-            normalize_amount("4")
+    def test_preset_and_custom_amounts_are_supported_within_range(self) -> None:
+        self.assertEqual(str(normalize_amount("5")), "5.00")
+        self.assertEqual(str(normalize_amount("37.5")), "37.50")
+        self.assertEqual(str(normalize_amount("100")), "100.00")
+        with self.assertRaisesRegex(SponsorError, "1–9999"):
+            normalize_amount("0")
+        with self.assertRaisesRegex(SponsorError, "1–9999"):
+            normalize_amount("10000")
 
 
 if __name__ == "__main__":
