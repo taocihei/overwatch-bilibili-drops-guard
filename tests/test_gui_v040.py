@@ -5,21 +5,35 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import tkinter as tk
+from tkinter import ttk
 
 from bili_drop_guard import gui
 from bili_drop_guard.watcher import WatchWorkerStatus
+
+
+_SHARED_ROOT: tk.Tk | None = None
+
+
+def _shared_hidden_root() -> tk.Tk:
+    """Keep one Tcl interpreter alive; Python 3.14/Windows is flaky when Tk is reloaded repeatedly."""
+
+    global _SHARED_ROOT
+    if _SHARED_ROOT is None:
+        _SHARED_ROOT = tk.Tk()
+        _SHARED_ROOT.withdraw()
+    return _SHARED_ROOT
 
 
 class _HiddenRootCase(unittest.TestCase):
     """涉及真实 widget 的 GUI 测试基类。"""
 
     def setUp(self) -> None:
-        self.root = tk.Tk()
-        self.root.withdraw()
+        self.root = _shared_hidden_root()
 
     def tearDown(self) -> None:
+        for child in self.root.winfo_children():
+            child.destroy()
         self.root.update_idletasks()
-        self.root.destroy()
 
 
 class RoundedPanelLayoutTest(_HiddenRootCase):
@@ -54,6 +68,13 @@ class SmallWindowLayoutRegressionTest(unittest.TestCase):
             self.assertEqual(app.log_empty_canvas.winfo_manager(), "place")
             self.assertEqual(app.log_empty_label.winfo_manager(), "place")
             self.assertLess(app.log_empty_label.winfo_y(), 80)
+            self.assertEqual(app.progress_ring.caption, "")
+            ring_text = [
+                app.progress_ring.itemcget(item, "text")
+                for item in app.progress_ring.find_all()
+                if app.progress_ring.type(item) == "text"
+            ]
+            self.assertNotIn("点开始挂宝", ring_text)
         finally:
             app.destroy()
 
@@ -80,6 +101,33 @@ class SmallWindowLayoutRegressionTest(unittest.TestCase):
             self.assertGreaterEqual(gap, 8)
             self.assertGreaterEqual(label.winfo_width(), label.winfo_reqwidth())
             self.assertGreaterEqual(value.winfo_width(), value.winfo_reqwidth())
+        finally:
+            app.destroy()
+
+    def test_two_accounts_keep_account_actions_visible_at_default_size(self) -> None:
+        app = gui.App(preview_mode=True)
+        try:
+            app.config_data = gui.AppConfig(
+                cookie="SESSDATA=a",
+                account_name="默认账号",
+                accounts=[
+                    gui.AccountProfile(name="默认账号", cookie="SESSDATA=a"),
+                    gui.AccountProfile(name="备用账号", cookie="SESSDATA=b"),
+                ],
+                active_accounts=["默认账号"],
+            )
+            app.editing_account_name = "默认账号"
+            app.account_name_var.set("默认账号")
+            app.cookie_text.delete("1.0", "end")
+            app.cookie_text.insert("1.0", "SESSDATA=a")
+            app._build_account_checklist()
+            app.geometry("1280x840+0+0")
+            for _ in range(6):
+                app.update()
+
+            canvas_bottom = app.settings_canvas.winfo_rooty() + app.settings_canvas.winfo_height()
+            actions_bottom = app.save_account_button.winfo_rooty() + app.save_account_button.winfo_height()
+            self.assertLessEqual(actions_bottom, canvas_bottom)
         finally:
             app.destroy()
 
@@ -114,7 +162,7 @@ class SmallWindowAndButtonLayoutTest(_HiddenRootCase):
             app.settings_canvas.yview_moveto(1.0)
             for _ in range(5):
                 app.update()
-            wanted = {"保存账号", "新增账号", "验证", "清空", "▶ 开始挂宝", "领取奖励"}
+            wanted = {"添加账号", "取消修改", "验证", "清空", "▶ 开始挂宝", "领取奖励"}
             found: dict[str, tk.Misc] = {}
 
             def collect(widget: tk.Misc) -> None:
@@ -218,6 +266,7 @@ class AccountChecklistTest(_HiddenRootCase):
         app.cookie_text = tk.Text(self.root)
         app.cookie_text.insert("1.0", "SESSDATA=a")
         app.editing_account_name = "主号"
+        app._delete_account = lambda _name=None: None  # type: ignore[method-assign]
         return app
 
     def test_rebuild_preserves_unsaved_checked_accounts(self) -> None:
@@ -232,25 +281,50 @@ class AccountChecklistTest(_HiddenRootCase):
             active_accounts=["主号"],
         )
         app.account_name_var = tk.StringVar(master=self.root, value="主号")
+        app.editing_account_name = "主号"
         app.account_checks = {
             "主号": tk.BooleanVar(master=self.root, value=True),
             "小号": tk.BooleanVar(master=self.root, value=True),
         }
         app._on_account_check_toggled = lambda _name: None  # type: ignore[method-assign]
         app._select_account_for_edit = lambda _name: None  # type: ignore[method-assign]
+        app._delete_account = lambda _name=None: None  # type: ignore[method-assign]
 
         gui.App._build_account_checklist(app)
 
         self.assertTrue(app.account_checks["主号"].get())
         self.assertTrue(app.account_checks["小号"].get())
 
-        row_buttons = [
-            child.text
-            for row in app._account_check_frame.winfo_children()
-            for child in row.winfo_children()
-            if isinstance(child, gui.LabelButton)
-        ]
+        descendants: list[tk.Misc] = []
+
+        def walk(widget: tk.Misc) -> None:
+            for child in widget.winfo_children():
+                descendants.append(child)
+                walk(child)
+
+        walk(app._account_check_frame)
+        row_buttons = [child.text for child in descendants if isinstance(child, gui.LabelButton)]
         self.assertEqual(row_buttons.count("删除"), 2)
+        self.assertNotIn("正在编辑", row_buttons)
+        self.assertNotIn("编辑", row_buttons)
+        self.assertEqual(sum(isinstance(child, gui.AccountCheck) for child in descendants), 2)
+        self.assertFalse(any(isinstance(child, (tk.Checkbutton, ttk.Checkbutton)) for child in descendants))
+
+    def test_custom_account_check_toggles_by_keyboard_action(self) -> None:
+        value = tk.BooleanVar(master=self.root, value=False)
+        calls: list[bool] = []
+        check = gui.AccountCheck(
+            self.root,
+            value,
+            lambda: calls.append(value.get()),
+            background=gui.SURFACE,
+        )
+
+        result = check._toggle()
+
+        self.assertEqual(result, "break")
+        self.assertTrue(value.get())
+        self.assertEqual(calls, [True])
 
     def test_clearing_cookie_does_not_implicitly_delete_saved_account(self) -> None:
         app = self._editor_app()
