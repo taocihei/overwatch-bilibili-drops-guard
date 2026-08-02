@@ -1,6 +1,6 @@
 # 守望先锋 B 站直播挂宝 / Overwatch Bilibili Live Drops Guard
 
-当前版本：`v0.5.11`
+当前版本：`v0.5.12`
 
 开源地址：<https://github.com/taocihei/overwatch-bilibili-drops-guard>
 
@@ -24,12 +24,12 @@
 
 1. 打开项目页面：<https://github.com/taocihei/overwatch-bilibili-drops-guard>
 2. 进入右侧或页面中的 `Releases`。
-3. 下载 `OverwatchBiliDrops-v0.5.11.exe`。
+3. 下载 `OverwatchBiliDrops-v0.5.12.exe`。
 4. 双击运行。
 5. 如果 Windows 提示“未知发布者”或“Windows 已保护你的电脑”，点击“更多信息”，再点“仍要运行”。这是个人开源软件常见提示，不代表一定有病毒。
 6. 第一次使用先点“自动获取 Cookie”，在弹出的独立 Edge/Chrome 窗口里登录 B 站。
 7. 登录成功后，软件会自动回填 Cookie 并关闭登录窗口。
-8. 可以点“保存账号”保存当前 Cookie，之后用账号下拉切换。
+8. 自动获取成功后会保存当前账号；点击账号行可切换资料，左侧勾选框只控制该账号是否参与挂机。
 9. 直播间默认已填好，直接点“开始挂宝”即可。
 10. 在“观看进度”和“运行日志”里看还差多少分钟、是否已完成、是否已领取。
 
@@ -39,7 +39,7 @@
 
 - `只打开登录页（手动）`：只帮你打开 B 站登录页，不自动读取 Cookie。适合排查浏览器打不开，或手动复制 Cookie。
 - `自动获取 Cookie`：推荐使用。程序会打开独立 Edge/Chrome 自动获取窗口；请在这个窗口登录 B 站，成功后自动回填 Cookie。
-- `账号与并行`：用来选择要挂宝的账号。获取 Cookie 后点“保存账号”，下次可直接勾选多个账号并行。
+- `挂机账号`：点击账号行切换当前资料；自绘勾选框只控制是否参与挂机。手动修改名称或 Cookie 后需明确点击“保存修改”，不会在切换账号时静默保存。
 - `直播间房号`：默认 `23612045`。也可以粘贴完整直播间链接，保存后会自动变成数字房间号。
 - `观看连接`：表示后台请求连接数，不等同于服务端有效倍率。界面会区分“心跳已接受”和 B 站真实入账，并用 `totalv2` 返回的 `indicators[0].cur_value` 估算实绩倍率。当前最多支持 `100` 路。
 - `自动领奖`：开启后，任务满足条件会自动领取。领奖固定只用 1 个线程，避免请求太快失败。
@@ -47,6 +47,14 @@
 - `通知 URL`：可留空。填写后，启动、检测到可领取、领取成功、领取失败、Cookie 获取成功等关键事件会向该地址发送 JSON POST。
 - `观看进度`：优先显示本次观看进度，比如“还差 48 分钟”“已完成，待领取”“已领取”。
 - `运行日志`：保留登录、计时、任务识别和领取记录，适合排查异常。
+
+## v0.5.12 新增与修复
+
+- **重做账号操作逻辑**：点击账号行直接切换当前资料，删除“编辑 / 正在编辑”伪按钮，当前账号改用整行淡蓝高亮。
+- **统一账号勾选样式**：Windows 原生复选框替换为蓝白自绘勾选框，并支持鼠标、空格和回车操作。
+- **杜绝静默保存**：参与挂机、当前账号和资料编辑完全分离；勾选状态立即单独保存，切换账号不会再偷偷保存名称或 Cookie。
+- **补全草稿流程**：新增账号使用“添加账号”，现有账号使用“保存修改”，提供“取消修改”；未保存内容在切换、启动或领奖前会明确提示。
+- **精简观看进度**：删除圆环内重复的“点开始挂宝”，只保留居中的状态或百分比。
 
 ## v0.5.11 新增与修复
 
@@ -354,7 +362,7 @@ dist\OverwatchBiliDrops.exe
 发布时会同时生成带版本号的文件，例如：
 
 ```text
-dist\OverwatchBiliDrops-v0.5.11.exe
+dist\OverwatchBiliDrops-v0.5.12.exe
 ```
 ## 赞助
 
@@ -370,7 +378,7 @@ dist\OverwatchBiliDrops-v0.5.11.exe
 
 Project name: **守望先锋 B 站直播挂宝 / Overwatch Bilibili Live Drops Guard**
 
-Version: `v0.5.11`
+Version: `v0.5.12`
 
 Repository: <https://github.com/taocihei/overwatch-bilibili-drops-guard>
 
@@ -390,7 +398,7 @@ Default room: `23612045`.
 
 1. Open the repository page: <https://github.com/taocihei/overwatch-bilibili-drops-guard>
 2. Open `Releases`.
-3. Download `OverwatchBiliDrops-v0.5.11.exe`.
+3. Download `OverwatchBiliDrops-v0.5.12.exe`.
 4. Double-click to run it.
 5. If Windows shows an unknown-publisher warning, click `More info`, then `Run anyway`.
 6. Click `自动获取 Cookie`, then sign in to Bilibili in the independent Edge/Chrome window opened by the app.
@@ -434,5 +442,5 @@ dist\OverwatchBiliDrops.exe
 Release builds are also copied with a versioned file name, for example:
 
 ```text
-dist\OverwatchBiliDrops-v0.5.11.exe
+dist\OverwatchBiliDrops-v0.5.12.exe
 ```

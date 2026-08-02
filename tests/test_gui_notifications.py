@@ -4,6 +4,7 @@ import queue
 import unittest
 from datetime import datetime, timedelta
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from bili_drop_guard import gui
 
@@ -528,14 +529,24 @@ class GuiAccountSelectionTest(unittest.TestCase):
         app.account_checks = {"小号": FakeBoolVar(True)}
         app.account_name_var = FakeVar("主号")
         app.cookie_text = FakeText("unsaved-cookie")
+        config = gui.AppConfig(
+            cookie="SESSDATA=b",
+            account_name="小号",
+            accounts=[gui.AccountProfile(name="小号", cookie="SESSDATA=b")],
+            active_accounts=["小号"],
+        )
+        app.config_data = config
+        app._current_config = lambda: config  # type: ignore[method-assign]
         app.logs: list[str] = []
         app._log = app.logs.append  # type: ignore[method-assign]
 
-        gui.App._on_account_check_toggled(app, "小号")
+        with patch.object(gui, "save_config") as saved:
+            gui.App._on_account_check_toggled(app, "小号")
 
         self.assertEqual(app.account_name_var.get(), "主号")
         self.assertEqual(app.cookie_text.get("1.0", "end"), "unsaved-cookie")
-        self.assertTrue(any("已勾选账号参与挂机：小号" in item for item in app.logs))
+        saved.assert_called_once_with(config)
+        self.assertTrue(any("小号：参与挂机" in item for item in app.logs))
 
     def test_new_account_clears_editor_and_uses_unique_name(self) -> None:
         app = object.__new__(gui.App)
@@ -544,12 +555,16 @@ class GuiAccountSelectionTest(unittest.TestCase):
             account_name="默认账号",
         )
         app.account_name_var = FakeVar("默认账号")
+        app.selected_account_var = FakeVar("默认账号")
         app.cookie_text = FakeText("SESSDATA=a")
         app.cookie_validation_var = FakeVar("")
+        app.editing_account_name = "默认账号"
         app.logs: list[str] = []
         app._log = app.logs.append  # type: ignore[method-assign]
         app._refresh_cookie_placeholder = lambda: None  # type: ignore[method-assign]
         app._refresh_summary_bar = lambda: None  # type: ignore[method-assign]
+        app._refresh_account_selector = lambda: None  # type: ignore[method-assign]
+        app._refresh_account_editor_actions = lambda: None  # type: ignore[method-assign]
 
         gui.App._new_account(app)
 
@@ -567,22 +582,25 @@ class GuiAccountSelectionTest(unittest.TestCase):
             account_name="主号",
         )
         app.account_name_var = FakeVar("主号")
+        app.selected_account_var = FakeVar("主号")
         app.cookie_text = FakeText("SESSDATA=a")
         app.cookie_validation_var = FakeVar("")
+        app.editing_account_name = "主号"
         app.logs: list[str] = []
         app._log = app.logs.append  # type: ignore[method-assign]
         app._refresh_cookie_placeholder = lambda: None  # type: ignore[method-assign]
         app._refresh_summary_bar = lambda: None  # type: ignore[method-assign]
         app._refresh_account_selector = lambda: None  # type: ignore[method-assign]
+        app._refresh_account_editor_actions = lambda: None  # type: ignore[method-assign]
 
         gui.App._select_account_for_edit(app, "小号")
 
         self.assertEqual(app.account_name_var.get(), "小号")
         self.assertEqual(app.cookie_text.get("1.0", "end"), "SESSDATA=b")
         self.assertEqual(app.cookie_validation_var.get(), "Cookie 已填写")
-        self.assertTrue(any("当前编辑账号：小号" in item for item in app.logs))
+        self.assertTrue(any("已切换账号：小号" in item for item in app.logs))
 
-    def test_edit_account_saves_unsaved_cookie_before_switching(self) -> None:
+    def test_switching_dirty_account_asks_before_discard_and_never_saves(self) -> None:
         app = object.__new__(gui.App)
         app.config_data = SimpleNamespace(
             accounts=[
@@ -592,8 +610,10 @@ class GuiAccountSelectionTest(unittest.TestCase):
             account_name="主号",
         )
         app.account_name_var = FakeVar("主号")
+        app.selected_account_var = FakeVar("主号")
         app.cookie_text = FakeText("SESSDATA=changed")
         app.cookie_validation_var = FakeVar("")
+        app.editing_account_name = "主号"
         app.logs: list[str] = []
         saved: list[str] = []
         app._log = app.logs.append  # type: ignore[method-assign]
@@ -601,25 +621,39 @@ class GuiAccountSelectionTest(unittest.TestCase):
         app._refresh_cookie_placeholder = lambda: None  # type: ignore[method-assign]
         app._refresh_summary_bar = lambda: None  # type: ignore[method-assign]
         app._refresh_account_selector = lambda: None  # type: ignore[method-assign]
+        app._refresh_account_editor_actions = lambda: None  # type: ignore[method-assign]
 
-        gui.App._select_account_for_edit(app, "小号")
+        confirmation: dict[str, object] = {}
+        with patch.object(
+            gui,
+            "build_confirmation_dialog",
+            side_effect=lambda _parent, **kwargs: confirmation.update(kwargs),
+        ):
+            gui.App._select_account_for_edit(app, "小号")
 
-        self.assertEqual(saved, ["主号"])
+        self.assertEqual(saved, [])
+        self.assertEqual(app.account_name_var.get(), "主号")
+        self.assertEqual(app.cookie_text.get("1.0", "end"), "SESSDATA=changed")
+        self.assertEqual(confirmation["confirm_text"], "放弃并切换")
+        confirmation["on_confirm"]()  # type: ignore[operator]
         self.assertEqual(app.account_name_var.get(), "小号")
         self.assertEqual(app.cookie_text.get("1.0", "end"), "SESSDATA=b")
-        self.assertTrue(any("已先保存当前账号：主号" in item for item in app.logs))
 
-    def test_select_current_account_gives_feedback(self) -> None:
+    def test_select_current_account_is_a_noop(self) -> None:
         app = object.__new__(gui.App)
+        app.config_data = SimpleNamespace(
+            accounts=[gui.AccountProfile(name="主号", cookie="SESSDATA=a")],
+        )
         app.account_name_var = FakeVar("主号")
         app.cookie_text = FakeText("SESSDATA=a")
+        app.editing_account_name = "主号"
         app.logs: list[str] = []
         app._log = app.logs.append  # type: ignore[method-assign]
 
         gui.App._select_account_for_edit(app, "主号")
 
-        self.assertTrue(app.cookie_text.focused)
-        self.assertTrue(any("正在编辑账号：主号" in item for item in app.logs))
+        self.assertFalse(app.cookie_text.focused)
+        self.assertEqual(app.logs, [])
 
     def test_reset_room_id_restores_default(self) -> None:
         app = object.__new__(gui.App)
@@ -663,10 +697,11 @@ class GuiAccountSelectionTest(unittest.TestCase):
         self.assertEqual([(item.name, item.cookie) for item in accounts],
                          [("账号 2", "SESSDATA=b"), ("默认账号", "SESSDATA=a")])
 
-    def test_current_config_new_account_is_saved_and_marked_active(self) -> None:
+    def test_current_config_excludes_unsaved_new_account_draft(self) -> None:
         app = object.__new__(gui.App)
         app.config_data = SimpleNamespace(
             accounts=[gui.AccountProfile(name="默认账号", cookie="SESSDATA=a")],
+            account_name="默认账号",
         )
         app.account_checks = {"默认账号": FakeBoolVar(True)}
         app.account_name_var = FakeVar("账号 2")
@@ -677,12 +712,106 @@ class GuiAccountSelectionTest(unittest.TestCase):
         app.task_ids_text = FakeText("")
         app.watch_threads_var = FakeVar("1")
         app.notify_url_var = FakeVar("")
+        app.editing_account_name = None
 
         config = gui.App._current_config(app)
 
         self.assertEqual([(item.name, item.cookie) for item in config.accounts],
-                         [("账号 2", "SESSDATA=b"), ("默认账号", "SESSDATA=a")])
-        self.assertEqual(config.active_accounts, ["默认账号", "账号 2"])
+                         [("默认账号", "SESSDATA=a")])
+        self.assertEqual(config.active_accounts, ["默认账号"])
+
+    def test_new_account_name_change_marks_draft_dirty(self) -> None:
+        app = object.__new__(gui.App)
+        app.editing_account_name = None
+        app._draft_account_name = "账号 2"
+        app.account_name_var = FakeVar("比赛账号")
+        app.cookie_text = FakeText("")
+
+        self.assertTrue(gui.App._account_editor_is_dirty(app))
+
+    def test_explicit_rename_preserves_participation_state(self) -> None:
+        app = object.__new__(gui.App)
+        app.config_data = gui.AppConfig(
+            cookie="SESSDATA=a",
+            account_name="主号",
+            accounts=[
+                gui.AccountProfile(name="主号", cookie="SESSDATA=a"),
+                gui.AccountProfile(name="小号", cookie="SESSDATA=b"),
+            ],
+            room_id="23612045",
+            active_accounts=["主号"],
+        )
+        app.editing_account_name = "主号"
+        app._draft_account_name = ""
+        app.selected_account_var = FakeVar("主号")
+        app.account_name_var = FakeVar("比赛账号")
+        app.cookie_text = FakeText("SESSDATA=renamed")
+        app.cookie_validation_var = FakeVar("")
+        app.account_checks = {"主号": FakeBoolVar(True), "小号": FakeBoolVar(False)}
+        app.room_var = FakeVar("23612045")
+        app.interval_var = FakeVar("10")
+        app.auto_claim_var = FakeBoolVar(True)
+        app.task_ids_text = FakeText("")
+        app.watch_threads_var = FakeVar("1")
+        app.notify_url_var = FakeVar("")
+        app.logs: list[str] = []
+        app._log = app.logs.append  # type: ignore[method-assign]
+        app._refresh_account_selector = lambda: None  # type: ignore[method-assign]
+        app._refresh_account_editor_actions = lambda: None  # type: ignore[method-assign]
+
+        with patch.object(gui, "save_config") as saved:
+            gui.App._save_account(app)
+
+        saved.assert_called_once()
+        self.assertEqual(
+            [(item.name, item.cookie) for item in app.config_data.accounts],
+            [("比赛账号", "SESSDATA=renamed"), ("小号", "SESSDATA=b")],
+        )
+        self.assertEqual(app.config_data.active_accounts, ["比赛账号"])
+        self.assertEqual(app.editing_account_name, "比赛账号")
+
+    def test_deleting_other_account_keeps_draft_and_persisted_current_account(self) -> None:
+        app = object.__new__(gui.App)
+        app.config_data = gui.AppConfig(
+            cookie="SESSDATA=b",
+            account_name="B",
+            accounts=[
+                gui.AccountProfile(name="A", cookie="SESSDATA=a"),
+                gui.AccountProfile(name="B", cookie="SESSDATA=b"),
+                gui.AccountProfile(name="C", cookie="SESSDATA=c"),
+            ],
+            active_accounts=["B"],
+        )
+        app.editing_account_name = None
+        app._draft_account_name = "账号 4"
+        app.selected_account_var = FakeVar("")
+        app.account_name_var = FakeVar("比赛新号")
+        app.cookie_text = FakeText("SESSDATA=draft")
+        app.cookie_validation_var = FakeVar("Cookie 已填写")
+        app.account_checks = {
+            "A": FakeBoolVar(False),
+            "B": FakeBoolVar(True),
+            "C": FakeBoolVar(False),
+        }
+        app.room_var = FakeVar("23612045")
+        app.interval_var = FakeVar("10")
+        app.auto_claim_var = FakeBoolVar(True)
+        app.task_ids_text = FakeText("")
+        app.watch_threads_var = FakeVar("1")
+        app.notify_url_var = FakeVar("")
+        app.logs: list[str] = []
+        app._log = app.logs.append  # type: ignore[method-assign]
+        app._refresh_account_selector = lambda: None  # type: ignore[method-assign]
+        app._refresh_account_editor_actions = lambda: None  # type: ignore[method-assign]
+        app._refresh_summary_bar = lambda: None  # type: ignore[method-assign]
+
+        with patch.object(gui, "save_config"):
+            gui.App._perform_delete_account(app, "C")
+
+        self.assertEqual(app.config_data.account_name, "B")
+        self.assertEqual(app.editing_account_name, None)
+        self.assertEqual(app.account_name_var.get(), "比赛新号")
+        self.assertEqual(app.cookie_text.get("1.0", "end"), "SESSDATA=draft")
 
     def test_start_uses_saved_config_when_building_account_options(self) -> None:
         app = object.__new__(gui.App)
