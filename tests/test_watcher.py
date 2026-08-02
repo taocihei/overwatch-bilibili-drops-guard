@@ -752,6 +752,59 @@ class LiveWatcherTest(unittest.TestCase):
         self.assertIn("目标 40x", summary)
         self.assertIn("B 站实绩约 1.0x", summary)
 
+    def test_stalled_totalv2_requests_a_single_session_rebuild(self) -> None:
+        logs: list[str] = []
+        live_watcher = LiveWatcher(WatchOptions(cookie="a=b", room_id="1", watch_threads=10), logs.append)
+        live_watcher._room = RoomInfo(room_id=1, live_status=1)
+        live_watcher._heartbeat_count = 10
+
+        with (
+            patch.object(watcher, "SERVER_PROGRESS_STALL_SECONDS", 120.0),
+            patch.object(watcher, "SERVER_PROGRESS_RECONNECT_COOLDOWN_SECONDS", 120.0),
+        ):
+            generation = live_watcher._watch_session_generation()
+            live_watcher._record_server_progress(140, 1_000.0, expect_progress=True)
+            live_watcher._record_server_progress(140, 1_121.0, expect_progress=True)
+            live_watcher._record_server_progress(140, 1_180.0, expect_progress=True)
+
+        self.assertTrue(live_watcher._watch_session_needs_reconnect(generation))
+        self.assertEqual(live_watcher._watch_reconnect_generation, generation + 1)
+        self.assertEqual(sum("正在自动重建观看会话" in message for message in logs), 1)
+
+    def test_totalv2_advance_resets_stall_timer(self) -> None:
+        live_watcher = LiveWatcher(WatchOptions(cookie="a=b", room_id="1"), lambda _message: None)
+        live_watcher._room = RoomInfo(room_id=1, live_status=1)
+        live_watcher._heartbeat_count = 1
+
+        with patch.object(watcher, "SERVER_PROGRESS_STALL_SECONDS", 120.0):
+            live_watcher._record_server_progress(140, 1_000.0, expect_progress=True)
+            live_watcher._record_server_progress(141, 1_100.0, expect_progress=True)
+            live_watcher._record_server_progress(141, 1_190.0, expect_progress=True)
+
+        self.assertEqual(live_watcher._watch_reconnect_generation, 0)
+        self.assertEqual(live_watcher._server_progress_advanced_at, 1_100.0)
+
+    def test_stable_completed_progress_does_not_rebuild_sessions(self) -> None:
+        live_watcher = LiveWatcher(WatchOptions(cookie="a=b", room_id="1"), lambda _message: None)
+        live_watcher._room = RoomInfo(room_id=1, live_status=1)
+        live_watcher._heartbeat_count = 1
+
+        with patch.object(watcher, "SERVER_PROGRESS_STALL_SECONDS", 120.0):
+            live_watcher._record_server_progress(300, 1_000.0, expect_progress=False)
+            live_watcher._record_server_progress(300, 1_500.0, expect_progress=False)
+
+        self.assertEqual(live_watcher._watch_reconnect_generation, 0)
+
+    def test_pending_watch_progress_ignores_non_watch_tasks(self) -> None:
+        live_watcher = LiveWatcher(WatchOptions(cookie="a=b", room_id="1"), lambda _message: None)
+
+        self.assertTrue(live_watcher._has_pending_watch_progress({
+            "list": [{"task_name": "观看直播180分钟", "current": 140, "target": 180, "task_status": 1}],
+        }))
+        self.assertFalse(live_watcher._has_pending_watch_progress({
+            "list": [{"task_name": "完成指定互动", "current": 0, "target": 1, "task_status": 1}],
+        }))
+
     def test_server_rate_uses_recent_window_instead_of_startup_burst(self) -> None:
         live_watcher = LiveWatcher(WatchOptions(cookie="a=b", room_id="1"), lambda _m: None)
         live_watcher._record_server_progress(100, 0.0)

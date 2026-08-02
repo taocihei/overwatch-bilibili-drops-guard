@@ -17,6 +17,9 @@ CLAIM_RATE_LIMIT_DELAY_SECONDS = 12.0
 CLAIM_RATE_LIMIT_ATTEMPTS = 3
 WATCH_START_INTERVAL_SECONDS = 1.0
 SERVER_RATE_WINDOW_SECONDS = 180.0
+SERVER_PROGRESS_STALL_SECONDS = 150.0
+SERVER_PROGRESS_RECONNECT_COOLDOWN_SECONDS = 150.0
+WATCH_RECONNECT_STAGGER_SECONDS = 0.12
 ACTIVITY_DISCOVERY_SUCCESS_TTL_SECONDS = 300.0
 ACTIVITY_DISCOVERY_RETRY_TTL_SECONDS = 60.0
 BILIBILI_TIMEZONE = timezone(timedelta(hours=8))
@@ -96,6 +99,11 @@ class LiveWatcher:
         self._last_task_progress_score = 0.0
         self._last_task_progress_signature: tuple[str, ...] = ()
         self._server_progress_samples: list[tuple[float, float]] = []
+        self._server_progress_value: float | None = None
+        self._server_progress_advanced_at = 0.0
+        self._server_progress_observed_at = 0.0
+        self._watch_reconnect_generation = 0
+        self._last_watch_reconnect_at = 0.0
         self._last_task_waiting_log_at = 0.0
         self._manual_refresh_thread: Optional[threading.Thread] = None
         self._rediscover_thread: Optional[threading.Thread] = None
@@ -118,6 +126,11 @@ class LiveWatcher:
             self._watch_started_at = 0.0
             self._watch_stopped_at = 0.0
             self._server_progress_samples = []
+            self._server_progress_value = None
+            self._server_progress_advanced_at = 0.0
+            self._server_progress_observed_at = 0.0
+            self._watch_reconnect_generation = 0
+            self._last_watch_reconnect_at = 0.0
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
 
@@ -279,7 +292,7 @@ class LiveWatcher:
             heartbeat_count = self._heartbeat_count
 
         normal_count = sum(1 for status in statuses if status.get("state") == "正常")
-        starting_count = sum(1 for status in statuses if status.get("state") in {"启动中", "计时中"})
+        starting_count = sum(1 for status in statuses if status.get("state") in {"启动中", "计时中", "重连中"})
         waiting_count = sum(1 for status in statuses if status.get("state") == "等待开播")
         failed_count = sum(1 for status in statuses if status.get("state") == "暂时失败")
         intervals = [
@@ -375,11 +388,12 @@ class LiveWatcher:
                 self._watch_started_at = time.time()
             self._heartbeat_count += 1
 
-    def _record_server_progress(self, score: float, now: float) -> None:
-        """记录 totalv2 的真实分钟数，用滚动窗口估算服务端有效倍率。"""
+    def _record_server_progress(self, score: float, now: float, *, expect_progress: bool = False) -> None:
+        """记录 totalv2 分钟数；入账停滞时让所有观看会话自动重建。"""
 
         if score <= 0:
             return
+        reconnect = False
         with self._watch_status_lock:
             samples = self._server_progress_samples
             if samples and score < samples[-1][1]:
@@ -389,6 +403,52 @@ class LiveWatcher:
             cutoff = now - SERVER_RATE_WINDOW_SECONDS
             while len(samples) > 2 and samples[0][0] < cutoff:
                 samples.pop(0)
+
+            previous = self._server_progress_value
+            self._server_progress_observed_at = now
+            if previous is None or score != previous:
+                self._server_progress_value = score
+                self._server_progress_advanced_at = now
+            elif not self._server_progress_advanced_at:
+                self._server_progress_advanced_at = now
+            elif (
+                expect_progress
+                and self._heartbeat_count > 0
+                and not self._stop.is_set()
+                and self._room is not None
+                and self._room.live_status == 1
+                and now - self._server_progress_advanced_at >= SERVER_PROGRESS_STALL_SECONDS
+                and now - self._last_watch_reconnect_at >= SERVER_PROGRESS_RECONNECT_COOLDOWN_SECONDS
+            ):
+                self._watch_reconnect_generation += 1
+                self._last_watch_reconnect_at = now
+                self._server_progress_advanced_at = now
+                self._server_progress_samples = []
+                reconnect = True
+        if reconnect:
+            self.log(
+                f"B站实绩连续 {int(SERVER_PROGRESS_STALL_SECONDS)} 秒未增加"
+                f"（当前 {self._format_progress_value(score)} 分钟），正在自动重建观看会话"
+            )
+
+    def _reset_server_progress_tracking(self) -> None:
+        with self._watch_status_lock:
+            self._server_progress_samples = []
+            self._server_progress_value = None
+            self._server_progress_advanced_at = 0.0
+            self._server_progress_observed_at = 0.0
+
+    def _watch_session_generation(self) -> int:
+        with self._watch_status_lock:
+            return self._watch_reconnect_generation
+
+    def _watch_session_needs_reconnect(self, generation: int) -> bool:
+        return generation != self._watch_session_generation()
+
+    def _stagger_watch_reconnect(self, worker_id: int) -> None:
+        delay = min(max(worker_id - 1, 0) * WATCH_RECONNECT_STAGGER_SECONDS, 12.0)
+        if delay > 0:
+            self._stop.wait(delay)
 
     def _server_credit_rate(self) -> float | None:
         with self._watch_status_lock:
@@ -477,6 +537,7 @@ class LiveWatcher:
                         self.log(f"后台计时 {worker_id} 已进入房间 {current_room.room_id}，正在提交观看计时")
 
                     sequence = 1
+                    session_generation = self._watch_session_generation()
                     state = self._start_heartbeat_session(client, current_room, state)
                     self._set_watch_status(worker_id, "正常", interval=state.interval, message="首次计时请求已提交")
                     self._record_heartbeat(state.interval)
@@ -486,6 +547,10 @@ class LiveWatcher:
                     self._stop.wait(state.interval)
 
                     while not self._stop.is_set():
+                        if self._watch_session_needs_reconnect(session_generation):
+                            self._set_watch_status(worker_id, "重连中", message="B站实绩停滞，正在重建观看会话")
+                            self._stagger_watch_reconnect(worker_id)
+                            break
                         latest_room = self._latest_room_snapshot(current_room)
                         if latest_room.live_status != 1:
                             current_room = latest_room
@@ -795,9 +860,12 @@ class LiveWatcher:
             if progress_signature != self._last_task_progress_signature:
                 self._last_task_progress_signature = progress_signature
                 self._last_task_progress_score = 0.0
-                with self._watch_status_lock:
-                    self._server_progress_samples = []
-            self._record_server_progress(progress_score, now)
+                self._reset_server_progress_tracking()
+            self._record_server_progress(
+                progress_score,
+                now,
+                expect_progress=self._has_pending_watch_progress(progress),
+            )
             progress_went_backwards = (
                 bool(progress_signature)
                 and self._last_task_progress_score > 0
@@ -907,6 +975,23 @@ class LiveWatcher:
             except (TypeError, ValueError):
                 continue
         return score
+
+    def _has_pending_watch_progress(self, progress: dict[str, Any]) -> bool:
+        nodes = sorted(self._iter_task_nodes(progress), key=self._task_sort_key)
+        nodes, _group_label, _hidden_count = self._focus_task_nodes(nodes)
+        for node in nodes:
+            if self._skip_task_summary_node(node) or self._node_received(node):
+                continue
+            name = self._task_display_name(node)
+            if "观看" not in name and "直播" not in name:
+                continue
+            current, target = self._task_progress_values(node)
+            try:
+                if 0 <= float(current) < float(target):
+                    return True
+            except (TypeError, ValueError):
+                continue
+        return False
 
     def _task_progress_signature(self, progress: dict[str, Any]) -> tuple[str, ...]:
         nodes = sorted(self._iter_task_nodes(progress), key=self._task_sort_key)
