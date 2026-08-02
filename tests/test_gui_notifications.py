@@ -198,6 +198,7 @@ class GuiMessageRoutingTest(unittest.TestCase):
         app = self._app()
         self.assertTrue(app._is_notification_message("[默认账号] 已领取：电竞补给"))
         self.assertTrue(app._is_notification_message("已领取：电竞补给"))
+        self.assertTrue(app._is_notification_message("[默认账号] 批量领取完成：新领取 7 个，已领取过 0 个，失败 0 个"))
         self.assertFalse(app._is_notification_message("[默认账号] 房间 23612045：直播中"))
 
     def test_parallel_start_message_is_notification(self) -> None:
@@ -338,7 +339,7 @@ class ProgressVisualRoutingTest(unittest.TestCase):
     def test_claim_completion_summary_updates_reward_card(self) -> None:
         app = self._app()
 
-        gui.App._sync_progress_visual(app, "本次领取处理完成：已处理 7 个奖励，失败 0 个")
+        gui.App._sync_progress_visual(app, "批量领取完成：新领取 7 个，已领取过 0 个，失败 0 个")
 
         self.assertEqual(app.reward_title_var.get(), "领取完成")
         self.assertEqual(app.reward_status_var.get(), "领奖：已完成")

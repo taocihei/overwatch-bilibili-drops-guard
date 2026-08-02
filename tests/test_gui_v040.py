@@ -51,6 +51,30 @@ class RoundedPanelLayoutTest(_HiddenRootCase):
 
 
 class SmallWindowLayoutRegressionTest(unittest.TestCase):
+    def test_three_digit_watch_connection_value_is_not_clipped(self) -> None:
+        app = gui.App(preview_mode=True)
+        try:
+            app.geometry("1280x840+0+0")
+            app.watch_threads_var.set(100)
+            for _ in range(5):
+                app.update()
+
+            number_inputs: list[gui.NumberInput] = []
+
+            def collect(widget: tk.Misc) -> None:
+                for child in widget.winfo_children():
+                    if isinstance(child, gui.NumberInput):
+                        number_inputs.append(child)
+                    collect(child)
+
+            collect(app.execution_panel)
+            self.assertEqual(len(number_inputs), 1)
+            number_input = number_inputs[0]
+            self.assertEqual(app.watch_threads_var.get(), 100)
+            self.assertGreaterEqual(number_input.entry.winfo_width(), number_input.entry.winfo_reqwidth())
+        finally:
+            app.destroy()
+
     def test_default_window_shows_complete_settings_and_expanded_log_area(self) -> None:
         app = gui.App(preview_mode=True)
         try:

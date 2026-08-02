@@ -1,6 +1,6 @@
 # 守望先锋 B 站直播挂宝 / Overwatch Bilibili Live Drops Guard
 
-当前版本：`v0.5.17`
+当前版本：`v0.5.18`
 
 开源地址：<https://github.com/taocihei/overwatch-bilibili-drops-guard>
 
@@ -24,7 +24,7 @@
 
 1. 打开项目页面：<https://github.com/taocihei/overwatch-bilibili-drops-guard>
 2. 进入右侧或页面中的 `Releases`。
-3. 下载 `OverwatchBiliDrops-v0.5.17.exe`。
+3. 下载 `OverwatchBiliDrops-v0.5.18.exe`。
 4. 双击运行。
 5. 如果 Windows 提示“未知发布者”或“Windows 已保护你的电脑”，点击“更多信息”，再点“仍要运行”。这是个人开源软件常见提示，不代表一定有病毒。
 6. 第一次使用先点“自动获取 Cookie”，在弹出的独立 Edge/Chrome 窗口里登录 B 站。
@@ -47,6 +47,13 @@
 - `通知 URL`：可留空。填写后，启动、检测到可领取、领取成功、领取失败、Cookie 获取成功等关键事件会向该地址发送 JSON POST。
 - `观看进度`：优先显示本次观看进度，比如“还差 48 分钟”“已完成，待领取”“已领取”。
 - `运行日志`：保留登录、计时、任务识别和领取记录，适合排查异常。
+
+## v0.5.18 新增与修复
+
+- **批量领取阶梯奖励**：一次领取会持续刷新任务状态，并把后续逐项解锁的奖励全部纳入当前批次，不再每个奖励重新排队和重复提示。
+- **合并领取反馈**：取消逐项成功日志，只保留一次“开始批量领取”和一次最终汇总；失败项仍单独记录，便于排查。
+- **区分新领与已领**：批量结果分别统计本次新领取、此前已领取和失败数量，避免把旧奖励误显示为本次新领取。
+- **修复三位连接数裁切**：扩大观看连接数字控件，配置为 `100` 时完整显示，不再因为输入区域过窄看成 `10`。
 
 ## v0.5.17 新增与修复
 
@@ -395,7 +402,7 @@ dist\OverwatchBiliDrops.exe
 发布时会同时生成带版本号的文件，例如：
 
 ```text
-dist\OverwatchBiliDrops-v0.5.17.exe
+dist\OverwatchBiliDrops-v0.5.18.exe
 ```
 ## 赞助
 
@@ -411,7 +418,7 @@ dist\OverwatchBiliDrops-v0.5.17.exe
 
 Project name: **守望先锋 B 站直播挂宝 / Overwatch Bilibili Live Drops Guard**
 
-Version: `v0.5.17`
+Version: `v0.5.18`
 
 Repository: <https://github.com/taocihei/overwatch-bilibili-drops-guard>
 
@@ -431,7 +438,7 @@ Default room: `23612045`.
 
 1. Open the repository page: <https://github.com/taocihei/overwatch-bilibili-drops-guard>
 2. Open `Releases`.
-3. Download `OverwatchBiliDrops-v0.5.17.exe`.
+3. Download `OverwatchBiliDrops-v0.5.18.exe`.
 4. Double-click to run it.
 5. If Windows shows an unknown-publisher warning, click `More info`, then `Run anyway`.
 6. Click `自动获取 Cookie`, then sign in to Bilibili in the independent Edge/Chrome window opened by the app.
@@ -475,5 +482,5 @@ dist\OverwatchBiliDrops.exe
 Release builds are also copied with a versioned file name, for example:
 
 ```text
-dist\OverwatchBiliDrops-v0.5.17.exe
+dist\OverwatchBiliDrops-v0.5.18.exe
 ```

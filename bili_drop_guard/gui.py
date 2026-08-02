@@ -835,6 +835,9 @@ class NumberInput(tk.Frame):
         background: str = SURFACE,
         width: int = 112,
     ) -> None:
+        # 两侧按钮、面板内边距和三位数字输入框至少需要 124px。此前执行栏传入
+        # 104px 时，变量实际是 100，但输入框只剩 20px，界面会把它裁成“10”。
+        width = max(width, 124)
         super().__init__(parent, width=width, height=38, bg=background, highlightthickness=0, borderwidth=0)
         self.variable = variable
         self.minimum = minimum
@@ -2296,7 +2299,7 @@ class App(tk.Tk):
         controls = execution_panel.inner
         self.controls = controls
         controls.columnconfigure(0, weight=1, minsize=118)
-        controls.columnconfigure(1, weight=0, minsize=108)
+        controls.columnconfigure(1, weight=0, minsize=128)
         controls.columnconfigure(2, weight=0, minsize=88)
         controls.columnconfigure(3, weight=0, minsize=216)
         controls.columnconfigure(4, weight=0, minsize=92)
@@ -2321,7 +2324,7 @@ class App(tk.Tk):
             minimum=1,
             maximum=MAX_WATCH_THREADS,
             background=GLASS,
-            width=104,
+            width=124,
         ).grid(row=1, column=1, sticky="w", padx=(0, 12))
 
         self.auto_claim_button = ToggleSwitch(
@@ -4450,6 +4453,7 @@ class App(tk.Tk):
             "检测到 ",
             "开始领取奖励",
             "已领取：",
+            "批量领取完成",
             "领取失败：",
             "守护循环异常",
             "登录状态失效",
@@ -4568,7 +4572,7 @@ class App(tk.Tk):
                 self.reward_detail_var.set(f"还差 {self._format_progress_number(remaining)} 分钟")
                 self.reward_status_var.set("领奖：未到条件")
             return
-        if "本次领取处理完成" in text:
+        if "本次领取处理完成" in text or "批量领取完成" in text:
             failed_match = re.search(r"失败\s*(\d+)\s*个", text)
             failed_count = int(failed_match.group(1)) if failed_match else 0
             self.progress_ring.set_state(text="完成", caption="领取结果", value=1.0, color=SUCCESS if failed_count == 0 else DANGER)
@@ -4600,7 +4604,7 @@ class App(tk.Tk):
             self.reward_detail_var.set("已有领取任务在执行")
             self.reward_status_var.set("领奖：领取中")
             return
-        if "开始领取奖励" in text or "正在领取" in text or "领取前刷新任务进度" in text:
+        if "开始领取奖励" in text or "开始批量领取奖励" in text or "正在领取" in text or "领取前刷新任务进度" in text:
             self.progress_ring.set_state(text="领取", caption="提交中", value=0.86, color=ACCENT)
             self.progress_title_var.set("领取中")
             self.progress_detail_var.set("正在刷新任务进度并提交领取请求。")
@@ -4754,6 +4758,8 @@ class App(tk.Tk):
             "掉宝任务进度检查失败",
             "活动任务进度检查失败",
             "开始领取奖励",
+            "开始批量领取奖励",
+            "批量领取完成",
             "检测到任务已完成",
             "检测到 ",
             "任务进度",

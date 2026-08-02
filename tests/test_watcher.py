@@ -185,9 +185,68 @@ class LiveWatcherTest(unittest.TestCase):
 
         self.assertEqual(calls, [(100, "task-a"), (100, "task-b")])
         self.assertEqual(waits, [7])
-        self.assertIn("开始领取奖励：会按顺序一个一个领取，避免太快导致失败", logs)
-        self.assertIn("正在领取（1/2）：手动填写的任务", logs)
-        self.assertIn("本次领取处理完成：已处理 2 个奖励，失败 0 个", logs)
+        self.assertIn("开始批量领取奖励：本次会连续处理当前及后续解锁的全部可领项", logs)
+        self.assertIn("批量领取完成：新领取 2 个，已领取过 0 个，失败 0 个", logs)
+        self.assertFalse(any(message.startswith("已领取：") for message in logs))
+
+    def test_claim_worker_drains_rewards_unlocked_one_at_a_time_as_one_batch(self) -> None:
+        claimed: list[str] = []
+        logs: list[str] = []
+        progress_checks = 0
+
+        class FakeClient:
+            def __init__(self, cookie: str) -> None:
+                self.cookie = cookie
+
+            def get_user_task_progress(self, up_id: int, task_id: str | None = None) -> dict[str, object]:
+                return {}
+
+            def get_activity_task_progress(self, task_ids: list[str]) -> dict[str, object]:
+                nonlocal progress_checks
+                progress_checks += 1
+                if not claimed:
+                    statuses = {"activity-a": 2, "activity-b": 1}
+                elif claimed == ["activity-a"] and progress_checks < 3:
+                    # 模拟上一项领取后，B 站需要一次刷新才开放下一项。
+                    statuses = {"activity-a": 3, "activity-b": 1}
+                elif claimed == ["activity-a"]:
+                    statuses = {"activity-a": 3, "activity-b": 2}
+                else:
+                    statuses = {"activity-a": 3, "activity-b": 3}
+                return {
+                    "list": [
+                        {
+                            "task_id": task_id,
+                            "task_name": f"奖励 {task_id}",
+                            "task_status": statuses[task_id],
+                            "indicators": [{"cur_value": 60, "limit": 60}],
+                        }
+                        for task_id in task_ids
+                    ]
+                }
+
+            def claim_activity_mission_reward(self, task_id: str) -> dict[str, object]:
+                claimed.append(task_id)
+                return {}
+
+        original_client = watcher.BilibiliClient
+        watcher.BilibiliClient = FakeClient
+        try:
+            live_watcher = LiveWatcher(WatchOptions(cookie="a=b", room_id="1"), logs.append)
+            live_watcher._last_up_id = 100
+            live_watcher._activity_task_ids.update({"activity-a", "activity-b"})
+            live_watcher._activity_claim_task_ids.update({"activity-a", "activity-b"})
+            live_watcher._next_activity_discovery_at = float("inf")
+
+            live_watcher._claim_completed_worker()
+        finally:
+            watcher.BilibiliClient = original_client
+
+        self.assertEqual(claimed, ["activity-a", "activity-b"])
+        self.assertGreaterEqual(progress_checks, 3)
+        self.assertEqual(sum(message.startswith("开始批量领取奖励") for message in logs), 1)
+        self.assertEqual(sum(message.startswith("批量领取完成") for message in logs), 1)
+        self.assertFalse(any(message.startswith("已领取：") for message in logs))
 
     def test_claim_worker_refreshes_progress_before_claiming(self) -> None:
         calls: list[tuple[int, str | None]] = []

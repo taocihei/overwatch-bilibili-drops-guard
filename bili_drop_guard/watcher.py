@@ -15,6 +15,8 @@ LogSink = Callable[[str], None]
 CLAIM_SUBMIT_DELAY_SECONDS = 3.0
 CLAIM_RATE_LIMIT_DELAY_SECONDS = 12.0
 CLAIM_RATE_LIMIT_ATTEMPTS = 3
+MAX_CLAIM_BATCH_PASSES = 100
+CLAIM_UNLOCK_REFRESH_ATTEMPTS = 3
 WATCH_START_INTERVAL_SECONDS = 1.0
 SERVER_RATE_WINDOW_SECONDS = 180.0
 SERVER_PROGRESS_STALL_SECONDS = 150.0
@@ -70,6 +72,7 @@ class LiveWatcher:
         self._room: RoomInfo | None = None
         self._claimed_markers: set[str] = set()
         self._claimable_task_ids: set[str] = set()
+        self._completed_unreceived_task_ids: set[str] = set()
         self._known_task_ids: set[str] = set()
         # totalv2 必须查询父 task_id；mission/receive 必须提交 checkpoint sid。
         self._activity_task_ids: set[str] = set()
@@ -181,6 +184,7 @@ class LiveWatcher:
             self._activity_claim_task_ids.clear()
             self._activity_task_meta.clear()
             self._claimable_task_ids.clear()
+            self._completed_unreceived_task_ids.clear()
         client: BilibiliClient | None = None
         try:
             client = BilibiliClient(self.options.cookie)
@@ -670,7 +674,12 @@ class LiveWatcher:
 
         return self._record_task_progress(progress, announce_claimable=True)
 
-    def _check_activity_task_progress(self, client: BilibiliClient) -> bool:
+    def _check_activity_task_progress(
+        self,
+        client: BilibiliClient,
+        *,
+        announce_claimable: bool = True,
+    ) -> bool:
         self._discover_activity_task_ids_if_due(client, announce_progress=False)
         with self._claim_lock:
             if self._activity_task_ids:
@@ -686,7 +695,7 @@ class LiveWatcher:
             return False
         self._enrich_activity_progress(progress)
         self._remember_activity_progress_source(progress, task_ids)
-        return self._record_task_progress(progress, announce_claimable=True)
+        return self._record_task_progress(progress, announce_claimable=announce_claimable)
 
     def _discover_activity_task_ids_if_due(
         self,
@@ -809,6 +818,7 @@ class LiveWatcher:
             self._activity_claim_task_ids.clear()
             self._activity_task_meta.clear()
             self._claimable_task_ids.difference_update(stale_task_ids)
+            self._completed_unreceived_task_ids.difference_update(stale_task_ids)
             self._last_task_summary = ""
             self._last_task_progress_score = 0.0
             self._last_task_progress_signature = ()
@@ -854,6 +864,13 @@ class LiveWatcher:
         now = time.time()
         claimable_tasks = self._find_claimable_task_refs(progress)
         task_nodes = self._iter_task_nodes(progress)
+        completed_unreceived_ids = {
+            self._task_id_from_node(node)
+            for node in task_nodes
+            if self._task_id_from_node(node)
+            and self._progress_full(node)
+            and not self._node_received(node)
+        }
         if summary:
             progress_score = self._task_summary_progress_score(progress)
             progress_signature = self._task_progress_signature(progress)
@@ -899,6 +916,9 @@ class LiveWatcher:
         with self._claim_lock:
             previous_claimable_ids = set(self._claimable_task_ids)
             previous_claimable_general = self._claimable_general
+            discovered_task_id_set = set(discovered_task_ids)
+            self._completed_unreceived_task_ids.difference_update(discovered_task_id_set)
+            self._completed_unreceived_task_ids.update(completed_unreceived_ids)
             claimable_ids = {task_id for _name, task_id in claimable_tasks if task_id}
             if self._last_up_id:
                 claimable_ids = {
@@ -1113,49 +1133,103 @@ class LiveWatcher:
             self.log("缺少主播 UID，暂时无法领取")
             return
         self._refresh_claimable_tasks(up_id)
-        with self._claim_lock:
-            task_ids = sorted(self._claimable_task_ids)
-            claim_general = self._claimable_general
-        if not task_ids and not claim_general:
+        attempted_task_ids: set[str] = set()
+        general_attempted = False
+        started = False
+        new_claimed = 0
+        already_claimed = 0
+        failed = 0
+        batch_pass = 0
+
+        while batch_pass < MAX_CLAIM_BATCH_PASSES and not self._stop.is_set():
+            with self._claim_lock:
+                task_ids = sorted(self._claimable_task_ids - attempted_task_ids)
+                claim_general = self._claimable_general and not general_attempted
+            if not task_ids and not claim_general:
+                break
+
+            if not started:
+                self.log("开始批量领取奖励：本次会连续处理当前及后续解锁的全部可领项")
+                started = True
+
+            if claim_general:
+                general_attempted = True
+                client = BilibiliClient(self.options.cookie)
+                try:
+                    client.claim_user_task_rewards(up_id)
+                    with self._claim_lock:
+                        self._claimable_general = False
+                        self._general_claim_suppressed = True
+                    new_claimed += 1
+                except Exception as exc:
+                    if self._is_already_claimed_error(exc):
+                        with self._claim_lock:
+                            self._claimable_general = False
+                            self._general_claim_suppressed = True
+                        already_claimed += 1
+                    else:
+                        failed += 1
+                        self.log(f"领取失败：通用奖励：{self._friendly_error(exc)}")
+                finally:
+                    self._close_client(client)
+
+            for index, task_id in enumerate(task_ids):
+                if self._stop.is_set():
+                    break
+                attempted_task_ids.add(task_id)
+                label = self._claim_task_label(task_id)
+                try:
+                    result = self._claim_one_task(up_id, task_id)
+                    if "此前已领取" in result or result.startswith("已跳过："):
+                        already_claimed += 1
+                    else:
+                        new_claimed += 1
+                except Exception as exc:
+                    failed += 1
+                    self.log(f"领取失败：{label}：{self._friendly_error(exc)}")
+                if index < len(task_ids) - 1:
+                    self._wait_between_claims(CLAIM_SUBMIT_DELAY_SECONDS)
+
+            batch_pass += 1
+            if self._stop.is_set():
+                break
+            # 阶梯任务可能在上一项领取成功后才开放下一项。若 totalv2 已显示还有
+            # 完成但未领取的任务，就给服务端短暂更新时间并重查，全部留在同一批次。
+            with self._claim_lock:
+                may_unlock_more = any(
+                    task_id not in attempted_task_ids
+                    and f"{up_id}:{task_id}" not in self._claimed_markers
+                    for task_id in self._completed_unreceived_task_ids
+                )
+            refresh_attempts = CLAIM_UNLOCK_REFRESH_ATTEMPTS if may_unlock_more else 1
+            for _refresh_attempt in range(refresh_attempts):
+                if may_unlock_more:
+                    self._wait_between_claims(CLAIM_SUBMIT_DELAY_SECONDS)
+                self._refresh_claimable_tasks(
+                    up_id,
+                    announce_claimable=False,
+                    log_refresh=False,
+                )
+                with self._claim_lock:
+                    if self._claimable_task_ids - attempted_task_ids:
+                        break
+                    may_unlock_more = any(
+                        task_id not in attempted_task_ids
+                        and f"{up_id}:{task_id}" not in self._claimed_markers
+                        for task_id in self._completed_unreceived_task_ids
+                    )
+                if not may_unlock_more:
+                    break
+
+        if not started:
             self.log("已刷新任务进度，但仍未检测到可领取任务；如果 B 站页面显示已完成，请稍后再点领取")
             return
-        self.log("开始领取奖励：会按顺序一个一个领取，避免太快导致失败")
-
-        if claim_general and not task_ids:
-            client = BilibiliClient(self.options.cookie)
-            failed = 0
-            try:
-                client.claim_user_task_rewards(up_id)
-                with self._claim_lock:
-                    self._claimable_general = False
-                    self._general_claim_suppressed = True
-                self.log("已领取：已完成的通用奖励")
-            except Exception as exc:
-                failed = 1
-                self.log(f"领取失败：通用奖励：{self._friendly_error(exc)}")
-            finally:
-                self._close_client(client)
-            self.log(f"本次领取处理完成：已处理 1 个奖励，失败 {failed} 个")
-            return
-
-        processed = 0
-        failed = 0
-        for index, task_id in enumerate(task_ids):
-            if self._stop.is_set():
-                self.log("已停止领取，剩余奖励下次可继续领取")
-                break
-            label = self._claim_task_label(task_id)
-            self.log(f"正在领取（{index + 1}/{len(task_ids)}）：{label}")
-            try:
-                self.log(self._claim_one_task(up_id, task_id))
-            except Exception as exc:
-                failed += 1
-                self.log(f"领取失败：{label}：{self._friendly_error(exc)}")
-            processed += 1
-            if index < len(task_ids) - 1:
-                self._wait_between_claims(CLAIM_SUBMIT_DELAY_SECONDS)
-        if processed:
-            self.log(f"本次领取处理完成：已处理 {processed} 个奖励，失败 {failed} 个")
+        if self._stop.is_set():
+            self.log("已停止领取，剩余奖励下次可继续领取")
+        self.log(
+            "批量领取完成："
+            f"新领取 {new_claimed} 个，已领取过 {already_claimed} 个，失败 {failed} 个"
+        )
 
     def _claim_one_task(self, up_id: int, task_id: str) -> str:
         marker = f"{up_id}:{task_id}"
@@ -1195,6 +1269,7 @@ class LiveWatcher:
         with self._claim_lock:
             self._claimed_markers.add(marker)
             self._claimable_task_ids.discard(task_id)
+            self._completed_unreceived_task_ids.discard(task_id)
         if already_received:
             return f"已领取：{label}（此前已领取）"
         return f"已领取：{label}"
@@ -1267,8 +1342,15 @@ class LiveWatcher:
             self._log_room(room)
         return self._last_up_id
 
-    def _refresh_claimable_tasks(self, up_id: int) -> None:
-        self.log("领取前刷新任务进度")
+    def _refresh_claimable_tasks(
+        self,
+        up_id: int,
+        *,
+        announce_claimable: bool = False,
+        log_refresh: bool = True,
+    ) -> None:
+        if log_refresh:
+            self.log("领取前刷新任务进度")
         client = BilibiliClient(self.options.cookie)
         try:
             try:
@@ -1277,7 +1359,10 @@ class LiveWatcher:
                 self.log(f"领取前刷新任务进度失败：{exc}")
             else:
                 self._record_task_progress(progress, announce_claimable=False)
-            self._check_activity_task_progress(client)
+            self._check_activity_task_progress(
+                client,
+                announce_claimable=announce_claimable,
+            )
         finally:
             self._close_client(client)
 

@@ -136,8 +136,8 @@ class WatcherEndToEndTest(unittest.TestCase):
 
         client = self._client_holder["instance"]
         self.assertEqual(client.claim_calls, [(12345, "live-task-1")])
-        self.assertTrue(any("开始领取奖励" in message for message in logs))
-        self.assertTrue(any("已领取：" in message for message in logs))
+        self.assertTrue(any("开始批量领取奖励" in message for message in logs))
+        self.assertTrue(any("批量领取完成：新领取 1 个" in message for message in logs))
 
     def test_rate_limit_triggers_retry_then_success(self) -> None:
         logs: list[str] = []
