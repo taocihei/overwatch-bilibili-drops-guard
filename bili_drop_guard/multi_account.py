@@ -174,6 +174,9 @@ class MultiAccountWatcher:
     def get_watch_status_snapshot(self) -> tuple[list[WatchWorkerStatus], str]:
         rows: list[WatchWorkerStatus] = []
         normal_routes = 0
+        reconnect_routes = 0
+        failed_routes = 0
+        waiting_routes = 0
         total_routes = 0
         next_intervals: list[int] = []
         server_rates: list[float] = []
@@ -204,6 +207,12 @@ class MultiAccountWatcher:
                 total_routes += 1
                 if child_row.state == "正常":
                     normal_routes += 1
+                elif child_row.state == "重连中":
+                    reconnect_routes += 1
+                elif "失败" in child_row.state or "异常" in child_row.state:
+                    failed_routes += 1
+                elif "等待" in child_row.state:
+                    waiting_routes += 1
                 if child_row.interval is not None:
                     next_intervals.append(child_row.interval)
                 message_parts = [name]
@@ -217,6 +226,12 @@ class MultiAccountWatcher:
                 ))
         target_routes = self._target_route_count or total_routes
         summary = f"多账号并行：{len(self._children)} 个账号，观看连接：{normal_routes}/{total_routes} 心跳已接受"
+        if reconnect_routes:
+            summary += f"，{reconnect_routes} 路重连中"
+        if failed_routes:
+            summary += f"，{failed_routes} 路稍后重试"
+        if waiting_routes:
+            summary += f"，{waiting_routes} 路等待开播"
         if next_intervals:
             summary += f"，下一次约 {min(next_intervals)} 秒后"
         if server_rates:

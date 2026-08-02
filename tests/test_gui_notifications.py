@@ -91,6 +91,19 @@ class BackendNetworkLabelTest(unittest.TestCase):
 
         self.assertEqual(gui._backend_network_label(rows, 1.0), "异常")
 
+    def test_rebuilding_sessions_is_visible_on_main_status(self) -> None:
+        rows = [gui.WatchWorkerStatus(worker_id=1, state="重连中", interval=None, message="B站实绩停滞")]
+
+        self.assertEqual(gui._backend_network_label(rows, 0.0), "会话重建中")
+
+    def test_failure_has_priority_over_rebuilding_session(self) -> None:
+        rows = [
+            gui.WatchWorkerStatus(worker_id=1, state="重连中", interval=None, message="B站实绩停滞"),
+            gui.WatchWorkerStatus(worker_id=2, state="暂时失败", interval=None, message="请求失败"),
+        ]
+
+        self.assertEqual(gui._backend_network_label(rows, 0.0), "异常")
+
 
 class GuiNotificationTest(unittest.TestCase):
     def _new_app(self) -> gui.App:

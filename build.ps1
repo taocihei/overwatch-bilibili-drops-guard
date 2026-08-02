@@ -6,7 +6,7 @@ if (Test-Path -LiteralPath $artifact) {
   Remove-Item -LiteralPath $artifact -Force
 }
 
-python -c "import _tkinter, PIL, PyInstaller, requests, selenium, tkinter; print('Build dependencies OK')"
+python -c "import _tkinter, PIL, PyInstaller, requests, selenium, tkinter, wasmtime; print('Build dependencies OK')"
 if ($LASTEXITCODE -ne 0) {
   throw "Build dependencies are incomplete. Run: python -m pip install -r requirements.txt"
 }
@@ -49,6 +49,11 @@ if (-not (Test-Path -LiteralPath $artifact -PathType Leaf)) {
 Copy-Item -LiteralPath $artifact -Destination $versionedArtifact -Force
 if (-not (Test-Path -LiteralPath $versionedArtifact -PathType Leaf)) {
   throw "The versioned release artifact was not created: $versionedArtifact"
+}
+
+$selfTest = Start-Process -FilePath $versionedArtifact -ArgumentList "--self-test-skynet" -Wait -PassThru
+if ($selfTest.ExitCode -ne 0) {
+  throw "Packaged Skynet/WASM self-test failed with exit code $($selfTest.ExitCode)."
 }
 
 Write-Host "Build complete: $artifact"

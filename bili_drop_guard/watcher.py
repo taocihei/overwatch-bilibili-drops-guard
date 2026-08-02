@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import re
 import threading
 import time
@@ -17,7 +18,7 @@ CLAIM_RATE_LIMIT_DELAY_SECONDS = 12.0
 CLAIM_RATE_LIMIT_ATTEMPTS = 3
 MAX_CLAIM_BATCH_PASSES = 100
 CLAIM_UNLOCK_REFRESH_ATTEMPTS = 3
-WATCH_START_INTERVAL_SECONDS = 1.0
+WATCH_START_INTERVAL_SECONDS = 0.15
 SERVER_RATE_WINDOW_SECONDS = 180.0
 SERVER_PROGRESS_STALL_SECONDS = 150.0
 SERVER_PROGRESS_RECONNECT_COOLDOWN_SECONDS = 150.0
@@ -49,9 +50,18 @@ class WatchOptions:
 @dataclass
 class HeartbeatState:
     interval: int = 60
-    ets: int = 0
-    secret_key: str = ""
-    secret_rule: list[int] | None = None
+    official_interval: int = 60
+    session_id: str = ""
+    stky: str = ""
+    play_url: str = ""
+    qid: int = 1
+    legacy_interval: int = 60
+    legacy_ets: int = 0
+    legacy_secret_key: str = ""
+    legacy_secret_rule: list[int] | None = None
+    legacy_sequence: int = 1
+    official_next_due: float = 0.0
+    legacy_next_due: float = 0.0
 
 
 @dataclass
@@ -296,7 +306,8 @@ class LiveWatcher:
             heartbeat_count = self._heartbeat_count
 
         normal_count = sum(1 for status in statuses if status.get("state") == "正常")
-        starting_count = sum(1 for status in statuses if status.get("state") in {"启动中", "计时中", "重连中"})
+        starting_count = sum(1 for status in statuses if status.get("state") in {"启动中", "计时中"})
+        reconnect_count = sum(1 for status in statuses if status.get("state") == "重连中")
         waiting_count = sum(1 for status in statuses if status.get("state") == "等待开播")
         failed_count = sum(1 for status in statuses if status.get("state") == "暂时失败")
         intervals = [
@@ -308,6 +319,8 @@ class LiveWatcher:
         parts = [f"{normal_count}/{worker_count} 心跳已接受"]
         if starting_count:
             parts.append(f"{starting_count} 路启动中")
+        if reconnect_count:
+            parts.append(f"{reconnect_count} 路重连中")
         if waiting_count:
             parts.append(f"{waiting_count} 路等待开播")
         if failed_count:
@@ -327,7 +340,11 @@ class LiveWatcher:
             if server_rate is not None
             else f"，目标 {worker_count}x / 等待 B 站实绩样本"
         )
-        return f"观看连接：{'，'.join(parts)}{interval_text}{heartbeat_text}{server_text}", normal_count, failed_count + waiting_count
+        return (
+            f"观看连接：{'，'.join(parts)}{interval_text}{heartbeat_text}{server_text}",
+            normal_count,
+            failed_count + waiting_count + reconnect_count,
+        )
 
     def _log_watch_status_summary(self, *, force: bool = False) -> None:
         summary, _normal_count, problem_count = self._watch_status_summary_info()
@@ -380,7 +397,7 @@ class LiveWatcher:
             self.log(message)
 
     def _watch_start_delay(self, worker_id: int) -> float:
-        """逐路错峰注册，避免 roomEntryAction 突发失败后产生“假正常”连接。"""
+        """逐路错峰建立官方观看会话，避免批量注册触发瞬时频控。"""
         if worker_id <= 1:
             return 0.0
         return float(worker_id - 1) * WATCH_START_INTERVAL_SECONDS
@@ -395,22 +412,23 @@ class LiveWatcher:
     def _record_server_progress(self, score: float, now: float, *, expect_progress: bool = False) -> None:
         """记录 totalv2 分钟数；入账停滞时让所有观看会话自动重建。"""
 
-        if score <= 0:
+        if score < 0:
             return
         reconnect = False
         with self._watch_status_lock:
             samples = self._server_progress_samples
-            if samples and score < samples[-1][1]:
-                samples.clear()
-            if not samples or score != samples[-1][1] or now - samples[-1][0] >= 30:
-                samples.append((now, score))
+            previous = self._server_progress_value
+            # totalv2 偶尔会短暂返回 0/旧值。稳定任务周期内只接受最高确认值，
+            # 避免“278 -> 0 -> 278”被误判为一次增长并重置停滞计时。
+            confirmed_score = score if previous is None else max(previous, score)
+            if not samples or confirmed_score != samples[-1][1] or now - samples[-1][0] >= 30:
+                samples.append((now, confirmed_score))
             cutoff = now - SERVER_RATE_WINDOW_SECONDS
             while len(samples) > 2 and samples[0][0] < cutoff:
                 samples.pop(0)
 
-            previous = self._server_progress_value
             self._server_progress_observed_at = now
-            if previous is None or score != previous:
+            if previous is None or score > previous:
                 self._server_progress_value = score
                 self._server_progress_advanced_at = now
             elif not self._server_progress_advanced_at:
@@ -499,27 +517,26 @@ class LiveWatcher:
         return self._watch_elapsed_minutes()
 
     def _heartbeat_watch_worker(self, worker_id: int, room: RoomInfo | None) -> None:
-        # 先确定本会话的设备身份并构造客户端，让每个 worker 都有独立 cookie 和 buvid。
+        client: BilibiliClient | None = None
         try:
-            client = BilibiliClient(
-                self.options.cookie,
-                session_buvid=make_session_buvid(),
-                session_device_uuid=make_session_device_uuid(),
-            )
-        except Exception as exc:
-            self._set_watch_status(worker_id, "暂时失败", message=self._friendly_error(exc))
-            self.log(f"后台计时 {worker_id} 启动失败：{self._friendly_error(exc)}")
-            return
-        try:
-            # 分批错峰启动，避免短时间内大量心跳被 B 站频控拦截（详见 _watch_start_delay）。
+            # 先错峰，再申请独立设备指纹，避免所有 worker 在创建阶段同时访问指纹接口。
             start_delay = self._watch_start_delay(worker_id)
             if start_delay > 0:
                 self._stop.wait(start_delay)
             if self._stop.is_set():
                 return
-            state = HeartbeatState()
             current_room = room
             while not self._stop.is_set():
+                if client is None:
+                    try:
+                        client = self._new_watch_client()
+                    except Exception as exc:
+                        self._set_watch_status(worker_id, "重连中", message=self._friendly_error(exc))
+                        if self._watch_detail_enabled():
+                            self.log(f"后台计时 {worker_id} 正在重建独立会话：{self._friendly_error(exc)}")
+                        self._stop.wait(15)
+                        continue
+                state = HeartbeatState()
                 try:
                     current_room = self._resolve_heartbeat_room(client, current_room)
                     if not current_room.room_id:
@@ -540,42 +557,79 @@ class LiveWatcher:
                     if self._watch_detail_enabled():
                         self.log(f"后台计时 {worker_id} 已进入房间 {current_room.room_id}，正在提交观看计时")
 
-                    sequence = 1
                     session_generation = self._watch_session_generation()
                     state = self._start_heartbeat_session(client, current_room, state)
-                    self._set_watch_status(worker_id, "正常", interval=state.interval, message="首次计时请求已提交")
+                    self._set_watch_status(
+                        worker_id,
+                        "正常",
+                        interval=state.interval,
+                        message="官方观看会话已验证，等待 B 站实绩增长",
+                    )
                     self._record_heartbeat(state.interval)
                     if self._watch_detail_enabled():
                         self.log(f"后台计时 {worker_id} 首次计时请求成功，下一次约 {state.interval} 秒后")
                     self._log_watch_status_summary()
-                    self._stop.wait(state.interval)
+                    self._wait_for_watch_interval(state.interval, session_generation)
 
                     while not self._stop.is_set():
                         if self._watch_session_needs_reconnect(session_generation):
                             self._set_watch_status(worker_id, "重连中", message="B站实绩停滞，正在重建观看会话")
                             self._stagger_watch_reconnect(worker_id)
+                            self._close_client(client)
+                            client = None
                             break
                         latest_room = self._latest_room_snapshot(current_room)
                         if latest_room.live_status != 1:
                             current_room = latest_room
                             break
                         current_room = latest_room
-                        state = self._continue_heartbeat_session(client, current_room, sequence, state)
-                        sequence += 1
-                        self._set_watch_status(worker_id, "正常", interval=state.interval)
+                        state = self._continue_heartbeat_session(client, current_room, state.qid, state)
+                        self._set_watch_status(
+                            worker_id,
+                            "正常",
+                            interval=state.interval,
+                            message="官方观看心跳已接受，等待 B 站实绩增长",
+                        )
                         self._record_heartbeat(state.interval)
                         if self._watch_detail_enabled():
                             self.log(f"后台计时 {worker_id} 计时请求已提交，下一次约 {state.interval} 秒后")
                         self._log_watch_status_summary()
-                        self._stop.wait(state.interval)
+                        self._wait_for_watch_interval(state.interval, session_generation)
                 except Exception as exc:
                     self._set_watch_status(worker_id, "暂时失败", message=self._friendly_error(exc))
                     if self._watch_detail_enabled():
                         self.log(f"后台计时 {worker_id} 暂时失败：{self._friendly_error(exc)}；稍后重试")
                     self._log_watch_status_summary()
                     self._stop.wait(15)
+                    if not self._stop.is_set():
+                        self._close_client(client)
+                        client = None
         finally:
-            self._close_client(client)
+            if client is not None:
+                self._close_client(client)
+
+    def _new_watch_client(self) -> BilibiliClient:
+        client = BilibiliClient(
+            self.options.cookie,
+            session_buvid=make_session_buvid(),
+            session_device_uuid=make_session_device_uuid(),
+        )
+        isolate = getattr(client, "isolate_watch_device_identity", None)
+        if callable(isolate):
+            try:
+                isolate()
+            except Exception:
+                self._close_client(client)
+                raise
+        return client
+
+    def _wait_for_watch_interval(self, interval: int, generation: int) -> None:
+        deadline = time.monotonic() + max(1, int(interval))
+        while not self._stop.is_set() and not self._watch_session_needs_reconnect(generation):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return
+            self._stop.wait(min(1.0, remaining))
 
     def _resolve_heartbeat_room(self, client: BilibiliClient, room: RoomInfo | None) -> RoomInfo:
         latest = self._latest_room_snapshot(room)
@@ -591,38 +645,101 @@ class LiveWatcher:
 
     def _extract_heartbeat_state(self, data: dict[str, Any], fallback: HeartbeatState | None = None) -> HeartbeatState:
         fallback = fallback or HeartbeatState()
-        raw_rule = data.get("secret_rule") or data.get("secretRule") or fallback.secret_rule or []
-        if isinstance(raw_rule, str):
-            try:
-                raw_rule = [int(item) for item in raw_rule.replace("[", "").replace("]", "").split(",") if item.strip()]
-            except ValueError:
-                raw_rule = fallback.secret_rule or []
-        elif isinstance(raw_rule, list):
-            raw_rule = [int(item) for item in raw_rule if str(item).strip()]
-        else:
-            raw_rule = fallback.secret_rule or []
-
-        interval = data.get("heartbeat_interval") or data.get("interval") or data.get("time") or fallback.interval
-        ets = data.get("timestamp") or data.get("ets") or fallback.ets or int(time.time())
+        interval = data.get("hbil") or data.get("heartbeat_interval") or data.get("interval") or fallback.interval
         return HeartbeatState(
             interval=max(10, int(interval or fallback.interval or 60)),
-            ets=int(ets or fallback.ets or time.time()),
-            secret_key=str(data.get("secret_key") or data.get("secretKey") or fallback.secret_key or ""),
-            secret_rule=raw_rule,
+            official_interval=int(data.get("official_interval") or data.get("hbil") or fallback.official_interval or 60),
+            session_id=str(data.get("sid") or fallback.session_id or ""),
+            stky=str(data.get("stky") or fallback.stky or ""),
+            play_url=str(data.get("play_url") or fallback.play_url or ""),
+            qid=int(data.get("qid") if data.get("qid") is not None else fallback.qid),
+            legacy_interval=int(data.get("legacy_interval") or fallback.legacy_interval or 60),
+            legacy_ets=int(data.get("legacy_ets") or fallback.legacy_ets or 0),
+            legacy_secret_key=str(data.get("legacy_secret_key") or fallback.legacy_secret_key or ""),
+            legacy_secret_rule=list(data.get("legacy_secret_rule") or fallback.legacy_secret_rule or []),
+            legacy_sequence=int(
+                data.get("legacy_sequence")
+                if data.get("legacy_sequence") is not None
+                else fallback.legacy_sequence
+            ),
+            official_next_due=float(
+                data.get("official_next_due")
+                if data.get("official_next_due") is not None
+                else fallback.official_next_due
+            ),
+            legacy_next_due=float(
+                data.get("legacy_next_due")
+                if data.get("legacy_next_due") is not None
+                else fallback.legacy_next_due
+            ),
         )
 
+    @staticmethod
+    def _legacy_heartbeat_values(data: dict[str, Any]) -> tuple[int, int, str, list[int]]:
+        interval = int(data.get("heartbeat_interval") or 0)
+        ets = int(data.get("timestamp") or 0)
+        secret_key = str(data.get("secret_key") or "")
+        secret_rule = [int(value) for value in data.get("secret_rule") or []]
+        if interval <= 0 or ets <= 0 or not secret_key or not secret_rule:
+            raise RuntimeError(
+                "B 站累计计时会话缺少 heartbeat_interval/timestamp/secret_key/secret_rule，需重建会话"
+            )
+        return max(10, interval), ets, secret_key, secret_rule
+
+    @staticmethod
+    def _next_heartbeat_wait(state: HeartbeatState, now: float | None = None) -> int:
+        current = time.monotonic() if now is None else now
+        deadlines = [value for value in (state.official_next_due, state.legacy_next_due) if value > 0]
+        if not deadlines:
+            return max(1, min(state.official_interval, state.legacy_interval))
+        return max(1, int(math.ceil(min(deadlines) - current)))
+
     def _start_heartbeat_session(self, client: BilibiliClient, room: RoomInfo, fallback: HeartbeatState) -> HeartbeatState:
-        # 先注册"进入直播间"动作，B 站才会把后续 x25Kn 心跳算到当前会话上。
-        # 缺这一步是 v0.4.1 多路计时仍然只算一路的关键原因。
-        # roomEntryAction 与首次 x25Kn 必须同时成功才算一条有效观看连接；否则即使
-        # x25Kn 返回 HTTP 成功，totalv2 也可能完全不累计，不能再把这一路标成“正常”。
         try:
             client.room_entry_action(room)
         except Exception as exc:
             self._record_room_entry_failure()
-            raise RuntimeError(f"进入直播间注册失败：{self._friendly_error(exc)}") from exc
-        data = client.enter_room_heartbeat(room)
-        return self._extract_heartbeat_state(data, fallback)
+            if self._watch_detail_enabled():
+                self.log(f"进入直播间注册暂时失败：{self._friendly_error(exc)}；继续建立双计时会话")
+
+        errors: list[str] = []
+        try:
+            legacy_data = client.enter_room_heartbeat(room)
+            legacy_interval, legacy_ets, legacy_secret_key, legacy_secret_rule = self._legacy_heartbeat_values(
+                legacy_data
+            )
+        except Exception as exc:
+            errors.append(f"累计计时会话：{self._friendly_error(exc)}")
+            legacy_interval, legacy_ets, legacy_secret_key, legacy_secret_rule = 60, 0, "", []
+
+        play_url = ""
+        data: dict[str, Any] = {}
+        try:
+            play_url = client.get_live_play_url(room)
+            data = client.start_live_watch_session(room, play_url)
+        except Exception as exc:
+            errors.append(f"官方观看会话：{self._friendly_error(exc)}")
+        if errors:
+            raise RuntimeError("；".join(errors))
+        official_interval = max(10, int(data.get("hbil") or 60))
+        now = time.monotonic()
+        return self._extract_heartbeat_state(
+            {
+                **data,
+                "hbil": min(official_interval, legacy_interval),
+                "official_interval": official_interval,
+                "official_next_due": now + official_interval,
+                "play_url": play_url,
+                "qid": 1,
+                "legacy_interval": legacy_interval,
+                "legacy_ets": legacy_ets,
+                "legacy_secret_key": legacy_secret_key,
+                "legacy_secret_rule": legacy_secret_rule,
+                "legacy_sequence": 1,
+                "legacy_next_due": now + legacy_interval,
+            },
+            fallback,
+        )
 
     def _record_room_entry_failure(self) -> None:
         # 每 N 次失败汇总写一条日志，避免 20 路同时报错刷屏。
@@ -639,18 +756,78 @@ class LiveWatcher:
         sequence: int,
         state: HeartbeatState,
     ) -> HeartbeatState:
-        if state.secret_key and state.secret_rule:
-            data = client.in_room_heartbeat(
-                room,
-                sequence=sequence,
-                interval=state.interval,
-                ets=state.ets,
-                secret_key=state.secret_key,
-                secret_rule=state.secret_rule,
-            )
-            return self._extract_heartbeat_state(data, state)
+        if not state.session_id or not state.stky or not state.play_url:
+            raise RuntimeError("官方观看会话缺少 sid/stky/play_url，需要重新建立计时会话")
+        if not state.legacy_ets or not state.legacy_secret_key or not state.legacy_secret_rule:
+            raise RuntimeError("累计计时会话缺少 timestamp/secret_key/secret_rule，需要重新建立")
 
-        raise RuntimeError("x25Kn 会话缺少签名参数，需要重新建立计时会话")
+        now = time.monotonic()
+        legacy_due = state.legacy_next_due <= 0 or now >= state.legacy_next_due
+        official_due = state.official_next_due <= 0 or now >= state.official_next_due
+        errors: list[str] = []
+        legacy_interval = state.legacy_interval
+        legacy_ets = state.legacy_ets
+        legacy_secret_key = state.legacy_secret_key
+        legacy_secret_rule = list(state.legacy_secret_rule or [])
+        legacy_sequence = state.legacy_sequence
+        legacy_next_due = state.legacy_next_due
+        if legacy_due:
+            try:
+                legacy_data = client.in_room_heartbeat(
+                    room,
+                    state.legacy_sequence,
+                    state.legacy_interval,
+                    state.legacy_ets,
+                    state.legacy_secret_key,
+                    state.legacy_secret_rule,
+                )
+                legacy_interval, legacy_ets, legacy_secret_key, legacy_secret_rule = self._legacy_heartbeat_values(
+                    legacy_data
+                )
+                legacy_sequence += 1
+                legacy_next_due = time.monotonic() + legacy_interval
+            except Exception as exc:
+                errors.append(f"累计计时心跳：{self._friendly_error(exc)}")
+
+        data: dict[str, Any] = {}
+        official_interval = state.official_interval
+        official_qid = state.qid
+        official_next_due = state.official_next_due
+        if official_due:
+            try:
+                data = client.continue_live_watch_session(
+                    room,
+                    state.play_url,
+                    qid=sequence,
+                    session_id=state.session_id,
+                    stky=state.stky,
+                )
+                official_interval = max(10, int(data.get("hbil") or 0))
+                official_qid = sequence + 1
+                official_next_due = time.monotonic() + official_interval
+            except Exception as exc:
+                errors.append(f"官方观看心跳：{self._friendly_error(exc)}")
+        if errors:
+            raise RuntimeError("；".join(errors))
+
+        next_state = self._extract_heartbeat_state(
+            {
+                **data,
+                "hbil": min(official_interval, legacy_interval),
+                "official_interval": official_interval,
+                "official_next_due": official_next_due,
+                "qid": official_qid,
+                "legacy_interval": legacy_interval,
+                "legacy_ets": legacy_ets,
+                "legacy_secret_key": legacy_secret_key,
+                "legacy_secret_rule": legacy_secret_rule,
+                "legacy_sequence": legacy_sequence,
+                "legacy_next_due": legacy_next_due,
+            },
+            state,
+        )
+        next_state.interval = self._next_heartbeat_wait(next_state)
+        return next_state
 
     def _start_auto_claim_thread(self) -> None:
         self._start_claim_thread(log_if_running=False)
@@ -859,7 +1036,13 @@ class LiveWatcher:
             if meta.get("active_end") is not None and node.get("active_end") is None:
                 node["active_end"] = meta["active_end"]
 
-    def _record_task_progress(self, progress: dict[str, Any], announce_claimable: bool) -> bool:
+    def _record_task_progress(
+        self,
+        progress: dict[str, Any],
+        announce_claimable: bool,
+        *,
+        track_server_progress: bool = True,
+    ) -> bool:
         summary = self._summarize_task(progress)
         now = time.time()
         claimable_tasks = self._find_claimable_task_refs(progress)
@@ -874,15 +1057,16 @@ class LiveWatcher:
         if summary:
             progress_score = self._task_summary_progress_score(progress)
             progress_signature = self._task_progress_signature(progress)
-            if progress_signature != self._last_task_progress_signature:
-                self._last_task_progress_signature = progress_signature
-                self._last_task_progress_score = 0.0
-                self._reset_server_progress_tracking()
-            self._record_server_progress(
-                progress_score,
-                now,
-                expect_progress=self._has_pending_watch_progress(progress),
-            )
+            if track_server_progress:
+                if progress_signature != self._last_task_progress_signature:
+                    self._last_task_progress_signature = progress_signature
+                    self._last_task_progress_score = 0.0
+                    self._reset_server_progress_tracking()
+                self._record_server_progress(
+                    progress_score,
+                    time.monotonic(),
+                    expect_progress=self._has_pending_watch_progress(progress),
+                )
             progress_went_backwards = (
                 bool(progress_signature)
                 and self._last_task_progress_score > 0
@@ -1020,6 +1204,9 @@ class LiveWatcher:
     def _task_progress_signature(self, progress: dict[str, Any]) -> tuple[str, ...]:
         nodes = sorted(self._iter_task_nodes(progress), key=self._task_sort_key)
         nodes, group_label, _hidden_count = self._focus_task_nodes(nodes)
+        tracking_task_ids = self._activity_tracking_task_ids(progress)
+        if tracking_task_ids:
+            return tuple(["totalv2", group_label, *sorted(tracking_task_ids)])
         identities = [
             self._task_id_from_node(node) or self._task_display_name(node)
             for node in nodes
@@ -1358,7 +1545,11 @@ class LiveWatcher:
             except Exception as exc:
                 self.log(f"领取前刷新任务进度失败：{exc}")
             else:
-                self._record_task_progress(progress, announce_claimable=False)
+                self._record_task_progress(
+                    progress,
+                    announce_claimable=False,
+                    track_server_progress=False,
+                )
             self._check_activity_task_progress(
                 client,
                 announce_claimable=announce_claimable,

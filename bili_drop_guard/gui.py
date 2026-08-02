@@ -81,6 +81,8 @@ def _backend_network_label(rows: list[WatchWorkerStatus], server_rate: float | N
     states = {row.state for row in rows}
     if any("失败" in state or "异常" in state for state in states):
         return "异常"
+    if "重连中" in states:
+        return "会话重建中"
     if any("等待" in state for state in states):
         return "等待开播"
     accepted = sum(1 for row in rows if row.state == "正常")
@@ -962,12 +964,13 @@ class WatchStatusCard(tk.Frame):
         "正常": SUCCESS,
         "计时中": "#f59e0b",
         "启动中": "#f59e0b",
+        "重连中": "#f59e0b",
         "等待开播": MUTED,
         "暂时失败": DANGER,
     }
     STATE_LABELS = (
         ("正常", SUCCESS),
-        ("启动/计时", "#f59e0b"),
+        ("启动/重连", "#f59e0b"),
         ("等待", MUTED),
         ("失败", DANGER),
     )
@@ -975,6 +978,7 @@ class WatchStatusCard(tk.Frame):
         "正常": "normal",
         "计时中": "warning",
         "启动中": "warning",
+        "重连中": "warning",
         "等待开播": "muted",
         "暂时失败": "danger",
     }
@@ -4520,6 +4524,16 @@ class App(tk.Tk):
             self.reward_detail_var.set(detail)
             self.progress_detail_var.set(detail)
             return
+        if "B站实绩连续" in text and "重建观看会话" in text:
+            self._progress_terminal = False
+            self.progress_ring.set_state(text="重连", caption="实绩停滞", value=0.32, color="#f59e0b")
+            self.progress_title_var.set("B站进度停滞")
+            self.progress_detail_var.set("正在更换会话身份并重建全部观看连接。")
+            if hasattr(self, "reward_title_var"):
+                self.reward_title_var.set("等待实绩恢复")
+                self.reward_detail_var.set("只以 B 站 totalv2 分钟数判断")
+                self.reward_status_var.set("领奖：等待计时")
+            return
         progress_matches = [
             (float(current), max(float(target), 0.01))
             for current, target in re.findall(
@@ -4781,6 +4795,7 @@ class App(tk.Tk):
             "已停止领取",
             "领取前刷新任务进度",
             "已刷新任务进度",
+            "B站实绩连续",
         ))
 
     def _drain_logs(self) -> None:

@@ -5,7 +5,7 @@ from pathlib import Path
 
 from PyInstaller.utils.hooks import collect_all
 
-required_packages = ('requests', 'selenium', 'PIL', 'tkinter', '_tkinter')
+required_packages = ('requests', 'selenium', 'PIL', 'tkinter', '_tkinter', 'wasmtime')
 missing_packages = [name for name in required_packages if find_spec(name) is None]
 if missing_packages:
     raise RuntimeError(
@@ -22,7 +22,10 @@ tkinter_pyd = python_root / 'DLLs' / '_tkinter.pyd'
 tcl_dll = python_root / 'DLLs' / 'tcl86t.dll'
 tk_dll = python_root / 'DLLs' / 'tk86t.dll'
 
-datas = [('assets/app.ico', 'assets')]
+datas = [
+    ('assets/app.ico', 'assets'),
+    ('assets/live_watch_skynet.wasm', 'assets'),
+]
 binaries = []
 hiddenimports = ['_tkinter']
 for source, target in (
@@ -42,6 +45,8 @@ for source, target in (
 tmp_ret = collect_all('selenium')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 tmp_ret = collect_all('PIL')
+datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
+tmp_ret = collect_all('wasmtime')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 
 
@@ -80,4 +85,5 @@ exe = EXE(
     codesign_identity=None,
     entitlements_file=None,
     icon=['assets\\app.ico'],
+    version='assets\\windows_version_info.txt',
 )

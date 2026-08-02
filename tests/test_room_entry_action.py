@@ -6,97 +6,75 @@ from bili_drop_guard.bilibili import RoomInfo
 from bili_drop_guard.watcher import HeartbeatState, LiveWatcher, WatchOptions
 
 
-class StartHeartbeatSessionCallsRoomEntryActionFirstTest(unittest.TestCase):
-    def test_room_entry_action_is_called_before_enter_room_heartbeat(self) -> None:
+class _CompleteHeartbeatClient:
+    def __init__(self, calls: list[str]) -> None:
+        self.calls = calls
+
+    def room_entry_action(self, room: RoomInfo) -> dict:
+        self.calls.append("entry")
+        return {}
+
+    def enter_room_heartbeat(self, room: RoomInfo) -> dict:
+        self.calls.append("legacy")
+        return {"heartbeat_interval": 60, "timestamp": 100, "secret_key": "legacy", "secret_rule": [0]}
+
+    def get_live_play_url(self, room: RoomInfo) -> str:
+        self.calls.append("play")
+        return "https://example.com/live.flv"
+
+    def start_live_watch_session(self, room: RoomInfo, play_url: str) -> dict:
+        self.calls.append("official")
+        return {"hbil": 60, "sid": "sid-1", "stky": "key-1"}
+
+
+class RoomEntryActionTest(unittest.TestCase):
+    def test_room_entry_action_runs_before_both_watch_protocols(self) -> None:
         calls: list[str] = []
+        watcher = LiveWatcher(WatchOptions(cookie="a=b", room_id="1"), lambda _message: None)
 
-        class FakeClient:
-            def room_entry_action(self, room: RoomInfo) -> dict:
-                calls.append(f"entry:{room.room_id}")
-                return {}
+        watcher._start_heartbeat_session(
+            _CompleteHeartbeatClient(calls),
+            RoomInfo(room_id=23612045, live_status=1),
+            HeartbeatState(),
+        )
 
-            def enter_room_heartbeat(self, room: RoomInfo) -> dict:
-                calls.append(f"x25kn_enter:{room.room_id}")
-                return {"heartbeat_interval": 30, "timestamp": 100, "secret_key": "k", "secret_rule": [0]}
+        self.assertEqual(calls, ["entry", "legacy", "play", "official"])
 
-        live_watcher = LiveWatcher(WatchOptions(cookie="a=b", room_id="1"), lambda _m: None)
-        room = RoomInfo(room_id=23612045, live_status=1)
-
-        live_watcher._start_heartbeat_session(FakeClient(), room, HeartbeatState())
-
-        self.assertEqual(calls, ["entry:23612045", "x25kn_enter:23612045"])
-
-    def test_room_entry_action_failure_aborts_route_before_heartbeat(self) -> None:
+    def test_room_entry_action_failure_does_not_block_watch_protocols(self) -> None:
+        calls: list[str] = []
         logs: list[str] = []
-        heartbeat_called = False
 
-        class FlakyClient:
+        class FlakyEntryClient(_CompleteHeartbeatClient):
             def room_entry_action(self, room: RoomInfo) -> dict:
+                self.calls.append("entry-failed")
                 raise RuntimeError("activity api down")
 
-            def enter_room_heartbeat(self, room: RoomInfo) -> dict:
-                nonlocal heartbeat_called
-                heartbeat_called = True
-                return {"heartbeat_interval": 30, "timestamp": 100, "secret_key": "k", "secret_rule": [0]}
+        watcher = LiveWatcher(WatchOptions(cookie="a=b", room_id="1"), logs.append)
+        state = watcher._start_heartbeat_session(
+            FlakyEntryClient(calls),
+            RoomInfo(room_id=23612045, live_status=1),
+            HeartbeatState(),
+        )
 
-        live_watcher = LiveWatcher(WatchOptions(cookie="a=b", room_id="1"), logs.append)
-        room = RoomInfo(room_id=23612045, live_status=1)
+        self.assertEqual(calls, ["entry-failed", "legacy", "play", "official"])
+        self.assertEqual(state.session_id, "sid-1")
+        self.assertTrue(any("累计失败 1 次" in message for message in logs))
 
-        with self.assertRaisesRegex(RuntimeError, "进入直播间注册失败"):
-            live_watcher._start_heartbeat_session(FlakyClient(), room, HeartbeatState())
-
-        self.assertFalse(heartbeat_called)
-        # 第一次失败会写一条聚合日志（之后每 50 次再写一条，避免刷屏）
-        self.assertTrue(any("上报进入直播间累计失败 1 次" in message for message in logs))
-
-    def test_room_entry_failure_aggregated_log_does_not_spam(self) -> None:
+    def test_room_entry_failure_log_is_aggregated(self) -> None:
         logs: list[str] = []
-        live_watcher = LiveWatcher(WatchOptions(cookie="a=b", room_id="1"), logs.append)
-        # 触发 20 次失败，应该只写一条 "累计失败 1 次"
+        watcher = LiveWatcher(WatchOptions(cookie="a=b", room_id="1"), logs.append)
+
         for _ in range(20):
-            live_watcher._record_room_entry_failure()
-        room_entry_logs = [m for m in logs if "上报进入直播间" in m]
-        self.assertEqual(len(room_entry_logs), 1)
-        self.assertIn("累计失败 1 次", room_entry_logs[0])
+            watcher._record_room_entry_failure()
 
+        failure_logs = [message for message in logs if "上报进入直播间累计失败" in message]
+        self.assertEqual(failure_logs, ["上报进入直播间累计失败 1 次（不影响心跳，可能是代理抖动）"])
 
-class WorkerStaggerTest(unittest.TestCase):
-    def test_workers_stagger_start_one_per_second_by_worker_id(self) -> None:
-        # 每路间隔 1 秒注册。worker_id 11 应先 wait 10 秒。
-        live_watcher = LiveWatcher(WatchOptions(cookie="a=b", room_id="1"), lambda _m: None)
-        wait_calls: list[float] = []
+    def test_one_hundred_workers_are_staggered_over_about_fifteen_seconds(self) -> None:
+        watcher = LiveWatcher(WatchOptions(cookie="a=b", room_id="1"), lambda _message: None)
 
-        def recording_wait(timeout=None):
-            wait_calls.append(float(timeout) if timeout is not None else -1.0)
-            # 立刻设置 stop event，让 worker 在错峰等待后立刻退出，不进入真实心跳
-            live_watcher._stop.set()
-            return True
-
-        live_watcher._stop.wait = recording_wait  # type: ignore[method-assign]
-
-        # 模拟启动 worker #11
-        live_watcher._heartbeat_watch_worker(11, RoomInfo(room_id=1, live_status=1))
-
-        self.assertEqual(wait_calls[0], 10.0)
-
-    def test_worker_id_one_does_not_stagger(self) -> None:
-        live_watcher = LiveWatcher(WatchOptions(cookie="a=b", room_id="1"), lambda _m: None)
-        live_watcher._stop.set()  # 立刻停，避免进入心跳循环
-        wait_calls: list[float] = []
-        def recording_wait(timeout=None):
-            wait_calls.append(float(timeout) if timeout is not None else -1.0)
-            return True
-
-        live_watcher._stop.wait = recording_wait  # type: ignore[method-assign]
-
-        live_watcher._heartbeat_watch_worker(1, RoomInfo(room_id=1, live_status=1))
-
-        # worker #1 不应该有 stagger wait（它会立刻进入主循环，主循环里的 wait 不算 stagger）
-        # 主循环里第一次 wait 是在 except 或正常 wait state.interval 时，但因为 _stop 已 set，会立即退出
-        # 所以 wait_calls 可能为 0 或包含其他 wait（不应该是 stagger 那个）
-        # 我们只关心：第一个 wait（如果有）不是 worker_id-1=0
-        # 实际上 worker 1 在 stop 立刻 set 的情况下，wait 不被调用
-        self.assertNotIn(0.0, wait_calls)
+        self.assertEqual(watcher._watch_start_delay(1), 0.0)
+        self.assertAlmostEqual(watcher._watch_start_delay(100), 14.85)
 
 
 if __name__ == "__main__":

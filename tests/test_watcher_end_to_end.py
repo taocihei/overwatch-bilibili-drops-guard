@@ -45,6 +45,25 @@ class FakeClient:
         self.heartbeat_calls.append(f"enter:{room.room_id}")
         return {"heartbeat_interval": 30, "timestamp": 100, "secret_key": "k", "secret_rule": [0]}
 
+    def get_live_play_url(self, room: RoomInfo) -> str:
+        self.heartbeat_calls.append(f"play-url:{room.room_id}")
+        return "https://example.com/live.flv"
+
+    def start_live_watch_session(self, room: RoomInfo, play_url: str) -> dict:
+        self.heartbeat_calls.append(f"watch-start:{room.room_id}")
+        return {"hbil": 30, "sid": "sid-1", "stky": "key-1"}
+
+    def continue_live_watch_session(
+        self,
+        room: RoomInfo,
+        play_url: str,
+        qid: int,
+        session_id: str,
+        stky: str,
+    ) -> dict:
+        self.heartbeat_calls.append(f"watch-heartbeat:{room.room_id}:{qid}")
+        return {"hbil": 30, "sid": f"sid-{qid + 1}", "stky": f"key-{qid + 1}"}
+
     def room_entry_action(self, room: RoomInfo) -> dict:
         self.heartbeat_calls.append(f"entry-action:{room.room_id}")
         return {}
@@ -124,7 +143,7 @@ class WatcherEndToEndTest(unittest.TestCase):
         self.assertTrue(all(row.state == "正常" for row in snapshot), f"snapshot={snapshot}")
         self.assertIn("3/3 心跳已接受", summary)
         client = self._client_holder["instance"]
-        self.assertTrue(any(call.startswith("enter:") for call in client.heartbeat_calls))
+        self.assertTrue(any(call.startswith("watch-start:") for call in client.heartbeat_calls))
 
     def test_claim_flow_submits_to_bilibili_when_task_completed(self) -> None:
         logs: list[str] = []

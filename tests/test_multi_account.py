@@ -242,6 +242,34 @@ class MultiAccountStatusTest(unittest.TestCase):
         self.assertIn("目标 100x", summary)
         self.assertIn("B 站实绩约 6.5x", summary)
 
+    def test_summary_reports_reconnecting_failed_and_waiting_routes(self) -> None:
+        class StatusWatcher:
+            def __init__(self, options, log):
+                self.running = True
+            def start(self): ...
+            def stop(self): self.running = False
+            def get_watch_status_snapshot(self):
+                return ([
+                    WatchWorkerStatus(worker_id=1, state="正常", interval=60, message=""),
+                    WatchWorkerStatus(worker_id=2, state="重连中", interval=None, message="停滞"),
+                    WatchWorkerStatus(worker_id=3, state="暂时失败", interval=None, message="失败"),
+                    WatchWorkerStatus(worker_id=4, state="等待开播", interval=None, message="等待"),
+                ], "")
+
+        mw = MultiAccountWatcher(
+            [("主号", WatchOptions(cookie="a", room_id="1", watch_threads=4))],
+            log=lambda _m: None,
+            watcher_factory=StatusWatcher,
+            stagger_seconds=0,
+        )
+
+        _rows, summary = mw.get_watch_status_snapshot()
+
+        self.assertIn("1/4 心跳已接受", summary)
+        self.assertIn("1 路重连中", summary)
+        self.assertIn("1 路稍后重试", summary)
+        self.assertIn("1 路等待开播", summary)
+
     def test_snapshot_has_one_row_per_account_with_name(self) -> None:
         class StatusWatcher:
             def __init__(self, options, log, summary):

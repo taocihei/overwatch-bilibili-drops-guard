@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ctypes
+import sys
 import traceback
 
 from bili_drop_guard.config import APP_DIR
@@ -10,6 +11,11 @@ from bili_drop_guard.gui import main
 # Keep the entrypoint small so packaging and crash reporting stay predictable.
 def _run() -> None:
     try:
+        if "--self-test-skynet" in sys.argv:
+            from bili_drop_guard.skynet_signer import verify_bundled_signer
+
+            verify_bundled_signer()
+            return
         main()
     except Exception as exc:
         APP_DIR.mkdir(parents=True, exist_ok=True)

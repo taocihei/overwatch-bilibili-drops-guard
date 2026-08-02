@@ -3,7 +3,9 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import random
 import re
+import secrets
 import threading
 import time
 import urllib.parse
@@ -17,6 +19,8 @@ from uuid import uuid4
 
 import json5
 import requests
+
+from .skynet_signer import sign_live_watch_payload
 
 
 USER_AGENT = (
@@ -124,7 +128,7 @@ def calc_heartbeat_sign(data: Dict[str, Any], secret_rule: List[int]) -> str:
 
 
 def make_session_buvid() -> str:
-    """生成一条 x25Kn 会话使用的 LIVE_BUVID 格式身份。"""
+    """生成一条独立观看会话使用的 LIVE_BUVID 格式身份。"""
 
     return f"AUTO{uuid4().int % 10**16:016d}"
 
@@ -143,12 +147,16 @@ class BilibiliClient:
     ) -> None:
         self.cookie_header = cookie_header
         self.cookies = parse_cookie_header(cookie_header)
-        # 账号 Cookie 保持浏览器原始设备身份；每路 x25Kn 只隔离自己的
-        # LIVE_BUVID/page UUID。混改整组设备 Cookie 会造成签名身份不一致。
+        # 账号凭据保持不变；每条官方观看会话使用独立 LIVE_BUVID/page UUID。
+        # 这样请求体身份和当前 requests.Session 内的设备身份始终一致。
         if "buvid3" not in self.cookies:
             self.cookies["buvid3"] = f"{uuid4()}infoc"
         self._buvid = session_buvid or make_session_buvid()
         self._device_uuid = session_device_uuid or make_session_device_uuid()
+        if session_buvid:
+            self.cookies["LIVE_BUVID"] = self._buvid
+        if session_device_uuid:
+            self.cookies["_uuid"] = self._device_uuid
         self._visit_id = uuid4().hex[:16]
         self.session = requests.Session()
         self._wbi_keys: tuple[str, str] | None = None
@@ -166,6 +174,43 @@ class BilibiliClient:
     def close(self) -> None:
         """释放当前计时会话持有的连接池和套接字。"""
         self.session.close()
+
+    def isolate_watch_device_identity(self) -> None:
+        """为一条观看路由申请独立的官方设备指纹，避免同账号多路被合并。"""
+
+        response = self.session.get(
+            "https://api.bilibili.com/x/frontend/finger/spi",
+            headers={
+                "User-Agent": USER_AGENT,
+                "Referer": "https://www.bilibili.com/",
+                "Origin": "https://www.bilibili.com",
+            },
+            timeout=12,
+        )
+        payload = _decode_json_response(response)
+        data = payload.get("data")
+        if payload.get("code") != 0 or not isinstance(data, dict):
+            raise RuntimeError(str(payload.get("message", "独立设备指纹申请失败")))
+        buvid3 = str(data.get("b_3") or "")
+        buvid4 = str(data.get("b_4") or "")
+        if not buvid3 or not buvid4:
+            raise RuntimeError("B 站没有返回独立 buvid3/buvid4，观看路由未隔离")
+
+        route_device_uuid = f"{str(uuid4()).upper()}{random.randint(10000, 99999)}infoc"
+        self._device_uuid = route_device_uuid
+        route_cookies = {
+            "LIVE_BUVID": self.buvid,
+            "buvid3": buvid3,
+            "buvid4": buvid4,
+            "buvid_fp": hashlib.sha256(
+                f"{buvid3}|{buvid4}|{self.device_uuid}".encode("utf-8")
+            ).hexdigest()[:32],
+            "_uuid": route_device_uuid,
+            "b_lsid": f"{secrets.token_hex(4).upper()}_{secrets.token_hex(5).upper()}",
+        }
+        self.cookies.update(route_cookies)
+        for key, value in route_cookies.items():
+            self.session.cookies.set(key, value, domain=".bilibili.com", path="/")
 
     @property
     def csrf(self) -> str:
@@ -259,6 +304,162 @@ class BilibiliClient:
             body,
             params=self._wbi_signed_params({"csrf": self.csrf}),
         )
+
+    @property
+    def viewer_uid(self) -> int:
+        try:
+            return int(self.cookies.get("DedeUserID") or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    def get_live_play_url(self, room: RoomInfo) -> str:
+        """Return the real player URL required by Bilibili's current watch tracker."""
+
+        response = self.session.get(
+            "https://api.live.bilibili.com/xlive/web-room/v2/index/getRoomPlayInfo",
+            headers=self._live_headers(room.room_id),
+            params={
+                "room_id": room.room_id,
+                "protocol": "0,1",
+                "format": "0,1,2",
+                "codec": "0,1",
+                "qn": 10000,
+                "platform": "web",
+                "ptype": 8,
+                "dolby": 5,
+                "panorama": 1,
+            },
+            timeout=15,
+        )
+        payload = _decode_json_response(response)
+        if payload.get("code") != 0:
+            raise RuntimeError(str(payload.get("message", "直播流地址获取失败")))
+        data = payload.get("data")
+        if not isinstance(data, dict) or int(data.get("live_status") or 0) != 1:
+            raise RuntimeError("直播间当前未开播，无法建立观看会话")
+
+        playurl_info = data.get("playurl_info") or {}
+        playurl = playurl_info.get("playurl") if isinstance(playurl_info, dict) else {}
+        streams = playurl.get("stream") if isinstance(playurl, dict) else []
+        urls: list[str] = []
+        for stream in streams if isinstance(streams, list) else []:
+            if not isinstance(stream, dict):
+                continue
+            for format_item in stream.get("format") or []:
+                if not isinstance(format_item, dict):
+                    continue
+                for codec in format_item.get("codec") or []:
+                    if not isinstance(codec, dict):
+                        continue
+                    base_url = str(codec.get("base_url") or "")
+                    for url_info in codec.get("url_info") or []:
+                        if not isinstance(url_info, dict):
+                            continue
+                        url = f"{url_info.get('host') or ''}{base_url}{url_info.get('extra') or ''}"
+                        if url:
+                            urls.append(url)
+        if not urls:
+            raise RuntimeError("直播播放器没有返回可用的观看地址")
+        route_key = int(hashlib.sha256(self.buvid.encode("utf-8")).hexdigest()[:8], 16)
+        return urls[route_key % len(urls)]
+
+    def _live_watch_payload(
+        self,
+        room: RoomInfo,
+        play_url: str,
+        qid: int,
+        *,
+        session_id: str = "",
+        stky: str = "",
+    ) -> Dict[str, Any]:
+        if not self.viewer_uid:
+            raise RuntimeError("Cookie 缺少 DedeUserID，无法建立观看计时会话")
+        if not self.buvid:
+            raise RuntimeError("缺少 LIVE_BUVID，无法建立观看计时会话")
+        if not play_url:
+            raise RuntimeError("缺少真实直播流地址，无法建立观看计时会话")
+        payload: Dict[str, Any] = {
+            "uid": self.viewer_uid,
+            "buvid": self.buvid,
+            "platform": "web",
+            "room_id": room.room_id,
+            "play_url": play_url,
+            "qid": int(qid),
+        }
+        if session_id:
+            payload["sid"] = session_id
+        payload["cts"] = int(time.time() * 1000)
+        if stky:
+            payload["stky"] = stky
+        payload["screen_status"] = random.randint(1, 100)
+        payload["click_status"] = random.randint(1, 100)
+        return payload
+
+    @staticmethod
+    def _validate_live_watch_state(data: Dict[str, Any]) -> Dict[str, Any]:
+        try:
+            interval = int(data.get("hbil") or 0)
+        except (TypeError, ValueError):
+            interval = 0
+        session_id = str(data.get("sid") or "")
+        stky = str(data.get("stky") or "")
+        if interval <= 0 or not session_id or not stky:
+            raise RuntimeError("B 站观看会话缺少 hbil/sid/stky，计时未生效")
+        return {"hbil": interval, "sid": session_id, "stky": stky}
+
+    def _post_live_watch_report(self, endpoint: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        response = self.session.post(
+            f"https://data.bilivideo.com/log/web/{endpoint}",
+            headers={
+                "User-Agent": USER_AGENT,
+                "Referer": f"https://live.bilibili.com/{payload.get('room_id') or ''}",
+                "Origin": "https://live.bilibili.com",
+                "Accept": "application/json, text/plain, */*",
+                "Content-Type": "application/json",
+            },
+            json=payload,
+            timeout=12,
+        )
+        result = _decode_json_response(response)
+        if response.status_code != 200 or result.get("code") != 0:
+            raise RuntimeError(str(result.get("message", "B 站观看心跳返回异常")))
+        data = result.get("data")
+        if not isinstance(data, dict):
+            raise RuntimeError("B 站观看心跳没有返回会话状态")
+        return self._validate_live_watch_state(data)
+
+    def start_live_watch_session(self, room: RoomInfo, play_url: str) -> Dict[str, Any]:
+        """Run te9Kl enter + signed validation and return a credit-capable session."""
+
+        enter_payload = self._live_watch_payload(room, play_url, 0)
+        first_state = self._post_live_watch_report("te9Kl", enter_payload)
+        check_payload = self._live_watch_payload(
+            room,
+            play_url,
+            1,
+            session_id=str(first_state["sid"]),
+            stky=str(first_state["stky"]),
+        )
+        signature = sign_live_watch_payload(check_payload)
+        return self._post_live_watch_report("te9Kl", {"csn": signature, **check_payload})
+
+    def continue_live_watch_session(
+        self,
+        room: RoomInfo,
+        play_url: str,
+        qid: int,
+        session_id: str,
+        stky: str,
+    ) -> Dict[str, Any]:
+        payload = self._live_watch_payload(
+            room,
+            play_url,
+            qid,
+            session_id=session_id,
+            stky=stky,
+        )
+        signature = sign_live_watch_payload(payload)
+        return self._post_live_watch_report("s82Tq", {"csn": signature, **payload})
 
     def enter_room_heartbeat(self, room: RoomInfo) -> Dict[str, Any]:
         data = {
