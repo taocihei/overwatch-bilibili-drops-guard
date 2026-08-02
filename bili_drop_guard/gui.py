@@ -3315,13 +3315,20 @@ class App(tk.Tk):
         cached = self._cached_sponsor_order(amount)
         if cached is not None:
             client, order, qr_data = cached
-            self._finish_sponsor_order(
+            self._sponsor_status_var.set(f"正在确认 ¥{amount_label} 二维码状态…")
+            self._sponsor_qr_label.configure(
+                image="",
+                text=f"正在确认 ¥{amount_label} 二维码…",
+                fg=ACCENT,
+                width=28,
+                height=12,
+            )
+            self._verify_cached_sponsor_order(
                 generation,
                 amount,
                 client,
                 order,
                 qr_data,
-                cache_result=False,
             )
             return
 
@@ -3378,6 +3385,74 @@ class App(tk.Tk):
             )
 
         threading.Thread(target=create_order, name="SponsorOrder", daemon=True).start()
+
+    def _verify_cached_sponsor_order(
+        self,
+        generation: int,
+        amount: str,
+        client: SponsorClient,
+        order: SponsorOrder,
+        qr_data: bytes,
+    ) -> None:
+        def verify_order() -> None:
+            try:
+                status = client.query_order(order.order_id)
+            except Exception:
+                self.after(
+                    0,
+                    lambda: self._finish_sponsor_error(
+                        generation,
+                        "订单状态确认失败，请重新获取二维码",
+                    ),
+                )
+                return
+            self.after(
+                0,
+                lambda: self._apply_cached_sponsor_order(
+                    generation,
+                    amount,
+                    client,
+                    order,
+                    qr_data,
+                    status,
+                ),
+            )
+
+        threading.Thread(
+            target=verify_order,
+            name="SponsorCacheCheck",
+            daemon=True,
+        ).start()
+
+    def _apply_cached_sponsor_order(
+        self,
+        generation: int,
+        amount: str,
+        client: SponsorClient,
+        order: SponsorOrder,
+        qr_data: bytes,
+        status: SponsorOrderStatus,
+    ) -> None:
+        if generation != self._sponsor_generation or not self._sponsor_dialog_exists():
+            return
+        if status.paid:
+            self._sponsor_client = client
+            self._sponsor_order = order
+            self._sponsor_loading = False
+            self._apply_sponsor_status(generation, status)
+            return
+        if status.terminal:
+            self._sponsor_order_cache.pop(amount, None)
+            self._start_sponsor_order()
+            return
+        self._finish_sponsor_order(
+            generation,
+            amount,
+            client,
+            order,
+            qr_data,
+            cache_result=False,
+        )
 
     def _finish_sponsor_order(
         self,

@@ -634,11 +634,11 @@ class SponsorDialogFlowTest(unittest.TestCase):
             height=12,
         )
 
-    def test_cached_sponsor_order_is_reused_without_network_thread(self) -> None:
+    def test_cached_sponsor_order_is_verified_before_reuse(self) -> None:
         amount_var = MagicMock()
         amount_var.get.return_value = "10.00"
         cached = (MagicMock(), MagicMock(), b"qr")
-        finish = MagicMock()
+        verify = MagicMock()
         app = SimpleNamespace(
             _sponsor_dialog_exists=MagicMock(return_value=True),
             _cancel_sponsor_poll=MagicMock(),
@@ -652,19 +652,99 @@ class SponsorDialogFlowTest(unittest.TestCase):
             _sponsor_status_var=MagicMock(),
             _sponsor_qr_label=MagicMock(),
             _cached_sponsor_order=MagicMock(return_value=cached),
-            _finish_sponsor_order=finish,
+            _verify_cached_sponsor_order=verify,
         )
 
-        with patch.object(gui.threading, "Thread") as thread:
-            gui.App._start_sponsor_order(app)
+        gui.App._start_sponsor_order(app)
 
-        thread.assert_not_called()
-        finish.assert_called_once_with(
+        verify.assert_called_once_with(
             1,
             "10.00",
             *cached,
+        )
+        app._sponsor_status_var.set.assert_called_once_with(
+            "正在确认 ¥10 二维码状态…"
+        )
+
+    def test_pending_cached_order_is_reused_after_server_confirmation(self) -> None:
+        finish = MagicMock()
+        client = MagicMock()
+        order = MagicMock()
+        qr_data = b"qr"
+        app = SimpleNamespace(
+            _sponsor_generation=4,
+            _sponsor_dialog_exists=MagicMock(return_value=True),
+            _finish_sponsor_order=finish,
+        )
+
+        gui.App._apply_cached_sponsor_order(
+            app,
+            4,
+            "10.00",
+            client,
+            order,
+            qr_data,
+            gui.SponsorOrderStatus("pending"),
+        )
+
+        finish.assert_called_once_with(
+            4,
+            "10.00",
+            client,
+            order,
+            qr_data,
             cache_result=False,
         )
+
+    def test_terminal_cached_order_is_discarded_and_recreated(self) -> None:
+        app = SimpleNamespace(
+            _sponsor_generation=4,
+            _sponsor_dialog_exists=MagicMock(return_value=True),
+            _sponsor_order_cache={"10.00": object()},
+            _start_sponsor_order=MagicMock(),
+        )
+
+        gui.App._apply_cached_sponsor_order(
+            app,
+            4,
+            "10.00",
+            MagicMock(),
+            MagicMock(),
+            b"qr",
+            gui.SponsorOrderStatus("expired"),
+        )
+
+        self.assertNotIn("10.00", app._sponsor_order_cache)
+        app._start_sponsor_order.assert_called_once_with()
+
+    def test_paid_cached_order_returns_success_instead_of_old_qr(self) -> None:
+        client = MagicMock()
+        order = MagicMock()
+        apply_status = MagicMock()
+        app = SimpleNamespace(
+            _sponsor_generation=4,
+            _sponsor_dialog_exists=MagicMock(return_value=True),
+            _sponsor_client=None,
+            _sponsor_order=None,
+            _sponsor_loading=True,
+            _apply_sponsor_status=apply_status,
+        )
+        status = gui.SponsorOrderStatus("paid")
+
+        gui.App._apply_cached_sponsor_order(
+            app,
+            4,
+            "10.00",
+            client,
+            order,
+            b"qr",
+            status,
+        )
+
+        self.assertIs(app._sponsor_client, client)
+        self.assertIs(app._sponsor_order, order)
+        self.assertFalse(app._sponsor_loading)
+        apply_status.assert_called_once_with(4, status)
 
     def test_sponsor_order_cache_expires_before_payment_order(self) -> None:
         client = MagicMock()
