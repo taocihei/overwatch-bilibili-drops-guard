@@ -86,7 +86,7 @@ test("health endpoint reports the deployed service version", async () => {
   assert.deepEqual(await response.json(), {
     ok: true,
     service: "overwatch-bilibili-drops-sponsor",
-    version: "0.5.5",
+    version: "0.5.11",
   });
 });
 
@@ -99,5 +99,5 @@ test("order endpoint rejects unsupported amounts before touching secrets", async
   assert.equal(response.status, 400);
   const payload = await response.json();
   assert.equal(payload.ok, false);
-  assert.match(payload.error, /3、6 或 10 元/);
+  assert.match(payload.error, /1–9999 元/);
 });

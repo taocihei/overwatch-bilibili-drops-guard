@@ -14,7 +14,15 @@ DEFAULT_SPONSOR_API_URL = (
 )
 SPONSOR_QQ_GROUP = "1012969672"
 DEFAULT_TIMEOUT = (5, 15)
-ALLOWED_AMOUNTS = (Decimal("3.00"), Decimal("6.00"), Decimal("10.00"))
+SPONSOR_PRESET_AMOUNTS = (
+    Decimal("5.00"),
+    Decimal("10.00"),
+    Decimal("20.00"),
+    Decimal("50.00"),
+    Decimal("100.00"),
+)
+MIN_SPONSOR_AMOUNT = Decimal("1.00")
+MAX_SPONSOR_AMOUNT = Decimal("9999.00")
 
 
 class SponsorError(RuntimeError):
@@ -29,6 +37,7 @@ class SponsorUnavailable(SponsorError):
 class SponsorOrder:
     order_id: str
     qr_url: str
+    fallback_qr_url: str = ""
     expires_at: str = ""
 
 
@@ -83,13 +92,17 @@ class SponsorClient:
         )
         order_id = str(payload.get("order_id") or "").strip()
         qr_url = str(payload.get("qr_url") or "").strip()
+        fallback_qr_url = str(payload.get("fallback_qr_url") or "").strip()
         if not order_id:
             raise SponsorError("赞助服务未返回订单号")
         if not _is_safe_remote_url(qr_url):
             raise SponsorError("赞助服务返回的二维码地址无效")
+        if fallback_qr_url and not _is_safe_remote_url(fallback_qr_url):
+            raise SponsorError("赞助服务返回的备用二维码地址无效")
         return SponsorOrder(
             order_id=order_id,
             qr_url=qr_url,
+            fallback_qr_url=fallback_qr_url,
             expires_at=str(payload.get("expires_at") or "").strip(),
         )
 
@@ -130,6 +143,20 @@ class SponsorClient:
             raise SponsorError("二维码图片内容为空")
         return response.content
 
+    def download_order_qr(self, order: SponsorOrder) -> bytes:
+        """优先直连支付服务的二维码，失败时再用应用代理地址。"""
+
+        urls = tuple(dict.fromkeys(filter(None, (order.qr_url, order.fallback_qr_url))))
+        last_error: SponsorError | None = None
+        for url in urls:
+            try:
+                return self.download_qr(url)
+            except SponsorError as exc:
+                last_error = exc
+        if last_error is not None:
+            raise last_error
+        raise SponsorError("赞助服务未返回二维码地址")
+
     def _request_json(self, method: str, path: str, **kwargs: object) -> dict[str, object]:
         try:
             response = self.session.request(
@@ -165,8 +192,8 @@ def normalize_amount(value: str | Decimal) -> Decimal:
         amount = Decimal(str(value)).quantize(Decimal("0.01"))
     except (InvalidOperation, ValueError) as exc:
         raise SponsorError("赞助金额无效") from exc
-    if amount not in ALLOWED_AMOUNTS:
-        raise SponsorError("请选择界面提供的赞助金额")
+    if not amount.is_finite() or amount < MIN_SPONSOR_AMOUNT or amount > MAX_SPONSOR_AMOUNT:
+        raise SponsorError("赞助金额需在 1–9999 元之间")
     return amount
 
 

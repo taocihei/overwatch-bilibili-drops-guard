@@ -75,12 +75,12 @@ class BackendNetworkLabelTest(unittest.TestCase):
             for index in range(1, 101)
         ]
 
-        self.assertEqual(gui._backend_network_label(rows, 2.4), "100/100｜B站 2.4x")
+        self.assertEqual(gui._backend_network_label(rows, 2.4), "B站 2.4x")
 
     def test_normal_routes_show_sampling_before_totalv2_has_two_samples(self) -> None:
         rows = [gui.WatchWorkerStatus(worker_id=1, state="正常", interval=60, message="")]
 
-        self.assertEqual(gui._backend_network_label(rows, None), "1/1｜实绩采样中")
+        self.assertEqual(gui._backend_network_label(rows, None), "实绩采样中")
 
     def test_room_entry_failure_wins_over_accepted_routes(self) -> None:
         rows = [

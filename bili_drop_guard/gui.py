@@ -4,13 +4,15 @@ import queue
 import re
 import sys
 import threading
+import time
 import traceback
 import tkinter as tk
+import tkinter.font as tkfont
 import webbrowser
 from datetime import datetime
 from io import BytesIO
 from pathlib import Path
-from tkinter import messagebox, ttk
+from tkinter import ttk
 from typing import Callable
 
 try:
@@ -23,7 +25,16 @@ from .bilibili import normalize_room_id
 from .config import APP_DIR, DEFAULT_ROOM_ID, MAX_CHECK_INTERVAL, MAX_WATCH_THREADS, MIN_CHECK_INTERVAL, AccountProfile, AppConfig, load_config, parse_task_ids, sanitize_config, save_config
 from .cookie_capture import capture_bilibili_cookie, open_bilibili_login_page
 from .notifier import send_notification
-from .sponsor import SPONSOR_QQ_GROUP, SponsorClient, SponsorError, SponsorOrder, SponsorOrderStatus
+from .sponsor import (
+    SPONSOR_PRESET_AMOUNTS,
+    SPONSOR_QQ_GROUP,
+    SponsorClient,
+    SponsorError,
+    SponsorOrder,
+    SponsorOrderStatus,
+    SponsorUnavailable,
+    normalize_amount,
+)
 from .watcher import LiveWatcher, WatchWorkerStatus
 from .multi_account import MultiAccountWatcher, build_account_options, find_duplicate_active_accounts
 
@@ -75,8 +86,8 @@ def _backend_network_label(rows: list[WatchWorkerStatus], server_rate: float | N
     if not accepted:
         return "检查中"
     if server_rate is None:
-        return f"{accepted}/{len(rows)}｜实绩采样中"
-    return f"{accepted}/{len(rows)}｜B站 {server_rate:.1f}x"
+        return "实绩采样中"
+    return f"B站 {server_rate:.1f}x"
 
 
 def _resource_path(relative_path: str) -> Path:
@@ -392,7 +403,11 @@ class LabelButton(tk.Canvas):
             "borderwidth": 0,
             "cursor": "hand2",
         }
-        canvas_options["width"] = width if width is not None else 1
+        if width is None:
+            measured_width = tkfont.Font(master=parent, font=font).measure(text)
+            canvas_options["width"] = max(72, measured_width + 28)
+        else:
+            canvas_options["width"] = width
         super().__init__(parent, **canvas_options)
         self.text = text
         self.command = command
@@ -582,19 +597,19 @@ class AppDialog(tk.Toplevel):
         parent = self.master.winfo_toplevel()
         try:
             parent.update_idletasks()
-            parent_width = max(parent.winfo_width(), parent.winfo_reqwidth())
-            parent_height = max(parent.winfo_height(), parent.winfo_reqheight())
+            if not parent.winfo_viewable():
+                raise tk.TclError("parent is not visible")
+            parent_width = max(1, parent.winfo_width())
+            parent_height = max(1, parent.winfo_height())
             x = parent.winfo_rootx() + (parent_width - self._dialog_width) // 2
             y = parent.winfo_rooty() + (parent_height - self._dialog_height) // 2
         except tk.TclError:
             x = (self.winfo_screenwidth() - self._dialog_width) // 2
             y = (self.winfo_screenheight() - self._dialog_height) // 2
 
-        max_x = max(0, self.winfo_screenwidth() - self._dialog_width)
-        max_y = max(0, self.winfo_screenheight() - self._dialog_height)
-        x = max(0, min(x, max_x))
-        y = max(0, min(y, max_y))
-        self.geometry(f"{self._dialog_width}x{self._dialog_height}+{x}+{y}")
+        # 不用主屏幕坐标截断。Windows 多显示器会使副屏的合法坐标为
+        # 负数或大于主屏宽度；截断后反而会把弹窗甩到其他屏幕边缘。
+        self.geometry(f"{self._dialog_width}x{self._dialog_height}{x:+d}{y:+d}")
         self.deiconify()
         self.lift()
         self.focus_force()
@@ -610,9 +625,7 @@ class AppDialog(tk.Toplevel):
     def _move(self, event: tk.Event) -> None:
         x = event.x_root - self._drag_offset[0]
         y = event.y_root - self._drag_offset[1]
-        max_x = max(0, self.winfo_screenwidth() - self._dialog_width)
-        max_y = max(0, self.winfo_screenheight() - self._dialog_height)
-        self.geometry(f"+{max(0, min(x, max_x))}+{max(0, min(y, max_y))}")
+        self.geometry(f"{x:+d}{y:+d}")
 
     def request_close(self) -> None:
         if self._closing:
@@ -896,8 +909,11 @@ class WatchStatusCard(tk.Frame):
 
     def show_detail_window(self) -> tk.Toplevel:
         if self._detail_window is not None and self._detail_window.winfo_exists():
-            self._detail_window.lift()
-            self._detail_window.focus_set()
+            if isinstance(self._detail_window, AppDialog):
+                self._detail_window._show_centered()
+            else:
+                self._detail_window.lift()
+                self._detail_window.focus_set()
             return self._detail_window
 
         top = AppDialog(
@@ -1158,6 +1174,53 @@ def build_confirmation_dialog(
     return top
 
 
+def build_notice_dialog(
+    parent: tk.Misc,
+    *,
+    title: str,
+    body: str,
+    kind: str = "warning",
+) -> tk.Toplevel:
+    """显示应用内提示，统一弹窗样式和父窗口居中行为。"""
+
+    top = AppDialog(parent, title=title, width=460, height=248, modal=True)
+    container = tk.Frame(top.content, bg=APP_BG, padx=24, pady=20)
+    container.pack(fill="both", expand=True)
+    container.columnconfigure(1, weight=1)
+    tone = DANGER if kind == "error" else ACCENT
+    tone_bg = DANGER_BG if kind == "error" else ACCENT_SOFT
+    marker = tk.Canvas(container, width=38, height=38, bg=APP_BG, highlightthickness=0, borderwidth=0)
+    marker.grid(row=0, column=0, rowspan=2, sticky="nw", padx=(0, 14))
+    marker.create_oval(2, 2, 36, 36, fill=tone_bg, outline="")
+    marker.create_text(19, 19, text="!", fill=tone, font=("Microsoft YaHei UI", 15, "bold"))
+    tk.Label(
+        container,
+        text=title,
+        bg=APP_BG,
+        fg=TEXT,
+        font=("Microsoft YaHei UI", 14, "bold"),
+    ).grid(row=0, column=1, sticky="w")
+    tk.Label(
+        container,
+        text=body,
+        bg=APP_BG,
+        fg=MUTED,
+        font=("Microsoft YaHei UI", 10),
+        wraplength=350,
+        justify="left",
+    ).grid(row=1, column=1, sticky="nw", pady=(8, 0))
+    PillButton(
+        container,
+        "知道了",
+        top.request_close,
+        fill=ACCENT,
+        active_fill=ACCENT_ACTIVE,
+        height=36,
+        width=112,
+    ).grid(row=2, column=0, columnspan=2, sticky="e", pady=(22, 0))
+    return top
+
+
 class App(tk.Tk):
     def __init__(self, *, preview_mode: bool = False) -> None:
         super().__init__()
@@ -1252,7 +1315,15 @@ class App(tk.Tk):
         log_path = APP_DIR / "crash.log"
         log_path.write_text(detail, encoding="utf-8")
         self._log(f"界面操作异常，详情已写入：{log_path}")
-        messagebox.showerror("程序异常", f"发生异常，详情已写入：\n{log_path}\n\n{value}")
+        build_notice_dialog(
+            self,
+            title="程序异常",
+            body=f"发生异常，详情已写入：\n{log_path}\n\n{value}",
+            kind="error",
+        )
+
+    def _show_notice(self, title: str, body: str, *, kind: str = "warning") -> tk.Toplevel:
+        return build_notice_dialog(self, title=title, body=body, kind=kind)
 
     def _configure_style(self) -> None:
         style = ttk.Style(self)
@@ -2151,8 +2222,9 @@ class App(tk.Tk):
         status_pane.columnconfigure(1, weight=0)
         self._section_title(status_pane, "运行状态", "status", background=SURFACE).grid(row=0, column=0, sticky="w")
         status_grid = tk.Frame(status_pane, bg=SURFACE, highlightthickness=0, borderwidth=0)
-        status_grid.grid(row=1, column=0, sticky="ew", pady=(10, 0))
+        status_grid.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(10, 0))
         status_grid.columnconfigure(1, weight=1)
+        status_grid.columnconfigure(2, weight=0)
         for index, (icon, label, variable) in enumerate((
             ("start", "启动时间", self.backend_start_var),
             ("elapsed", "运行时长", self.backend_elapsed_var),
@@ -2161,7 +2233,15 @@ class App(tk.Tk):
         )):
             self._metric_icon(status_grid, icon, background=SURFACE).grid(row=index, column=0, sticky="w", pady=3)
             tk.Label(status_grid, text=label, bg=SURFACE, fg=MUTED, font=("Microsoft YaHei UI", 9)).grid(row=index, column=1, sticky="w", padx=(8, 0), pady=3)
-            tk.Label(status_grid, textvariable=variable, bg=SURFACE, fg=MUTED, font=("Microsoft YaHei UI", 8, "bold")).grid(row=index, column=2, sticky="e", pady=3)
+            tk.Label(
+                status_grid,
+                textvariable=variable,
+                bg=SURFACE,
+                fg=MUTED,
+                font=("Microsoft YaHei UI", 8, "bold"),
+                anchor="e",
+                justify="right",
+            ).grid(row=index, column=2, sticky="e", padx=(8, 0), pady=3)
         self.watch_status_card = WatchStatusCard(status_pane, background=SURFACE)
         # 完整连接卡在默认高度会被裁切；主卡只放可达入口，详细状态统一在应用内弹窗显示。
         LabelButton(
@@ -2766,9 +2846,12 @@ class App(tk.Tk):
         if self._sponsor_window is not None:
             try:
                 if self._sponsor_window.winfo_exists():
-                    self._sponsor_window.deiconify()
-                    self._sponsor_window.lift()
-                    self._sponsor_window.focus_set()
+                    if isinstance(self._sponsor_window, AppDialog):
+                        self._sponsor_window._show_centered()
+                    else:
+                        self._sponsor_window.deiconify()
+                        self._sponsor_window.lift()
+                        self._sponsor_window.focus_set()
                     return self._sponsor_window
             except tk.TclError:
                 self._sponsor_window = None
@@ -2776,8 +2859,8 @@ class App(tk.Tk):
         top = AppDialog(
             self,
             title="支持作者",
-            width=460,
-            height=610,
+            width=560,
+            height=720,
             on_close=self._close_sponsor_dialog,
         )
         self._sponsor_window = top
@@ -2786,7 +2869,7 @@ class App(tk.Tk):
         self._sponsor_client = None
         self._sponsor_loading = False
         self._sponsor_success_shown = False
-        container = tk.Frame(top.content, bg=APP_BG, padx=26, pady=20)
+        container = tk.Frame(top.content, bg=APP_BG, padx=26, pady=18)
         container.pack(fill="both", expand=True)
         tk.Label(container, text="选择支持金额", bg=APP_BG, fg=TEXT, font=("Microsoft YaHei UI", 15, "bold")).pack(anchor="w")
         tk.Label(
@@ -2795,6 +2878,8 @@ class App(tk.Tk):
             bg=APP_BG,
             fg=MUTED,
             font=("Microsoft YaHei UI", 9),
+            wraplength=500,
+            justify="left",
         ).pack(anchor="w", pady=(3, 14))
 
         amount_panel = RoundedPanel(
@@ -2802,23 +2887,27 @@ class App(tk.Tk):
             fill=SURFACE,
             background=APP_BG,
             radius=16,
-            padding=(16, 14),
-            min_height=66,
+            padding=(14, 12),
+            min_height=64,
             outline=SUBTLE_OUTLINE,
             shadow=False,
-            auto_height=False,
+            auto_height=True,
         )
         amount_panel.pack(fill="x")
         amount_row = tk.Frame(amount_panel.inner, bg=SURFACE, highlightthickness=0, borderwidth=0)
         amount_row.pack(fill="x")
-        self._sponsor_amount_var = tk.StringVar(value="6.00")
+        self._sponsor_amount_var = tk.StringVar(value="10.00")
+        self._sponsor_amount_choice = "10.00"
         self._sponsor_amount_buttons: dict[str, LabelButton] = {}
-        for index, amount in enumerate(("3.00", "6.00", "10.00")):
+        preset_amounts = tuple(f"{amount:.2f}" for amount in SPONSOR_PRESET_AMOUNTS)
+        amount_choices = (*preset_amounts, "other")
+        for index, amount in enumerate(amount_choices):
             amount_row.columnconfigure(index, weight=1, uniform="sponsor_amount")
-            selected = amount == self._sponsor_amount_var.get()
+            selected = amount == self._sponsor_amount_choice
+            label = "其他" if amount == "other" else f"¥{amount.removesuffix('.00')}"
             button = LabelButton(
                 amount_row,
-                text=f"¥{amount.removesuffix('.00')}",
+                text=label,
                 command=lambda value=amount: self._select_sponsor_amount(value),
                 fill=ACCENT_SOFT if selected else SECONDARY,
                 foreground=ACCENT if selected else MUTED,
@@ -2828,8 +2917,70 @@ class App(tk.Tk):
                 height=40,
                 radius=10,
             )
-            button.grid(row=0, column=index, sticky="ew", padx=(0 if index == 0 else 5, 0 if index == 2 else 5))
+            button.grid(
+                row=0,
+                column=index,
+                sticky="ew",
+                padx=(0 if index == 0 else 4, 0 if index == len(amount_choices) - 1 else 4),
+            )
             self._sponsor_amount_buttons[amount] = button
+
+        self._sponsor_custom_frame = tk.Frame(
+            amount_panel.inner,
+            bg=SURFACE,
+            highlightthickness=0,
+            borderwidth=0,
+        )
+        self._sponsor_custom_frame.columnconfigure(1, weight=1)
+        tk.Label(
+            self._sponsor_custom_frame,
+            text="自定义",
+            bg=SURFACE,
+            fg=TEXT,
+            font=("Microsoft YaHei UI", 9, "bold"),
+        ).grid(row=0, column=0, sticky="w", padx=(0, 10))
+        custom_entry_shell = tk.Frame(
+            self._sponsor_custom_frame,
+            bg=FIELD_BG,
+            highlightbackground=FIELD_OUTLINE,
+            highlightcolor=ACCENT,
+            highlightthickness=1,
+            padx=10,
+            pady=7,
+        )
+        custom_entry_shell.grid(row=0, column=1, sticky="ew")
+        tk.Label(
+            custom_entry_shell,
+            text="¥",
+            bg=FIELD_BG,
+            fg=MUTED,
+            font=("Microsoft YaHei UI", 10, "bold"),
+        ).pack(side="left", padx=(0, 5))
+        self._sponsor_custom_amount_var = tk.StringVar(value="")
+        self._sponsor_custom_entry = tk.Entry(
+            custom_entry_shell,
+            textvariable=self._sponsor_custom_amount_var,
+            bg=FIELD_BG,
+            fg=TEXT,
+            insertbackground=TEXT,
+            borderwidth=0,
+            relief="flat",
+            font=("Microsoft YaHei UI", 10),
+        )
+        self._sponsor_custom_entry.pack(side="left", fill="x", expand=True)
+        self._sponsor_custom_entry.bind("<Return>", lambda _event: self._confirm_custom_sponsor_amount())
+        LabelButton(
+            self._sponsor_custom_frame,
+            "确认金额",
+            self._confirm_custom_sponsor_amount,
+            fill=ACCENT,
+            foreground="#ffffff",
+            active_fill=ACCENT_ACTIVE,
+            height=36,
+            width=96,
+            font=("Microsoft YaHei UI", 9, "bold"),
+            radius=10,
+        ).grid(row=0, column=2, sticky="e", padx=(10, 0))
 
         qr_panel = RoundedPanel(
             container,
@@ -2837,7 +2988,7 @@ class App(tk.Tk):
             background=APP_BG,
             radius=18,
             padding=(16, 14),
-            min_height=330,
+            min_height=342,
             outline=SUBTLE_OUTLINE,
             shadow=True,
             auto_height=False,
@@ -2846,7 +2997,7 @@ class App(tk.Tk):
         qr_panel.inner.columnconfigure(0, weight=1)
         self._sponsor_qr_label = tk.Label(
             qr_panel.inner,
-            text="正在准备 ¥6 支付二维码…",
+            text="正在准备 ¥10 支付二维码…",
             bg=FIELD_BG,
             fg=MUTED,
             width=28,
@@ -2905,18 +3056,60 @@ class App(tk.Tk):
         return top
 
     def _select_sponsor_amount(self, amount: str) -> None:
-        if amount == self._sponsor_amount_var.get() and self._sponsor_order is not None:
+        if amount == self._sponsor_amount_choice and self._sponsor_order is not None:
             return
+        self._sponsor_amount_choice = amount
+        if amount == "other":
+            self._cancel_sponsor_poll()
+            self._sponsor_generation += 1
+            self._sponsor_order = None
+            self._sponsor_client = None
+            self._sponsor_success_frame.pack_forget()
+            self._hide_sponsor_retry()
+            if not self._sponsor_custom_frame.winfo_manager():
+                self._sponsor_custom_frame.pack(fill="x", pady=(12, 0))
+            self._sponsor_qr_label.configure(
+                image="",
+                text="输入金额后自动生成二维码",
+                fg=MUTED,
+                width=28,
+                height=12,
+            )
+            self._sponsor_status_var.set("请输入 1–9999 元，最多两位小数")
+            self._refresh_sponsor_amount_buttons()
+            self._sponsor_custom_entry.focus_set()
+            return
+
+        if self._sponsor_custom_frame.winfo_manager():
+            self._sponsor_custom_frame.pack_forget()
         self._sponsor_amount_var.set(amount)
+        self._refresh_sponsor_amount_buttons()
+        self._start_sponsor_order()
+
+    def _refresh_sponsor_amount_buttons(self) -> None:
         for value, button in self._sponsor_amount_buttons.items():
-            selected = value == amount
+            selected = value == self._sponsor_amount_choice
             button.outline = ACCENT_BORDER if selected else SUBTLE_OUTLINE
+            label = "其他" if value == "other" else f"¥{value.removesuffix('.00')}"
             button.set_appearance(
-                text=f"¥{value.removesuffix('.00')}",
+                text=label,
                 fill=ACCENT_SOFT if selected else SECONDARY,
                 foreground=ACCENT if selected else MUTED,
                 active_fill=ACCENT_SOFT_ACTIVE if selected else SECONDARY_ACTIVE,
             )
+
+    def _confirm_custom_sponsor_amount(self) -> None:
+        try:
+            amount = normalize_amount(self._sponsor_custom_amount_var.get().strip())
+        except SponsorError as exc:
+            self._sponsor_status_var.set(str(exc))
+            self._sponsor_custom_entry.focus_set()
+            return
+        normalized = f"{amount:.2f}"
+        self._sponsor_amount_choice = "other"
+        self._sponsor_amount_var.set(normalized)
+        self._sponsor_custom_amount_var.set(normalized.removesuffix(".00"))
+        self._refresh_sponsor_amount_buttons()
         self._start_sponsor_order()
 
     def _show_sponsor_retry(self, text: str = "重新获取二维码") -> None:
@@ -2956,17 +3149,27 @@ class App(tk.Tk):
         )
 
         def create_order() -> None:
-            try:
-                client = SponsorClient.from_environment()
-                order = client.create_order(amount, app_version=__version__)
-                qr_data = client.download_qr(order.qr_url)
-            except SponsorError as exc:
-                message = str(exc)
-                self.after(0, lambda: self._finish_sponsor_error(generation, message))
-                return
-            except Exception:
-                self.after(0, lambda: self._finish_sponsor_error(generation, "二维码生成失败，请稍后重试"))
-                return
+            last_error = "二维码生成失败，请稍后重试"
+            for attempt in range(3):
+                try:
+                    client = SponsorClient.from_environment()
+                    order = client.create_order(amount, app_version=__version__)
+                    qr_data = client.download_order_qr(order)
+                    break
+                except SponsorUnavailable as exc:
+                    last_error = str(exc)
+                    if attempt < 2:
+                        time.sleep(0.6 * (attempt + 1))
+                        continue
+                    self.after(0, lambda message=last_error: self._finish_sponsor_error(generation, message))
+                    return
+                except SponsorError as exc:
+                    message = str(exc)
+                    self.after(0, lambda message=message: self._finish_sponsor_error(generation, message))
+                    return
+                except Exception:
+                    self.after(0, lambda: self._finish_sponsor_error(generation, last_error))
+                    return
             self.after(0, lambda: self._finish_sponsor_order(generation, client, order, qr_data))
 
         threading.Thread(target=create_order, name="SponsorOrder", daemon=True).start()
@@ -3119,13 +3322,13 @@ class App(tk.Tk):
         cookie = self.cookie_text.get("1.0", "end").strip()
         if not cookie:
             self.cookie_validation_var.set("Cookie 未填写")
-            messagebox.showwarning("缺少 Cookie", "请先读取或粘贴 Cookie。")
+            self._show_notice("缺少 Cookie", "请先读取或粘贴 Cookie。")
             return
         required_fields = ("SESSDATA=", "bili_jct=", "DedeUserID=")
         missing = [field.rstrip("=") for field in required_fields if field not in cookie]
         if missing:
             self.cookie_validation_var.set("Cookie 缺少字段")
-            messagebox.showwarning("Cookie 不完整", "Cookie 缺少必要字段：\n" + "、".join(missing))
+            self._show_notice("Cookie 不完整", "Cookie 缺少必要字段：\n" + "、".join(missing))
             return
         self.cookie_validation_var.set("Cookie 格式正常")
         self._log("Cookie 本地格式校验通过")
@@ -3451,19 +3654,19 @@ class App(tk.Tk):
         raw_room_id = room_variable.get().strip() if room_variable is not None else config.room_id
         requested_room_id = normalize_room_id(raw_room_id)
         if not requested_room_id:
-            messagebox.showwarning("直播间号无效", "请填写正确的数字直播间号或 B 站直播间链接。")
+            self._show_notice("直播间号无效", "请填写正确的数字直播间号或 B 站直播间链接。")
             return
         if room_variable is not None:
             room_variable.set(requested_room_id)
             config = self._current_config()
         if not config.cookie:
-            messagebox.showwarning("缺少 Cookie", "请先粘贴 B 站 Cookie。")
+            self._show_notice("缺少 Cookie", "请先粘贴 B 站 Cookie。")
             return
         if not config.room_id:
-            messagebox.showwarning("缺少直播间号", "请先填写直播间号或直播间链接。")
+            self._show_notice("缺少直播间号", "请先填写直播间号或直播间链接。")
             return
         if self.account_checks and not any(var.get() for var in self.account_checks.values()):
-            messagebox.showwarning("没有勾选账号", "请至少勾选一个要挂的账号（不勾选则不会挂机）。")
+            self._show_notice("没有勾选账号", "请至少勾选一个要挂的账号（不勾选则不会挂机）。")
             return
 
         config = self._save()
@@ -3477,7 +3680,7 @@ class App(tk.Tk):
             self._log(f"检测到同一 B 站账号：{duplicate} 已与 {kept} 合并，本次只启动一组")
         account_options = build_account_options(config)
         if not account_options:
-            messagebox.showwarning("没有可用账号", "请至少勾选一个已保存且含 Cookie 的账号。")
+            self._show_notice("没有可用账号", "请至少勾选一个已保存且含 Cookie 的账号。")
             return
         total_threads = len(account_options) * config.watch_threads
         if total_threads > 20:
@@ -3540,7 +3743,7 @@ class App(tk.Tk):
         try:
             browser_name = open_bilibili_login_page(self._log)
         except Exception as exc:
-            messagebox.showerror("打开失败", f"无法打开 B 站登录页：{exc}")
+            self._show_notice("打开失败", f"无法打开 B 站登录页：{exc}", kind="error")
             self._log(f"打开 B 站登录页失败：{exc}")
             return
         self._log(f"已打开 {browser_name} 登录页。手动模式不会自动读取 Cookie；需要自动读取请点击“自动获取 Cookie”。")
@@ -3562,20 +3765,20 @@ class App(tk.Tk):
         if not self.watcher:
             config = self._current_config()
             if not config.cookie:
-                messagebox.showwarning("缺少 Cookie", "请先粘贴 B 站 Cookie 才能领取奖励。")
+                self._show_notice("缺少 Cookie", "请先粘贴 B 站 Cookie 才能领取奖励。")
                 return
             if not config.room_id:
-                messagebox.showwarning("缺少直播间号", "请先填写直播间号才能领取奖励。")
+                self._show_notice("缺少直播间号", "请先填写直播间号才能领取奖励。")
                 return
             if self.account_checks and not any(var.get() for var in self.account_checks.values()):
-                messagebox.showwarning("没有勾选账号", "请至少勾选一个要领奖的账号。")
+                self._show_notice("没有勾选账号", "请至少勾选一个要领奖的账号。")
                 return
             config = self._save()
             for duplicate, kept in find_duplicate_active_accounts(config):
                 self._log(f"检测到同一 B 站账号：{duplicate} 已与 {kept} 合并，本次只处理一次")
             account_options = build_account_options(config)
             if not account_options:
-                messagebox.showwarning("没有可用账号", "请至少勾选一个已保存且含 Cookie 的账号。")
+                self._show_notice("没有可用账号", "请至少勾选一个已保存且含 Cookie 的账号。")
                 return
             self.watcher = MultiAccountWatcher(account_options, self._thread_log)
             self._log("尚未挂宝，临时对勾选账号各领取一次已完成奖励")
@@ -4059,7 +4262,7 @@ class App(tk.Tk):
                 detail = message.removeprefix("__ERROR__:")
                 self._notify_from_message(detail)
                 self._log(detail)
-                messagebox.showerror("Cookie 获取失败", detail)
+                self._show_notice("Cookie 获取失败", detail, kind="error")
                 continue
             self._notify_from_message(message)
             account_prefix, body = self._split_account_prefix(message)
