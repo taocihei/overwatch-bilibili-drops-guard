@@ -1,6 +1,6 @@
 # 守望先锋 B 站直播挂宝 / Overwatch Bilibili Live Drops Guard
 
-当前版本：`v0.5.12`
+当前版本：`v0.5.13`
 
 开源地址：<https://github.com/taocihei/overwatch-bilibili-drops-guard>
 
@@ -24,7 +24,7 @@
 
 1. 打开项目页面：<https://github.com/taocihei/overwatch-bilibili-drops-guard>
 2. 进入右侧或页面中的 `Releases`。
-3. 下载 `OverwatchBiliDrops-v0.5.12.exe`。
+3. 下载 `OverwatchBiliDrops-v0.5.13.exe`。
 4. 双击运行。
 5. 如果 Windows 提示“未知发布者”或“Windows 已保护你的电脑”，点击“更多信息”，再点“仍要运行”。这是个人开源软件常见提示，不代表一定有病毒。
 6. 第一次使用先点“自动获取 Cookie”，在弹出的独立 Edge/Chrome 窗口里登录 B 站。
@@ -47,6 +47,13 @@
 - `通知 URL`：可留空。填写后，启动、检测到可领取、领取成功、领取失败、Cookie 获取成功等关键事件会向该地址发送 JSON POST。
 - `观看进度`：优先显示本次观看进度，比如“还差 48 分钟”“已完成，待领取”“已领取”。
 - `运行日志`：保留登录、计时、任务识别和领取记录，适合排查异常。
+
+## v0.5.13 新增与修复
+
+- **二维码首开预热**：软件启动后在后台提前唤醒支付服务并初始化订单存储，打开赞助窗口不再承担完整冷启动等待。
+- **复用支付连接**：创建订单、下载二维码和查询状态复用同一 HTTPS 会话，减少重复握手耗时。
+- **金额切换秒开**：12 分钟内切回已生成金额时直接复用仍有效的二维码，不重复创建订单。
+- **服务端并行提速**：订单存储准备与 YunGouOS 下单并行执行，进一步压缩首次生成耗时。
 
 ## v0.5.12 新增与修复
 
@@ -362,7 +369,7 @@ dist\OverwatchBiliDrops.exe
 发布时会同时生成带版本号的文件，例如：
 
 ```text
-dist\OverwatchBiliDrops-v0.5.12.exe
+dist\OverwatchBiliDrops-v0.5.13.exe
 ```
 ## 赞助
 
@@ -378,7 +385,7 @@ dist\OverwatchBiliDrops-v0.5.12.exe
 
 Project name: **守望先锋 B 站直播挂宝 / Overwatch Bilibili Live Drops Guard**
 
-Version: `v0.5.12`
+Version: `v0.5.13`
 
 Repository: <https://github.com/taocihei/overwatch-bilibili-drops-guard>
 
@@ -398,7 +405,7 @@ Default room: `23612045`.
 
 1. Open the repository page: <https://github.com/taocihei/overwatch-bilibili-drops-guard>
 2. Open `Releases`.
-3. Download `OverwatchBiliDrops-v0.5.12.exe`.
+3. Download `OverwatchBiliDrops-v0.5.13.exe`.
 4. Double-click to run it.
 5. If Windows shows an unknown-publisher warning, click `More info`, then `Run anyway`.
 6. Click `自动获取 Cookie`, then sign in to Bilibili in the independent Edge/Chrome window opened by the app.
@@ -442,5 +449,5 @@ dist\OverwatchBiliDrops.exe
 Release builds are also copied with a versioned file name, for example:
 
 ```text
-dist\OverwatchBiliDrops-v0.5.12.exe
+dist\OverwatchBiliDrops-v0.5.13.exe
 ```

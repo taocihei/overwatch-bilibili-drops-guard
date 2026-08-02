@@ -1,9 +1,15 @@
-import { json } from "@/lib/responses";
+import { ensureSponsorSchema } from "@/lib/database";
+import { json, serviceError } from "@/lib/responses";
 
 export async function GET(): Promise<Response> {
-  return json({
-    ok: true,
-    service: "overwatch-bilibili-drops-sponsor",
-    version: "0.5.11",
-  });
+  try {
+    await ensureSponsorSchema();
+    return json({
+      ok: true,
+      service: "overwatch-bilibili-drops-sponsor",
+      version: "0.5.13",
+    });
+  } catch (error) {
+    return serviceError(error);
+  }
 }

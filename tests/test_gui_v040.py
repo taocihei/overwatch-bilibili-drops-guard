@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 import unittest
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -614,7 +615,13 @@ class SponsorDialogFlowTest(unittest.TestCase):
             _sponsor_success_frame=MagicMock(),
             _sponsor_status_var=MagicMock(),
             _sponsor_qr_label=qr_label,
+            _cached_sponsor_order=MagicMock(return_value=None),
+            _sponsor_warm_ready=threading.Event(),
+            _sponsor_warm_started=False,
+            _sponsor_http_client=None,
+            _warm_sponsor_service=MagicMock(),
         )
+        app._sponsor_warm_ready.set()
 
         with patch.object(gui.threading, "Thread"):
             gui.App._start_sponsor_order(app)
@@ -626,6 +633,58 @@ class SponsorDialogFlowTest(unittest.TestCase):
             width=28,
             height=12,
         )
+
+    def test_cached_sponsor_order_is_reused_without_network_thread(self) -> None:
+        amount_var = MagicMock()
+        amount_var.get.return_value = "10.00"
+        cached = (MagicMock(), MagicMock(), b"qr")
+        finish = MagicMock()
+        app = SimpleNamespace(
+            _sponsor_dialog_exists=MagicMock(return_value=True),
+            _cancel_sponsor_poll=MagicMock(),
+            _hide_sponsor_retry=MagicMock(),
+            _sponsor_loading=False,
+            _sponsor_generation=0,
+            _sponsor_amount_var=amount_var,
+            _sponsor_order=None,
+            _sponsor_success_shown=False,
+            _sponsor_success_frame=MagicMock(),
+            _sponsor_status_var=MagicMock(),
+            _sponsor_qr_label=MagicMock(),
+            _cached_sponsor_order=MagicMock(return_value=cached),
+            _finish_sponsor_order=finish,
+        )
+
+        with patch.object(gui.threading, "Thread") as thread:
+            gui.App._start_sponsor_order(app)
+
+        thread.assert_not_called()
+        finish.assert_called_once_with(
+            1,
+            "10.00",
+            *cached,
+            cache_result=False,
+        )
+
+    def test_sponsor_order_cache_expires_before_payment_order(self) -> None:
+        client = MagicMock()
+        order = MagicMock()
+        app = SimpleNamespace(
+            _sponsor_order_cache={
+                "10.00": (
+                    100.0,
+                    client,
+                    order,
+                    b"qr",
+                )
+            }
+        )
+
+        with patch.object(gui.time, "monotonic", return_value=100.0 + 12 * 60):
+            result = gui.App._cached_sponsor_order(app, "10.00")
+
+        self.assertIsNone(result)
+        self.assertNotIn("10.00", app._sponsor_order_cache)
 
 
 if __name__ == "__main__":

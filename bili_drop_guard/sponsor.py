@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import threading
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from urllib.parse import quote, urlparse
@@ -14,6 +15,7 @@ DEFAULT_SPONSOR_API_URL = (
 )
 SPONSOR_QQ_GROUP = "1012969672"
 DEFAULT_TIMEOUT = (5, 15)
+WARM_UP_TIMEOUT = (5, 12)
 SPONSOR_PRESET_AMOUNTS = (
     Decimal("5.00"),
     Decimal("10.00"),
@@ -72,11 +74,32 @@ class SponsorClient:
         self.base_url = _normalize_base_url(base_url)
         self.session = session or requests.Session()
         self.timeout = timeout
+        self._session_lock = threading.RLock()
 
     @classmethod
     def from_environment(cls) -> SponsorClient:
         configured_url = os.environ.get(SPONSOR_API_ENV, "").strip()
         return cls(configured_url or DEFAULT_SPONSOR_API_URL)
+
+    def warm_up(self) -> bool:
+        """提前唤醒赞助服务并复用已建立的 HTTPS 连接。"""
+
+        health_url = (
+            f"{self.base_url.removesuffix('/sponsor')}/health"
+            if self.base_url.endswith("/sponsor")
+            else f"{self.base_url}/health"
+        )
+        try:
+            with self._session_lock:
+                response = self.session.request(
+                    "GET",
+                    health_url,
+                    timeout=WARM_UP_TIMEOUT,
+                )
+                response.raise_for_status()
+        except (requests.RequestException, ValueError):
+            return False
+        return True
 
     def create_order(self, amount: str | Decimal, *, app_version: str) -> SponsorOrder:
         normalized_amount = normalize_amount(amount)
@@ -132,8 +155,9 @@ class SponsorClient:
         if not _is_safe_remote_url(qr_url):
             raise SponsorError("二维码地址无效")
         try:
-            response = self.session.get(qr_url, timeout=self.timeout)
-            response.raise_for_status()
+            with self._session_lock:
+                response = self.session.get(qr_url, timeout=self.timeout)
+                response.raise_for_status()
         except requests.RequestException as exc:
             raise SponsorUnavailable("二维码加载失败，请稍后重试") from exc
         content_type = str(response.headers.get("Content-Type") or "").lower()
@@ -159,14 +183,15 @@ class SponsorClient:
 
     def _request_json(self, method: str, path: str, **kwargs: object) -> dict[str, object]:
         try:
-            response = self.session.request(
-                method,
-                f"{self.base_url}{path}",
-                timeout=self.timeout,
-                **kwargs,
-            )
-            response.raise_for_status()
-            payload = response.json()
+            with self._session_lock:
+                response = self.session.request(
+                    method,
+                    f"{self.base_url}{path}",
+                    timeout=self.timeout,
+                    **kwargs,
+                )
+                response.raise_for_status()
+                payload = response.json()
         except requests.RequestException as exc:
             raise SponsorUnavailable("赞助服务暂时不可用，请稍后重试") from exc
         except ValueError as exc:
