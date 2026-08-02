@@ -39,7 +39,7 @@ export async function POST(request: Request): Promise<Response> {
     }
 
     const { merchantId, paymentKey } = getPaymentCredentials();
-    const database = await ensureSponsorSchema();
+    const databasePromise = ensureSponsorSchema();
     const id = crypto.randomUUID().replaceAll("-", "");
     const providerOrderNo = createProviderOrderNo();
     const now = Date.now();
@@ -47,15 +47,18 @@ export async function POST(request: Request): Promise<Response> {
     const appVersion = safeText(payload.app_version, 24) || "unknown";
     const notifyUrl = new URL("/api/sponsor/callback", request.url).toString();
 
-    const providerQrUrl = await createNativePayment({
-      providerOrderNo,
-      amount,
-      body: "守望先锋B站直播挂宝赞助",
-      merchantId,
-      paymentKey,
-      notifyUrl,
-      attach: `sponsor:${id}`,
-    });
+    const [database, providerQrUrl] = await Promise.all([
+      databasePromise,
+      createNativePayment({
+        providerOrderNo,
+        amount,
+        body: "守望先锋B站直播挂宝赞助",
+        merchantId,
+        paymentKey,
+        notifyUrl,
+        attach: `sponsor:${id}`,
+      }),
+    ]);
 
     await database
       .prepare(

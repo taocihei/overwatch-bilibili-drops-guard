@@ -40,6 +40,7 @@ from .multi_account import MultiAccountWatcher, build_account_options, find_dupl
 
 
 SOURCE_URL = "https://github.com/taocihei/overwatch-bilibili-drops-guard"
+SPONSOR_ORDER_CACHE_TTL_SECONDS = 12 * 60
 APP_BG = "#eef3f9"
 SURFACE = "#ffffff"
 GLASS = "#fbfdff"
@@ -1354,6 +1355,12 @@ class App(tk.Tk):
         self._sponsor_window: tk.Toplevel | None = None
         self._sponsor_order: SponsorOrder | None = None
         self._sponsor_client: SponsorClient | None = None
+        self._sponsor_http_client: SponsorClient | None = None
+        self._sponsor_warm_ready = threading.Event()
+        self._sponsor_warm_started = False
+        self._sponsor_order_cache: dict[
+            str, tuple[float, SponsorClient, SponsorOrder, bytes]
+        ] = {}
         self._sponsor_poll_job: str | None = None
         self._sponsor_generation = 0
         self._sponsor_loading = False
@@ -1402,6 +1409,10 @@ class App(tk.Tk):
 
         self._configure_style()
         self._build_ui()
+        if self.preview_mode:
+            self._sponsor_warm_ready.set()
+        else:
+            self.after(400, self._warm_sponsor_service)
         self.after(1000, self._poll_watch_status)
         self.after(100, self._clear_initial_focus)
         self.after(200, self._drain_logs)
@@ -2967,6 +2978,43 @@ class App(tk.Tk):
         self.clipboard_append(SOURCE_URL)
         self._log("开源地址已复制")
 
+    def _warm_sponsor_service(self) -> None:
+        """在用户打开赞助窗口前唤醒服务，并保留连接供下单复用。"""
+
+        if self.preview_mode or self._sponsor_warm_started:
+            return
+        self._sponsor_warm_started = True
+
+        def warm_up() -> None:
+            try:
+                client = SponsorClient.from_environment()
+                client.warm_up()
+                self._sponsor_http_client = client
+            except SponsorError:
+                self._sponsor_http_client = None
+            finally:
+                self._sponsor_warm_ready.set()
+
+        threading.Thread(target=warm_up, name="SponsorWarmup", daemon=True).start()
+
+    def _cached_sponsor_order(
+        self,
+        amount: str,
+    ) -> tuple[SponsorClient, SponsorOrder, bytes] | None:
+        cached = self._sponsor_order_cache.get(amount)
+        if cached is None:
+            return None
+        created_at, client, order, qr_data = cached
+        if time.monotonic() - created_at >= SPONSOR_ORDER_CACHE_TTL_SECONDS:
+            self._sponsor_order_cache.pop(amount, None)
+            return None
+        return client, order, qr_data
+
+    def _forget_current_sponsor_order(self) -> None:
+        amount_var = getattr(self, "_sponsor_amount_var", None)
+        if amount_var is not None:
+            self._sponsor_order_cache.pop(amount_var.get(), None)
+
     def _show_sponsor_dialog(self) -> tk.Toplevel:
         if self._sponsor_window is not None:
             try:
@@ -3264,7 +3312,27 @@ class App(tk.Tk):
         self._sponsor_success_frame.pack_forget()
         self._hide_sponsor_retry()
         amount_label = amount.removesuffix(".00")
-        self._sponsor_status_var.set(f"正在创建 ¥{amount_label} 支付订单…")
+        cached = self._cached_sponsor_order(amount)
+        if cached is not None:
+            client, order, qr_data = cached
+            self._finish_sponsor_order(
+                generation,
+                amount,
+                client,
+                order,
+                qr_data,
+                cache_result=False,
+            )
+            return
+
+        warm_ready = self._sponsor_warm_ready.is_set()
+        if not warm_ready:
+            self._warm_sponsor_service()
+        self._sponsor_status_var.set(
+            f"正在创建 ¥{amount_label} 支付订单…"
+            if warm_ready
+            else "首次打开正在连接支付通道…"
+        )
         self._sponsor_qr_label.configure(
             image="",
             text=f"正在生成 ¥{amount_label} 二维码…",
@@ -3275,9 +3343,12 @@ class App(tk.Tk):
 
         def create_order() -> None:
             last_error = "二维码生成失败，请稍后重试"
+            if self._sponsor_warm_started and not self._sponsor_warm_ready.is_set():
+                self._sponsor_warm_ready.wait(13.0)
+            client = self._sponsor_http_client
             for attempt in range(3):
                 try:
-                    client = SponsorClient.from_environment()
+                    client = client or SponsorClient.from_environment()
                     order = client.create_order(amount, app_version=__version__)
                     qr_data = client.download_order_qr(order)
                     break
@@ -3295,16 +3366,28 @@ class App(tk.Tk):
                 except Exception:
                     self.after(0, lambda: self._finish_sponsor_error(generation, last_error))
                     return
-            self.after(0, lambda: self._finish_sponsor_order(generation, client, order, qr_data))
+            self.after(
+                0,
+                lambda: self._finish_sponsor_order(
+                    generation,
+                    amount,
+                    client,
+                    order,
+                    qr_data,
+                ),
+            )
 
         threading.Thread(target=create_order, name="SponsorOrder", daemon=True).start()
 
     def _finish_sponsor_order(
         self,
         generation: int,
+        amount: str,
         client: SponsorClient,
         order: SponsorOrder,
         qr_data: bytes,
+        *,
+        cache_result: bool = True,
     ) -> None:
         if generation != self._sponsor_generation or not self._sponsor_dialog_exists():
             return
@@ -3322,6 +3405,13 @@ class App(tk.Tk):
             return
         self._sponsor_client = client
         self._sponsor_order = order
+        if cache_result:
+            self._sponsor_order_cache[amount] = (
+                time.monotonic(),
+                client,
+                order,
+                qr_data,
+            )
         self._sponsor_loading = False
         suffix = f" · 有效至 {order.expires_at}" if order.expires_at else ""
         self._sponsor_status_var.set(f"请使用微信扫码支付，支付成功后自动显示群号{suffix}")
@@ -3366,6 +3456,7 @@ class App(tk.Tk):
             return
         if status.paid:
             self._cancel_sponsor_poll()
+            self._forget_current_sponsor_order()
             self._sponsor_status_var.set("付款成功，感谢支持")
             self._sponsor_qr_label.configure(image="", text="✓\n支付成功", fg=SUCCESS, width=28, height=12)
             self._sponsor_success_frame.pack(fill="x", pady=(12, 0))
@@ -3373,10 +3464,12 @@ class App(tk.Tk):
             self._sponsor_success_shown = True
             return
         if status.state == "expired":
+            self._forget_current_sponsor_order()
             self._sponsor_status_var.set("二维码已过期，请重新生成")
             self._show_sponsor_retry()
             return
         if status.state == "closed":
+            self._forget_current_sponsor_order()
             self._sponsor_status_var.set("订单已关闭，请重新生成")
             self._show_sponsor_retry()
             return

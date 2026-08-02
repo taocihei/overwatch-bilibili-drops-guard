@@ -70,6 +70,45 @@ class SponsorClientTest(unittest.TestCase):
         client = SponsorClient("http://127.0.0.1:8080/api", session=_Session([]))
         self.assertEqual(client.base_url, "http://127.0.0.1:8080/api")
 
+    def test_warm_up_uses_health_endpoint_and_reuses_session(self) -> None:
+        session = _Session(
+            [
+                _Response({"ok": True}),
+                _Response(
+                    {
+                        "data": {
+                            "order_id": "order-1",
+                            "qr_url": "https://images.example.com/qr.png",
+                        }
+                    }
+                ),
+            ]
+        )
+        client = SponsorClient("https://pay.example.com/api/sponsor", session=session)
+
+        self.assertTrue(client.warm_up())
+        client.create_order("10", app_version="0.5.13")
+
+        self.assertEqual(
+            [(method, url) for method, url, _kwargs in session.calls],
+            [
+                ("GET", "https://pay.example.com/api/health"),
+                ("POST", "https://pay.example.com/api/sponsor/orders"),
+            ],
+        )
+
+    def test_warm_up_failure_is_silent_and_retryable(self) -> None:
+        class FailingSession:
+            def request(self, *_args: object, **_kwargs: object) -> _Response:
+                raise requests.ConnectionError("cold")
+
+        client = SponsorClient(
+            "https://pay.example.com/api/sponsor",
+            session=FailingSession(),
+        )
+
+        self.assertFalse(client.warm_up())
+
     def test_create_order_uses_yungouos_provider_and_validates_qr_url(self) -> None:
         session = _Session(
             [
