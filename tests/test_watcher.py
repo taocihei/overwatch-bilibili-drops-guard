@@ -186,6 +186,8 @@ class LiveWatcherTest(unittest.TestCase):
         self.assertEqual(calls, [(100, "task-a"), (100, "task-b")])
         self.assertEqual(waits, [7])
         self.assertIn("开始领取奖励：会按顺序一个一个领取，避免太快导致失败", logs)
+        self.assertIn("正在领取（1/2）：手动填写的任务", logs)
+        self.assertIn("本次领取处理完成：已处理 2 个奖励，失败 0 个", logs)
 
     def test_claim_worker_refreshes_progress_before_claiming(self) -> None:
         calls: list[tuple[int, str | None]] = []
@@ -1617,6 +1619,23 @@ class LiveWatcherRegressionTest(unittest.TestCase):
         received = {"list": [{"task_id": "task-a", "task_name": "奖励 A", "is_receive": 1}]}
         live_watcher._record_task_progress(received, announce_claimable=True)
         self.assertEqual(live_watcher._claimable_task_ids, set())
+
+    def test_claimable_snapshot_does_not_report_queue_when_auto_claim_is_off(self) -> None:
+        logs: list[str] = []
+        live_watcher = LiveWatcher(
+            WatchOptions(cookie="a=b", room_id="1", auto_claim=False),
+            logs.append,
+        )
+        claimable = {
+            "list": [
+                {"task_id": "task-a", "task_name": "奖励 A", "current": 30, "target": 30},
+            ]
+        }
+
+        live_watcher._record_task_progress(claimable, announce_claimable=True)
+
+        self.assertIn("检测到 1 个奖励可以领取；自动领取已关闭，请点击“领取奖励”", logs)
+        self.assertFalse(any("正在排队领取" in message for message in logs))
 
     def test_concurrent_claim_for_same_task_submits_only_once(self) -> None:
         submit_count = 0

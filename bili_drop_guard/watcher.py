@@ -934,7 +934,11 @@ class LiveWatcher:
             return False
 
         if announce_claimable and newly_claimable_names:
-            self.log(f"检测到 {len(newly_claimable_names)} 个奖励可以领取，正在排队领取")
+            count = len(newly_claimable_names)
+            if self.options.auto_claim:
+                self.log(f"检测到 {count} 个奖励可以领取，正在排队领取")
+            else:
+                self.log(f"检测到 {count} 个奖励可以领取；自动领取已关闭，请点击“领取奖励”")
         return True
 
     def _log_task_waiting_progress(self, message: str, *, min_interval: float = 30.0) -> None:
@@ -1119,6 +1123,7 @@ class LiveWatcher:
 
         if claim_general and not task_ids:
             client = BilibiliClient(self.options.cookie)
+            failed = 0
             try:
                 client.claim_user_task_rewards(up_id)
                 with self._claim_lock:
@@ -1126,23 +1131,31 @@ class LiveWatcher:
                     self._general_claim_suppressed = True
                 self.log("已领取：已完成的通用奖励")
             except Exception as exc:
+                failed = 1
                 self.log(f"领取失败：通用奖励：{self._friendly_error(exc)}")
             finally:
                 self._close_client(client)
+            self.log(f"本次领取处理完成：已处理 1 个奖励，失败 {failed} 个")
             return
 
+        processed = 0
+        failed = 0
         for index, task_id in enumerate(task_ids):
             if self._stop.is_set():
                 self.log("已停止领取，剩余奖励下次可继续领取")
                 break
             label = self._claim_task_label(task_id)
-            self.log(f"正在领取：{label}")
+            self.log(f"正在领取（{index + 1}/{len(task_ids)}）：{label}")
             try:
                 self.log(self._claim_one_task(up_id, task_id))
             except Exception as exc:
+                failed += 1
                 self.log(f"领取失败：{label}：{self._friendly_error(exc)}")
+            processed += 1
             if index < len(task_ids) - 1:
                 self._wait_between_claims(CLAIM_SUBMIT_DELAY_SECONDS)
+        if processed:
+            self.log(f"本次领取处理完成：已处理 {processed} 个奖励，失败 {failed} 个")
 
     def _claim_one_task(self, up_id: int, task_id: str) -> str:
         marker = f"{up_id}:{task_id}"

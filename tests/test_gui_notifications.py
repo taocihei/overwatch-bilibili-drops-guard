@@ -321,9 +321,27 @@ class ProgressVisualRoutingTest(unittest.TestCase):
 
         gui.App._sync_progress_visual(app, "检测到 4 个奖励可以领取，正在排队领取")
 
-        self.assertEqual(app.reward_title_var.get(), "4 次")
-        self.assertEqual(app.reward_status_var.get(), "领奖：4 次可领")
+        self.assertEqual(app.reward_title_var.get(), "4 个")
+        self.assertEqual(app.reward_detail_var.get(), "已进入自动领取队列，请等待领取结果")
+        self.assertEqual(app.reward_status_var.get(), "领奖：4 个可领")
         self.assertEqual(app.progress_title_var.get(), "4 个奖励可领取")
+
+    def test_claimable_message_with_auto_claim_off_prompts_manual_action(self) -> None:
+        app = self._app()
+
+        gui.App._sync_progress_visual(app, "检测到 7 个奖励可以领取；自动领取已关闭，请点击“领取奖励”")
+
+        self.assertEqual(app.reward_title_var.get(), "7 个")
+        self.assertEqual(app.reward_detail_var.get(), "自动领取已关闭，请点击上方“领取奖励”")
+        self.assertEqual(app.reward_status_var.get(), "领奖：7 个可领")
+
+    def test_claim_completion_summary_updates_reward_card(self) -> None:
+        app = self._app()
+
+        gui.App._sync_progress_visual(app, "本次领取处理完成：已处理 7 个奖励，失败 0 个")
+
+        self.assertEqual(app.reward_title_var.get(), "领取完成")
+        self.assertEqual(app.reward_status_var.get(), "领奖：已完成")
 
     def test_no_claimable_after_refresh_updates_reward_card(self) -> None:
         app = self._app()

@@ -4503,12 +4503,18 @@ class App(tk.Tk):
         claimable_match = re.search(r"(?:检测到\s*(\d+)\s*个奖励可以领取|已有\s*(\d+)\s*个任务完成)", text)
         if claimable_match and hasattr(self, "reward_title_var"):
             count = claimable_match.group(1) or claimable_match.group(2)
-            self.reward_title_var.set(f"{count} 次")
-            self.reward_detail_var.set("当前有奖励可领取")
-            self.reward_status_var.set(f"领奖：{count} 次可领")
+            self.reward_title_var.set(f"{count} 个")
+            self.reward_status_var.set(f"领奖：{count} 个可领")
             self.progress_ring.set_state(text="可领", caption="等待领取", value=1.0, color=SUCCESS)
             self.progress_title_var.set(f"{count} 个奖励可领取")
-            self.progress_detail_var.set("自动领取开启时会自动提交，也可以手动点击领取。")
+            if "自动领取已关闭" in text:
+                detail = "自动领取已关闭，请点击上方“领取奖励”"
+            elif "正在排队领取" in text:
+                detail = "已进入自动领取队列，请等待领取结果"
+            else:
+                detail = "当前有奖励可领取"
+            self.reward_detail_var.set(detail)
+            self.progress_detail_var.set(detail)
             return
         progress_matches = [
             (float(current), max(float(target), 0.01))
@@ -4561,6 +4567,16 @@ class App(tk.Tk):
                 self.reward_title_var.set("未到领取条件")
                 self.reward_detail_var.set(f"还差 {self._format_progress_number(remaining)} 分钟")
                 self.reward_status_var.set("领奖：未到条件")
+            return
+        if "本次领取处理完成" in text:
+            failed_match = re.search(r"失败\s*(\d+)\s*个", text)
+            failed_count = int(failed_match.group(1)) if failed_match else 0
+            self.progress_ring.set_state(text="完成", caption="领取结果", value=1.0, color=SUCCESS if failed_count == 0 else DANGER)
+            self.progress_title_var.set("领取完成" if failed_count == 0 else "领取已结束")
+            self.progress_detail_var.set(text)
+            self.reward_title_var.set("领取完成" if failed_count == 0 else "部分失败")
+            self.reward_detail_var.set(text)
+            self.reward_status_var.set("领奖：已完成" if failed_count == 0 else "领奖：部分失败")
             return
         if "已领取" in text or "已跳过" in text or "领取成功" in text:
             self.progress_ring.set_state(text="完成", caption="奖励状态", value=1.0, color=SUCCESS)
