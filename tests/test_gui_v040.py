@@ -61,10 +61,23 @@ class SmallWindowLayoutRegressionTest(unittest.TestCase):
             first, last = app.settings_canvas.yview()
             self.assertAlmostEqual(first, 0.0, places=3)
             self.assertAlmostEqual(last, 1.0, places=3)
+            self.assertLess(app.room_entry.winfo_rootx(), app.monitor.winfo_rootx())
+            self.assertGreaterEqual(app.start_button.winfo_rootx(), app.monitor.winfo_rootx())
             self.assertLessEqual(
-                app.controls.winfo_y() + app.controls.winfo_height(),
-                app.commandbar.winfo_height() + 1,
+                app.controls.winfo_rootx() + app.controls.winfo_width(),
+                app.monitor.winfo_rootx() + app.monitor.winfo_width(),
             )
+            self.assertLessEqual(app.brand_logo.winfo_width(), 34)
+            buttons: list[str] = []
+
+            def collect_buttons(widget: tk.Misc) -> None:
+                for child in widget.winfo_children():
+                    if isinstance(child, gui.LabelButton):
+                        buttons.append(str(child.text))
+                    collect_buttons(child)
+
+            collect_buttons(app)
+            self.assertNotIn("粘贴", buttons)
             self.assertGreaterEqual(app.log_wrap.winfo_height(), 300)
             self.assertEqual(app.log_empty_canvas.winfo_manager(), "place")
             self.assertEqual(app.log_empty_label.winfo_manager(), "place")
