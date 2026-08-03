@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import os
+from io import BytesIO
 import threading
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from urllib.parse import quote, urlparse
 
 import requests
+import qrcode
 
 
 SPONSOR_API_ENV = "BILI_DROPS_SPONSOR_API_URL"
@@ -38,9 +40,10 @@ class SponsorUnavailable(SponsorError):
 @dataclass(frozen=True)
 class SponsorOrder:
     order_id: str
-    qr_url: str
+    qr_url: str = ""
     fallback_qr_url: str = ""
     expires_at: str = ""
+    qr_content: str = ""
 
 
 @dataclass(frozen=True)
@@ -116,17 +119,23 @@ class SponsorClient:
         order_id = str(payload.get("order_id") or "").strip()
         qr_url = str(payload.get("qr_url") or "").strip()
         fallback_qr_url = str(payload.get("fallback_qr_url") or "").strip()
+        qr_content = str(payload.get("qr_content") or "").strip()
         if not order_id:
             raise SponsorError("赞助服务未返回订单号")
-        if not _is_safe_remote_url(qr_url):
+        if qr_url and not _is_safe_remote_url(qr_url):
             raise SponsorError("赞助服务返回的二维码地址无效")
         if fallback_qr_url and not _is_safe_remote_url(fallback_qr_url):
             raise SponsorError("赞助服务返回的备用二维码地址无效")
+        if qr_content and not _is_safe_qr_content(qr_content):
+            raise SponsorError("赞助服务返回的二维码内容无效")
+        if not qr_content and not qr_url and not fallback_qr_url:
+            raise SponsorError("赞助服务未返回二维码")
         return SponsorOrder(
             order_id=order_id,
             qr_url=qr_url,
             fallback_qr_url=fallback_qr_url,
             expires_at=str(payload.get("expires_at") or "").strip(),
+            qr_content=qr_content,
         )
 
     def query_order(self, order_id: str) -> SponsorOrderStatus:
@@ -168,7 +177,10 @@ class SponsorClient:
         return response.content
 
     def download_order_qr(self, order: SponsorOrder) -> bytes:
-        """优先直连支付服务的二维码，失败时再用应用代理地址。"""
+        """优先本地生成微信付款码，兼容旧服务的远程二维码。"""
+
+        if order.qr_content:
+            return _render_qr_png(order.qr_content)
 
         urls = tuple(dict.fromkeys(filter(None, (order.qr_url, order.fallback_qr_url))))
         last_error: SponsorError | None = None
@@ -247,3 +259,24 @@ def _is_safe_remote_url(value: str) -> bool:
         and not parsed.password
         and (parsed.scheme == "https" or (parsed.scheme == "http" and is_local))
     )
+
+
+def _is_safe_qr_content(value: str) -> bool:
+    normalized = str(value or "").strip()
+    return bool(
+        normalized.lower().startswith("weixin://")
+        and len(normalized) <= 4096
+        and not any(ord(character) < 32 or ord(character) == 127 for character in normalized)
+    )
+
+
+def _render_qr_png(content: str) -> bytes:
+    if not _is_safe_qr_content(content):
+        raise SponsorError("二维码内容无效")
+    try:
+        image = qrcode.make(content)
+        output = BytesIO()
+        image.save(output, format="PNG")
+        return output.getvalue()
+    except Exception as exc:
+        raise SponsorError("二维码生成失败，请稍后重试") from exc

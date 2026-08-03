@@ -5,7 +5,7 @@ from pathlib import Path
 
 from PyInstaller.utils.hooks import collect_all
 
-required_packages = ('requests', 'selenium', 'PIL', 'tkinter', '_tkinter', 'wasmtime')
+required_packages = ('requests', 'selenium', 'PIL', 'qrcode', 'tkinter', '_tkinter', 'wasmtime')
 missing_packages = [name for name in required_packages if find_spec(name) is None]
 if missing_packages:
     raise RuntimeError(
@@ -27,7 +27,7 @@ datas = [
     ('assets/live_watch_skynet.wasm', 'assets'),
 ]
 binaries = []
-hiddenimports = ['_tkinter']
+hiddenimports = ['_tkinter', 'qrcode.image.pil']
 for source, target in (
     (tcl_library, '_tcl_data'),
     (tk_library, '_tk_data'),

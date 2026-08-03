@@ -2,5 +2,6 @@ requests>=2.31
 selenium>=4.20
 pyinstaller>=6.0
 Pillow>=10.0
+qrcode>=8,<9
 json5>=0.9,<1
 wasmtime>=39,<40

@@ -195,6 +195,41 @@ class SponsorClientTest(unittest.TestCase):
             ],
         )
 
+    def test_create_order_accepts_raw_wechat_qr_content(self) -> None:
+        content = "weixin://wxpay/bizpayurl?pr=test-order"
+        session = _Session(
+            [
+                _Response(
+                    {
+                        "ok": True,
+                        "data": {
+                            "order_id": "order-raw",
+                            "qr_content": content,
+                            "qr_url": "https://pay.example.com/api/sponsor/qr/order-raw",
+                        },
+                    }
+                )
+            ]
+        )
+        client = SponsorClient("https://pay.example.com/api/sponsor", session=session)
+
+        order = client.create_order("5", app_version="0.5.20")
+
+        self.assertEqual(order.qr_content, content)
+
+    def test_raw_wechat_content_is_rendered_locally_without_download(self) -> None:
+        session = _Session([])
+        client = SponsorClient("https://pay.example.com/api/sponsor", session=session)
+        order = SponsorOrder(
+            order_id="order-raw",
+            qr_content="weixin://wxpay/bizpayurl?pr=test-order",
+        )
+
+        content = client.download_order_qr(order)
+
+        self.assertTrue(content.startswith(b"\x89PNG\r\n\x1a\n"))
+        self.assertEqual(session.calls, [])
+
     def test_request_network_failure_is_friendly(self) -> None:
         class FailingSession:
             def request(self, *_args: object, **_kwargs: object) -> _Response:

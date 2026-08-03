@@ -9,6 +9,11 @@ type ProviderResponse = {
   data?: unknown;
 };
 
+export type NativePaymentResult = {
+  qrContent: string;
+  qrImageUrl: string;
+};
+
 export type CreatePaymentInput = {
   providerOrderNo: string;
   amount: string;
@@ -72,7 +77,7 @@ export function verifyPaymentCallback(
 
 export async function createNativePayment(
   input: CreatePaymentInput,
-): Promise<string> {
+): Promise<NativePaymentResult> {
   const requiredParams = {
     body: input.body,
     mch_id: input.merchantId,
@@ -84,35 +89,55 @@ export async function createNativePayment(
     attach: input.attach,
     notify_url: input.notifyUrl,
     sign: paymentSign(requiredParams, input.paymentKey),
-    type: "2",
+    // YunGouOS 官方 SDK：type=1 返回微信 code_url，由接入方生成二维码。
+    // 不再依赖支付平台临时图片域名，桌面端和代理接口都能稳定渲染。
+    type: "1",
   });
 
-  const response = await fetch(YUNGOUOS_NATIVE_PAY_URL, {
-    method: "POST",
-    headers: {
-      accept: "application/json",
-      "content-type": "application/x-www-form-urlencoded;charset=UTF-8",
-    },
-    body: form,
-    signal: AbortSignal.timeout(12_000),
-  });
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 12_000);
+  let response: Response;
+  try {
+    response = await fetch(YUNGOUOS_NATIVE_PAY_URL, {
+      method: "POST",
+      headers: {
+        accept: "application/json",
+        "content-type": "application/x-www-form-urlencoded;charset=UTF-8",
+      },
+      body: form,
+      signal: controller.signal,
+    });
+  } catch {
+    throw new Error(
+      controller.signal.aborted
+        ? "PAYMENT_PROVIDER_TIMEOUT"
+        : "PAYMENT_PROVIDER_FETCH_FAILED",
+    );
+  } finally {
+    clearTimeout(timeout);
+  }
 
   if (!response.ok) {
     throw new Error(`PAYMENT_PROVIDER_HTTP_${response.status}`);
   }
 
-  const payload = (await response.json()) as ProviderResponse;
+  const responseText = (await response.text()).replace(/^\uFEFF/, "").trim();
+  let payload: ProviderResponse;
+  try {
+    payload = JSON.parse(responseText) as ProviderResponse;
+  } catch {
+    throw new Error("PAYMENT_PROVIDER_INVALID_RESPONSE");
+  }
   if (String(payload.code) !== "0") {
     throw new Error(
       `PAYMENT_PROVIDER_REJECTED:${sanitizeProviderMessage(payload.msg)}`,
     );
   }
 
-  const qrUrl = extractQrUrl(payload.data);
-  return normalizeProviderQrUrl(qrUrl);
+  return normalizeProviderQr(extractQrValue(payload.data));
 }
 
-function extractQrUrl(data: unknown): string {
+function extractQrValue(data: unknown): string {
   if (typeof data === "string" && data.trim()) return data.trim();
   if (!data || typeof data !== "object") {
     throw new Error("PAYMENT_PROVIDER_MISSING_QR");
@@ -127,16 +152,29 @@ function extractQrUrl(data: unknown): string {
   throw new Error("PAYMENT_PROVIDER_MISSING_QR");
 }
 
-function normalizeProviderQrUrl(value: string): string {
+function normalizeProviderQr(value: string): NativePaymentResult {
+  const normalized = value.trim();
+  if (
+    normalized.length <= 4096 &&
+    normalized.toLowerCase().startsWith("weixin://") &&
+    !/[\u0000-\u001f\u007f]/.test(normalized)
+  ) {
+    return { qrContent: normalized, qrImageUrl: "" };
+  }
+
   let url: URL;
   try {
-    url = new URL(value);
+    url = new URL(normalized);
   } catch {
     throw new Error("PAYMENT_PROVIDER_INVALID_QR");
   }
 
   const hostname = url.hostname.toLowerCase();
-  if (hostname !== "yungouos.com" && !hostname.endsWith(".yungouos.com")) {
+  const trustedImageHost =
+    hostname === "yungouos.com" ||
+    hostname.endsWith(".yungouos.com") ||
+    hostname === "yungouos.oss-cn-shanghai.aliyuncs.com";
+  if (!trustedImageHost) {
     throw new Error("PAYMENT_PROVIDER_UNTRUSTED_QR");
   }
 
@@ -144,7 +182,7 @@ function normalizeProviderQrUrl(value: string): string {
   if (url.protocol !== "https:") {
     throw new Error("PAYMENT_PROVIDER_INVALID_QR_PROTOCOL");
   }
-  return url.toString();
+  return { qrContent: "", qrImageUrl: url.toString() };
 }
 
 function sanitizeProviderMessage(value: unknown): string {

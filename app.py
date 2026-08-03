@@ -16,6 +16,13 @@ def _run() -> None:
 
             verify_bundled_signer()
             return
+        if "--self-test-sponsor-qr" in sys.argv:
+            from bili_drop_guard.sponsor import _render_qr_png
+
+            png = _render_qr_png("weixin://wxpay/bizpayurl?pr=packaged-self-test")
+            if not png.startswith(b"\x89PNG\r\n\x1a\n"):
+                raise RuntimeError("Packaged sponsor QR self-test failed")
+            return
         main()
     except Exception as exc:
         APP_DIR.mkdir(parents=True, exist_ok=True)

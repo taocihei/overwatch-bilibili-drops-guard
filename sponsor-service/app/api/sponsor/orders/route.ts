@@ -47,7 +47,7 @@ export async function POST(request: Request): Promise<Response> {
     const appVersion = safeText(payload.app_version, 24) || "unknown";
     const notifyUrl = new URL("/api/sponsor/callback", request.url).toString();
 
-    const [database, providerQrUrl] = await Promise.all([
+    const [database, paymentQr] = await Promise.all([
       databasePromise,
       createNativePayment({
         providerOrderNo,
@@ -71,7 +71,7 @@ export async function POST(request: Request): Promise<Response> {
         id,
         providerOrderNo,
         amountCents,
-        providerQrUrl,
+        paymentQr.qrContent || paymentQr.qrImageUrl,
         appVersion,
         now,
         expiresAt,
@@ -83,13 +83,17 @@ export async function POST(request: Request): Promise<Response> {
       request.url,
     ).toString();
 
+    const publicQrUrl = paymentQr.qrContent ? proxyQrUrl : paymentQr.qrImageUrl;
+    const fallbackQrUrl = paymentQr.qrImageUrl ? proxyQrUrl : "";
+
     return json(
       {
         ok: true,
         data: {
           order_id: id,
-          qr_url: providerQrUrl,
-          fallback_qr_url: proxyQrUrl,
+          qr_url: publicQrUrl,
+          fallback_qr_url: fallbackQrUrl,
+          qr_content: paymentQr.qrContent,
           expires_at: new Date(expiresAt).toISOString(),
         },
       },

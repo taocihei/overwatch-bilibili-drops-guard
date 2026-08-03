@@ -6,7 +6,7 @@ if (Test-Path -LiteralPath $artifact) {
   Remove-Item -LiteralPath $artifact -Force
 }
 
-python -c "import _tkinter, PIL, PyInstaller, requests, selenium, tkinter, wasmtime; print('Build dependencies OK')"
+python -c "import _tkinter, PIL, PyInstaller, qrcode, requests, selenium, tkinter, wasmtime; print('Build dependencies OK')"
 if ($LASTEXITCODE -ne 0) {
   throw "Build dependencies are incomplete. Run: python -m pip install -r requirements.txt"
 }
@@ -54,6 +54,10 @@ if (-not (Test-Path -LiteralPath $versionedArtifact -PathType Leaf)) {
 $selfTest = Start-Process -FilePath $versionedArtifact -ArgumentList "--self-test-skynet" -Wait -PassThru
 if ($selfTest.ExitCode -ne 0) {
   throw "Packaged Skynet/WASM self-test failed with exit code $($selfTest.ExitCode)."
+}
+$qrSelfTest = Start-Process -FilePath $versionedArtifact -ArgumentList "--self-test-sponsor-qr" -Wait -PassThru
+if ($qrSelfTest.ExitCode -ne 0) {
+  throw "Packaged sponsor QR self-test failed with exit code $($qrSelfTest.ExitCode)."
 }
 
 Write-Host "Build complete: $artifact"

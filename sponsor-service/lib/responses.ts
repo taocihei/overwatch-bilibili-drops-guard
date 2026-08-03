@@ -9,6 +9,7 @@ export function json(payload: unknown, init: ResponseInit = {}): Response {
 
 export function serviceError(error: unknown): Response {
   const message = error instanceof Error ? error.message : "";
+  console.error("SPONSOR_SERVICE_ERROR", message || "UNKNOWN_ERROR");
   if (
     message === "PAYMENT_SERVICE_NOT_CONFIGURED" ||
     message === "PAYMENT_DATABASE_NOT_CONFIGURED"

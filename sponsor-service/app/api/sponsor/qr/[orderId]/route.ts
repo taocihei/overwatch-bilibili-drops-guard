@@ -1,5 +1,6 @@
 import { ensureSponsorSchema } from "@/lib/database";
 import { json, serviceError } from "@/lib/responses";
+import QRCode from "qrcode";
 
 type QrRow = {
   qr_url: string;
@@ -21,19 +22,51 @@ export async function GET(request: Request): Promise<Response> {
       return json({ ok: false, error: "二维码不存在。" }, { status: 404 });
     }
 
-    const providerUrl = new URL(order.qr_url);
+    if (order.qr_url.toLowerCase().startsWith("weixin://")) {
+      const png = await QRCode.toBuffer(order.qr_url, {
+        errorCorrectionLevel: "M",
+        margin: 3,
+        type: "png",
+        width: 360,
+      });
+      return new Response(new Uint8Array(png), {
+        status: 200,
+        headers: {
+          "cache-control": "private, no-store",
+          "content-type": "image/png",
+          "content-security-policy": "default-src 'none'",
+          "x-content-type-options": "nosniff",
+        },
+      });
+    }
+
+    let providerUrl: URL;
+    try {
+      providerUrl = new URL(order.qr_url);
+    } catch {
+      return json({ ok: false, error: "二维码地址无效。" }, { status: 502 });
+    }
     const hostname = providerUrl.hostname.toLowerCase();
     if (
       providerUrl.protocol !== "https:" ||
-      (hostname !== "yungouos.com" && !hostname.endsWith(".yungouos.com"))
+      (hostname !== "yungouos.com" &&
+        !hostname.endsWith(".yungouos.com") &&
+        hostname !== "yungouos.oss-cn-shanghai.aliyuncs.com")
     ) {
       return json({ ok: false, error: "二维码地址无效。" }, { status: 502 });
     }
 
-    const upstream = await fetch(providerUrl, {
-      headers: { accept: "image/png,image/jpeg,image/webp,image/*;q=0.8" },
-      signal: AbortSignal.timeout(4_000),
-    });
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 4_000);
+    let upstream: Response;
+    try {
+      upstream = await fetch(providerUrl, {
+        headers: { accept: "image/png,image/jpeg,image/webp,image/*;q=0.8" },
+        signal: controller.signal,
+      });
+    } finally {
+      clearTimeout(timeout);
+    }
     if (!upstream.ok || !upstream.body) {
       return json({ ok: false, error: "二维码加载失败。" }, { status: 502 });
     }
