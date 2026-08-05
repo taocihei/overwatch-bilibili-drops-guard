@@ -27,7 +27,7 @@
   "amount": "5.00",
   "install_id": "install-12345678",
   "checkout_intent_id": "checkout-12345678",
-  "app_version": "0.5.22",
+  "app_version": "0.5.23",
   "provider": "yungouos"
 }
 ```

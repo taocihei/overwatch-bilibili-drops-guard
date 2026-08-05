@@ -7,6 +7,7 @@ type RuntimeBindings = {
   YUNGOUOS_MCH_ID?: string;
   YUNGOUOS_PAY_KEY?: string;
   SPONSOR_CALLBACK_URL?: string;
+  SPONSOR_CALLBACK_HEALTH_URL?: string;
   SPONSOR_POOL_REFILL_TOKEN?: string;
 };
 
@@ -42,6 +43,17 @@ export function getSponsorCallbackUrl(requestUrl: string): string {
     getRuntimeBindings().SPONSOR_CALLBACK_URL,
     requestUrl,
   );
+}
+
+export function getSponsorCallbackSettings(): {
+  configuredUrl: string | undefined;
+  configuredHealthUrl: string | undefined;
+} {
+  const runtime = getRuntimeBindings();
+  return {
+    configuredUrl: runtime.SPONSOR_CALLBACK_URL,
+    configuredHealthUrl: runtime.SPONSOR_CALLBACK_HEALTH_URL,
+  };
 }
 
 export function getSponsorPoolRefillToken(): string {

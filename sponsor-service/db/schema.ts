@@ -41,3 +41,14 @@ export const sponsorOrders = sqliteTable(
     ),
   ],
 );
+
+export const sponsorCallbackCircuit = sqliteTable("sponsor_callback_circuit", {
+  id: text("id").primaryKey(),
+  callbackUrl: text("callback_url").notNull(),
+  state: text("state").notNull().default("closed"),
+  failureCount: integer("failure_count").notNull().default(0),
+  openedUntil: integer("opened_until").notNull().default(0),
+  probeLeaseUntil: integer("probe_lease_until").notNull().default(0),
+  lastCheckedAt: integer("last_checked_at").notNull().default(0),
+  lastSuccessAt: integer("last_success_at").notNull().default(0),
+});

@@ -93,5 +93,17 @@ async function initializeSchema(database: D1Database): Promise<void> {
     database.prepare(
       "INSERT OR IGNORE INTO sponsor_provider_state (key, checked_at) VALUES ('order-query', 0)",
     ),
+    database.prepare(
+      `CREATE TABLE IF NOT EXISTS sponsor_callback_circuit (
+        id TEXT PRIMARY KEY NOT NULL,
+        callback_url TEXT NOT NULL,
+        state TEXT NOT NULL DEFAULT 'closed',
+        failure_count INTEGER NOT NULL DEFAULT 0,
+        opened_until INTEGER NOT NULL DEFAULT 0,
+        probe_lease_until INTEGER NOT NULL DEFAULT 0,
+        last_checked_at INTEGER NOT NULL DEFAULT 0,
+        last_success_at INTEGER NOT NULL DEFAULT 0
+      )`,
+    ),
   ]);
 }

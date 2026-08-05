@@ -32,7 +32,7 @@ class SponsorHTTPServer(ThreadingHTTPServer):
 
 class SponsorRequestHandler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
-    server_version = "SponsorService/0.5.22"
+    server_version = "SponsorService/0.5.23"
 
     @property
     def service(self) -> SponsorService:

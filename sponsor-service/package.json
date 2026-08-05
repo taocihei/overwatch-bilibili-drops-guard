@@ -1,6 +1,6 @@
 {
   "name": "overwatch-bilibili-drops-sponsor-service",
-  "version": "0.5.22",
+  "version": "0.5.23",
   "private": true,
   "engines": {
     "node": ">=22.13.0"

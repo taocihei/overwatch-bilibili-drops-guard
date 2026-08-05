@@ -1,11 +1,14 @@
 /** Cloudflare Worker entry point for the vinext-starter template. */
 import { handleImageOptimization, DEFAULT_DEVICE_SIZES, DEFAULT_IMAGE_SIZES } from "vinext/server/image-optimization";
 import handler from "vinext/server/app-router-entry";
+import { probeSponsorCallbackCircuit } from "../lib/callback-circuit";
 
 interface Env {
   ASSETS: Fetcher;
   DB: D1Database;
   SPONSOR_POOL_REFILL_TOKEN?: string;
+  SPONSOR_CALLBACK_URL?: string;
+  SPONSOR_CALLBACK_HEALTH_URL?: string;
   IMAGES: {
     input(stream: ReadableStream): {
       transform(options: Record<string, unknown>): {
@@ -42,6 +45,25 @@ const worker = {
     }
 
     const response = await handler.fetch(request, env, ctx);
+    const shouldProbeCallback =
+      response.ok &&
+      Boolean(env.SPONSOR_CALLBACK_URL) &&
+      ((request.method === "GET" && url.pathname === "/api/health") ||
+        (request.method === "POST" && url.pathname === "/api/sponsor/orders"));
+    if (shouldProbeCallback) {
+      // Probe after the response so Beijing node failures never delay QR
+      // generation. D1 keeps the circuit state across Worker isolates.
+      ctx.waitUntil(
+        probeSponsorCallbackCircuit({
+          database: env.DB,
+          configuredUrl: env.SPONSOR_CALLBACK_URL,
+          configuredHealthUrl: env.SPONSOR_CALLBACK_HEALTH_URL,
+          requestUrl: request.url,
+        }).catch((error) => {
+          console.warn("SPONSOR_CALLBACK_PROBE_DEFERRED", String(error));
+        }),
+      );
+    }
     if (
       request.method === "POST" &&
       url.pathname === "/api/sponsor/orders" &&

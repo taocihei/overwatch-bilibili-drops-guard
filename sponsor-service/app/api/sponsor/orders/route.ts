@@ -1,4 +1,5 @@
 import { ensureSponsorSchema } from "@/lib/database";
+import { selectSponsorCallback } from "@/lib/callback-circuit";
 import {
   reserveSponsorOrders,
   type ReservedSponsorOrder,
@@ -7,7 +8,7 @@ import {
 import { D1SponsorOrderStore } from "@/lib/order-store";
 import { createNativePayment } from "@/lib/payment";
 import { json, serviceError } from "@/lib/responses";
-import { getPaymentCredentials, getSponsorCallbackUrl } from "@/lib/runtime";
+import { getPaymentCredentials, getSponsorCallbackSettings } from "@/lib/runtime";
 
 const MIN_AMOUNT_CENTS = 100;
 const MAX_AMOUNT_CENTS = 999_900;
@@ -69,7 +70,13 @@ export async function POST(request: Request): Promise<Response> {
     const database = await ensureSponsorSchema();
     const store = new D1SponsorOrderStore(database);
     const { merchantId, paymentKey } = getPaymentCredentials();
-    const notifyUrl = getSponsorCallbackUrl(request.url);
+    const callbackSettings = getSponsorCallbackSettings();
+    const callbackDecision = await selectSponsorCallback({
+      database,
+      configuredUrl: callbackSettings.configuredUrl,
+      requestUrl: request.url,
+    });
+    const notifyUrl = callbackDecision.url;
     const reservations: SponsorReservation[] = amounts.values.map(
       ({ amount, amountCents }) => ({
         installId,

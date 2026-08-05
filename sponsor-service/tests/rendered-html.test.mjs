@@ -86,7 +86,14 @@ test("health endpoint reports the deployed service version", async () => {
   assert.deepEqual(await response.json(), {
     ok: true,
     service: "overwatch-bilibili-drops-sponsor",
-    version: "0.5.22",
+    version: "0.5.23",
+    callback_circuit: {
+      state: "closed",
+      failure_count: 0,
+      fallback_active: false,
+      last_checked_at: 0,
+      last_success_at: 0,
+    },
   });
 });
 

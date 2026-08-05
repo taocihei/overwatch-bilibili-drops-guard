@@ -81,7 +81,7 @@ export async function POST(request: Request): Promise<Response> {
                id, provider_order_no, amount_cents, status, qr_url,
                app_version, created_at, expires_at, install_id,
                checkout_intent_id, reserved_at, state_version
-             ) VALUES (?, ?, ?, 'pending', ?, 'pool-v0.5.22', ?, ?, NULL, NULL, NULL, 0)`,
+             ) VALUES (?, ?, ?, 'pending', ?, 'pool-v0.5.23', ?, ?, NULL, NULL, NULL, 0)`,
           )
           .bind(
             draft.id,
