@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
+import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -13,8 +15,14 @@ from bili_drop_guard.sponsor import (
     SponsorError,
     SponsorOrder,
     SponsorUnavailable,
+    create_checkout_intent_id,
+    load_or_create_install_id,
     normalize_amount,
 )
+
+
+INSTALL_ID = "desktop-0123456789abcdef0123456789abcdef"
+INTENT_ID = "checkout-0123456789abcdef0123456789abcdef"
 
 
 class _Response:
@@ -62,6 +70,19 @@ class SponsorClientTest(unittest.TestCase):
             client = SponsorClient.from_environment()
         self.assertEqual(client.base_url, override.rstrip("/"))
 
+    def test_new_session_client_keeps_configuration_without_sharing_session(self) -> None:
+        client = SponsorClient(
+            "https://pay.example.com/api/sponsor",
+            timeout=(1.5, 4.0),
+        )
+
+        isolated = client.new_session_client()
+
+        self.assertEqual(isolated.base_url, client.base_url)
+        self.assertEqual(isolated.timeout, client.timeout)
+        self.assertIsNot(isolated, client)
+        self.assertIsNot(isolated.session, client.session)
+
     def test_remote_service_requires_https(self) -> None:
         with self.assertRaisesRegex(SponsorUnavailable, "HTTPS"):
             SponsorClient("http://example.com/api")
@@ -87,7 +108,12 @@ class SponsorClientTest(unittest.TestCase):
         client = SponsorClient("https://pay.example.com/api/sponsor", session=session)
 
         self.assertTrue(client.warm_up())
-        client.create_order("10", app_version="0.5.13")
+        client.create_order(
+            "10",
+            app_version="0.5.13",
+            install_id=INSTALL_ID,
+            checkout_intent_id=INTENT_ID,
+        )
 
         self.assertEqual(
             [(method, url) for method, url, _kwargs in session.calls],
@@ -120,6 +146,7 @@ class SponsorClientTest(unittest.TestCase):
                             "qr_url": "https://images.example.com/qr.png",
                             "fallback_qr_url": "https://pay.example.com/api/sponsor/qr/order-1",
                             "expires_at": "2026-07-30T12:00:00Z",
+                            "expires_in_seconds": 845,
                         },
                     }
                 )
@@ -127,7 +154,12 @@ class SponsorClientTest(unittest.TestCase):
         )
         client = SponsorClient("https://pay.example.com/api/sponsor", session=session)
 
-        order = client.create_order("6", app_version="0.5.4")
+        order = client.create_order(
+            "6",
+            app_version="0.5.4",
+            install_id=INSTALL_ID,
+            checkout_intent_id=INTENT_ID,
+        )
 
         self.assertEqual(order.order_id, "order-1")
         method, url, kwargs = session.calls[0]
@@ -137,6 +169,9 @@ class SponsorClientTest(unittest.TestCase):
         )
         self.assertEqual(kwargs["json"]["amount"], "6.00")
         self.assertEqual(kwargs["json"]["provider"], "yungouos")
+        self.assertEqual(kwargs["json"]["install_id"], INSTALL_ID)
+        self.assertEqual(kwargs["json"]["checkout_intent_id"], INTENT_ID)
+        self.assertEqual(order.expires_in_seconds, 845)
         self.assertEqual(
             order.fallback_qr_url,
             "https://pay.example.com/api/sponsor/qr/order-1",
@@ -213,7 +248,12 @@ class SponsorClientTest(unittest.TestCase):
         )
         client = SponsorClient("https://pay.example.com/api/sponsor", session=session)
 
-        order = client.create_order("5", app_version="0.5.20")
+        order = client.create_order(
+            "5",
+            app_version="0.5.20",
+            install_id=INSTALL_ID,
+            checkout_intent_id=INTENT_ID,
+        )
 
         self.assertEqual(order.qr_content, content)
 
@@ -240,7 +280,12 @@ class SponsorClientTest(unittest.TestCase):
             session=FailingSession(),
         )
         with self.assertRaisesRegex(SponsorUnavailable, "暂时不可用"):
-            client.create_order("6.00", app_version="0.5.4")
+            client.create_order(
+                "6.00",
+                app_version="0.5.4",
+                install_id=INSTALL_ID,
+                checkout_intent_id=INTENT_ID,
+            )
 
     def test_service_error_prefers_error_field(self) -> None:
         client = SponsorClient(
@@ -250,7 +295,65 @@ class SponsorClientTest(unittest.TestCase):
             ),
         )
         with self.assertRaisesRegex(SponsorError, "支付通道暂时繁忙"):
-            client.create_order("3.00", app_version="0.5.4")
+            client.create_order(
+                "3.00",
+                app_version="0.5.4",
+                install_id=INSTALL_ID,
+                checkout_intent_id=INTENT_ID,
+            )
+
+    def test_batch_reserve_matches_server_contract(self) -> None:
+        orders = [
+            {
+                "order_id": f"order-{amount}",
+                "amount": amount,
+                "qr_content": f"weixin://wxpay/bizpayurl?pr={amount}",
+                "allocation": "created",
+            }
+            for amount in ("5.00", "10.00", "20.00", "50.00", "100.00")
+        ]
+        session = _Session(
+            [
+                _Response(
+                    {
+                        "ok": True,
+                        "data": {
+                            "checkout_intent_id": INTENT_ID,
+                            "orders": orders,
+                        },
+                    }
+                )
+            ]
+        )
+        client = SponsorClient("https://pay.example.com/api/sponsor", session=session)
+
+        batch = client.reserve_orders(
+            ["5", "10", "20", "50", "100"],
+            app_version="0.5.22",
+            install_id=INSTALL_ID,
+            checkout_intent_id=INTENT_ID,
+        )
+
+        self.assertEqual(batch.checkout_intent_id, INTENT_ID)
+        self.assertEqual([order.amount for order in batch.orders], [
+            "5.00", "10.00", "20.00", "50.00", "100.00"
+        ])
+        payload = session.calls[0][2]["json"]
+        self.assertEqual(payload["amounts"], [
+            "5.00", "10.00", "20.00", "50.00", "100.00"
+        ])
+        self.assertEqual(payload["install_id"], INSTALL_ID)
+        self.assertEqual(payload["checkout_intent_id"], INTENT_ID)
+
+    def test_install_id_is_persisted_and_checkout_intents_rotate(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            path = Path(temporary_directory) / "sponsor-install-id"
+            first = load_or_create_install_id(path)
+            second = load_or_create_install_id(path)
+
+        self.assertEqual(first, second)
+        self.assertTrue(first.startswith("desktop-"))
+        self.assertNotEqual(create_checkout_intent_id(), create_checkout_intent_id())
 
     def test_preset_and_custom_amounts_are_supported_within_range(self) -> None:
         self.assertEqual(str(normalize_amount("5")), "5.00")

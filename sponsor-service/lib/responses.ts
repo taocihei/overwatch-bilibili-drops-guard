@@ -27,6 +27,13 @@ export function serviceError(error: unknown): Response {
     );
   }
 
+  if (message.startsWith("SPONSOR_ORDER_") || message === "SPONSOR_POOL_CLAIM_FAILED") {
+    return json(
+      { ok: false, error: "订单正在生成，请稍后重试。" },
+      { status: 503 },
+    );
+  }
+
   return json(
     { ok: false, error: "服务暂时繁忙，请稍后重试。" },
     { status: 500 },

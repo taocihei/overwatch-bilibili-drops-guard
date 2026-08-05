@@ -5,7 +5,6 @@ import hmac
 import json
 import random
 import re
-import secrets
 import threading
 import time
 import urllib.parse
@@ -147,16 +146,13 @@ class BilibiliClient:
     ) -> None:
         self.cookie_header = cookie_header
         self.cookies = parse_cookie_header(cookie_header)
-        # 账号凭据保持不变；每条官方观看会话使用独立 LIVE_BUVID/page UUID。
-        # 这样请求体身份和当前 requests.Session 内的设备身份始终一致。
+        # 登录 Cookie 必须完整保留浏览器的原始设备身份。每条路由
+        # x25Kn 请求体中的 LIVE_BUVID/page UUID 区分，不得把路由身份
+        # 反写到账号 Cookie；否则同一账号会被识别成频繁换设备并合并计时。
         if "buvid3" not in self.cookies:
             self.cookies["buvid3"] = f"{uuid4()}infoc"
         self._buvid = session_buvid or make_session_buvid()
         self._device_uuid = session_device_uuid or make_session_device_uuid()
-        if session_buvid:
-            self.cookies["LIVE_BUVID"] = self._buvid
-        if session_device_uuid:
-            self.cookies["_uuid"] = self._device_uuid
         self._visit_id = uuid4().hex[:16]
         self.session = requests.Session()
         self._wbi_keys: tuple[str, str] | None = None
@@ -174,43 +170,6 @@ class BilibiliClient:
     def close(self) -> None:
         """释放当前计时会话持有的连接池和套接字。"""
         self.session.close()
-
-    def isolate_watch_device_identity(self) -> None:
-        """为一条观看路由申请独立的官方设备指纹，避免同账号多路被合并。"""
-
-        response = self.session.get(
-            "https://api.bilibili.com/x/frontend/finger/spi",
-            headers={
-                "User-Agent": USER_AGENT,
-                "Referer": "https://www.bilibili.com/",
-                "Origin": "https://www.bilibili.com",
-            },
-            timeout=12,
-        )
-        payload = _decode_json_response(response)
-        data = payload.get("data")
-        if payload.get("code") != 0 or not isinstance(data, dict):
-            raise RuntimeError(str(payload.get("message", "独立设备指纹申请失败")))
-        buvid3 = str(data.get("b_3") or "")
-        buvid4 = str(data.get("b_4") or "")
-        if not buvid3 or not buvid4:
-            raise RuntimeError("B 站没有返回独立 buvid3/buvid4，观看路由未隔离")
-
-        route_device_uuid = f"{str(uuid4()).upper()}{random.randint(10000, 99999)}infoc"
-        self._device_uuid = route_device_uuid
-        route_cookies = {
-            "LIVE_BUVID": self.buvid,
-            "buvid3": buvid3,
-            "buvid4": buvid4,
-            "buvid_fp": hashlib.sha256(
-                f"{buvid3}|{buvid4}|{self.device_uuid}".encode("utf-8")
-            ).hexdigest()[:32],
-            "_uuid": route_device_uuid,
-            "b_lsid": f"{secrets.token_hex(4).upper()}_{secrets.token_hex(5).upper()}",
-        }
-        self.cookies.update(route_cookies)
-        for key, value in route_cookies.items():
-            self.session.cookies.set(key, value, domain=".bilibili.com", path="/")
 
     @property
     def csrf(self) -> str:

@@ -30,6 +30,8 @@ npm run dev
 ```text
 YUNGOUOS_MCH_ID
 YUNGOUOS_PAY_KEY
+SPONSOR_CALLBACK_URL=https://api.codeboc.cn/yungouos/callback
+SPONSOR_POOL_REFILL_TOKEN=<至少 32 位随机值>
 ```
 
 不要把真实凭据写入 `.env` 后提交。

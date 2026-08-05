@@ -86,7 +86,7 @@ test("health endpoint reports the deployed service version", async () => {
   assert.deepEqual(await response.json(), {
     ok: true,
     service: "overwatch-bilibili-drops-sponsor",
-    version: "0.5.20",
+    version: "0.5.22",
   });
 });
 

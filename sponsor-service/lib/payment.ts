@@ -2,6 +2,8 @@ import { createHash } from "node:crypto";
 
 const YUNGOUOS_NATIVE_PAY_URL =
   "https://api.pay.yungouos.com/api/pay/wxpay/nativePay";
+const YUNGOUOS_ORDER_QUERY_URL =
+  "https://api.pay.yungouos.com/api/system/order/getPayOrderInfo";
 
 type ProviderResponse = {
   code?: number | string;
@@ -12,6 +14,14 @@ type ProviderResponse = {
 export type NativePaymentResult = {
   qrContent: string;
   qrImageUrl: string;
+};
+
+export type PaymentOrderQueryResult = {
+  paid: boolean;
+  providerOrderNo: string;
+  paymentNo: string;
+  amountCents: number | null;
+  rawStatus: string;
 };
 
 export type CreatePaymentInput = {
@@ -137,6 +147,76 @@ export async function createNativePayment(
   return normalizeProviderQr(extractQrValue(payload.data));
 }
 
+export async function queryPaymentOrder(input: {
+  providerOrderNo: string;
+  merchantId: string;
+  paymentKey: string;
+}): Promise<PaymentOrderQueryResult> {
+  const signedParams = {
+    out_trade_no: input.providerOrderNo,
+    mch_id: input.merchantId,
+  };
+  const query = new URLSearchParams({
+    ...signedParams,
+    sign: paymentSign(signedParams, input.paymentKey),
+  });
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 8_000);
+  let response: Response;
+  try {
+    response = await fetch(`${YUNGOUOS_ORDER_QUERY_URL}?${query}`, {
+      method: "GET",
+      headers: { accept: "application/json" },
+      signal: controller.signal,
+    });
+  } catch {
+    throw new Error(
+      controller.signal.aborted
+        ? "PAYMENT_PROVIDER_QUERY_TIMEOUT"
+        : "PAYMENT_PROVIDER_QUERY_FAILED",
+    );
+  } finally {
+    clearTimeout(timeout);
+  }
+
+  if (!response.ok) {
+    throw new Error(`PAYMENT_PROVIDER_QUERY_HTTP_${response.status}`);
+  }
+
+  const responseText = (await response.text()).replace(/^\uFEFF/, "").trim();
+  let payload: ProviderResponse;
+  try {
+    payload = JSON.parse(responseText) as ProviderResponse;
+  } catch {
+    throw new Error("PAYMENT_PROVIDER_QUERY_INVALID_RESPONSE");
+  }
+  if (String(payload.code) !== "0") {
+    throw new Error(
+      `PAYMENT_PROVIDER_QUERY_REJECTED:${sanitizeProviderMessage(payload.msg)}`,
+    );
+  }
+  if (!payload.data || typeof payload.data !== "object") {
+    throw new Error("PAYMENT_PROVIDER_QUERY_MISSING_ORDER");
+  }
+
+  const order = payload.data as Record<string, unknown>;
+  const providerOrderNo = readString(order, "outTradeNo", "out_trade_no");
+  const merchantId = readString(order, "mchid", "mchId", "mch_id");
+  if (providerOrderNo !== input.providerOrderNo || merchantId !== input.merchantId) {
+    throw new Error("PAYMENT_PROVIDER_QUERY_ORDER_MISMATCH");
+  }
+
+  const rawStatus = readString(order, "payStatus", "pay_status", "status");
+  return {
+    paid: rawStatus === "1",
+    providerOrderNo,
+    paymentNo: readString(order, "payNo", "pay_no"),
+    amountCents: providerMoneyToCents(readString(order, "money")),
+    rawStatus,
+  };
+}
+
 function extractQrValue(data: unknown): string {
   if (typeof data === "string" && data.trim()) return data.trim();
   if (!data || typeof data !== "object") {
@@ -188,6 +268,21 @@ function normalizeProviderQr(value: string): NativePaymentResult {
 function sanitizeProviderMessage(value: unknown): string {
   if (typeof value !== "string") return "unknown";
   return value.replace(/[\r\n\t]/g, " ").slice(0, 120);
+}
+
+function readString(record: Record<string, unknown>, ...keys: string[]): string {
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value === "string" && value.trim()) return value.trim();
+    if (typeof value === "number" && Number.isFinite(value)) return String(value);
+  }
+  return "";
+}
+
+function providerMoneyToCents(value: string): number | null {
+  if (!/^\d+(?:\.\d{1,2})?$/.test(value)) return null;
+  const amount = Number(value);
+  return Number.isFinite(amount) ? Math.round(amount * 100) : null;
 }
 
 function compareAscii(left: string, right: string): number {

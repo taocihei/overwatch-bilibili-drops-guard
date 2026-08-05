@@ -18,7 +18,8 @@ CLAIM_RATE_LIMIT_DELAY_SECONDS = 12.0
 CLAIM_RATE_LIMIT_ATTEMPTS = 3
 MAX_CLAIM_BATCH_PASSES = 100
 CLAIM_UNLOCK_REFRESH_ATTEMPTS = 3
-WATCH_START_INTERVAL_SECONDS = 0.15
+WATCH_START_INTERVAL_SECONDS = 1.0
+WATCH_SESSION_RECONNECT_SECONDS = 8.0
 SERVER_RATE_WINDOW_SECONDS = 180.0
 SERVER_PROGRESS_STALL_SECONDS = 150.0
 SERVER_PROGRESS_RECONNECT_COOLDOWN_SECONDS = 150.0
@@ -26,6 +27,23 @@ WATCH_RECONNECT_STAGGER_SECONDS = 0.12
 ACTIVITY_DISCOVERY_SUCCESS_TTL_SECONDS = 300.0
 ACTIVITY_DISCOVERY_RETRY_TTL_SECONDS = 60.0
 BILIBILI_TIMEZONE = timezone(timedelta(hours=8))
+WATCH_TASK_NAME_HINTS = (
+    "观看",
+    "直播",
+    "直播间",
+    "观赛",
+    "收看直播",
+    "live",
+    "stream",
+)
+NON_LIVE_WATCH_NAME_HINTS = (
+    "稿件",
+    "视频",
+    "回放",
+    "录播",
+    "video",
+    "vod",
+)
 
 
 def _bilibili_today(now: datetime | None = None):
@@ -62,6 +80,9 @@ class HeartbeatState:
     legacy_sequence: int = 1
     official_next_due: float = 0.0
     legacy_next_due: float = 0.0
+    official_failures: int = 0
+    legacy_failures: int = 0
+    last_cycle_success: bool = True
 
 
 @dataclass
@@ -98,7 +119,8 @@ class LiveWatcher:
         self._last_up_id: int | None = None
         self._watch_status_lock = threading.Lock()
         self._watch_statuses: dict[int, dict[str, Any]] = {}
-        self._watch_worker_count = self._normalize_watch_threads(self.options.watch_threads)
+        self._configured_watch_threads = self._normalize_watch_threads(self.options.watch_threads)
+        self._watch_worker_count = self._configured_watch_threads
         self._last_watch_status_summary = ""
         self._last_watch_status_log_at = 0.0
         self._heartbeat_count = 0
@@ -144,6 +166,8 @@ class LiveWatcher:
             self._server_progress_observed_at = 0.0
             self._watch_reconnect_generation = 0
             self._last_watch_reconnect_at = 0.0
+            self._watch_started_monotonic = 0.0
+            self._last_route_scale_at = 0.0
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
 
@@ -263,7 +287,7 @@ class LiveWatcher:
             self.log("守护已停止")
 
     def _start_watch_threads(self, room: RoomInfo | None = None) -> None:
-        worker_count = self._normalize_watch_threads(self.options.watch_threads)
+        worker_count = self._configured_watch_threads
         self._watch_worker_count = worker_count
         self._watch_threads = []
         with self._watch_status_lock:
@@ -277,7 +301,7 @@ class LiveWatcher:
             thread = threading.Thread(target=self._heartbeat_watch_worker, args=(worker_id, target_room), daemon=True)
             self._watch_threads.append(thread)
             thread.start()
-        self.log(f"已启动 {worker_count} 路后台计时，不会打开直播间浏览器窗口")
+        self.log(f"已启动 {worker_count} 路独立后台计时")
         self._log_watch_status_summary(force=True)
 
     def _watch_detail_enabled(self) -> bool:
@@ -308,6 +332,7 @@ class LiveWatcher:
         normal_count = sum(1 for status in statuses if status.get("state") == "正常")
         starting_count = sum(1 for status in statuses if status.get("state") in {"启动中", "计时中"})
         reconnect_count = sum(1 for status in statuses if status.get("state") == "重连中")
+        retry_count = sum(1 for status in statuses if status.get("state") == "重试中")
         waiting_count = sum(1 for status in statuses if status.get("state") == "等待开播")
         failed_count = sum(1 for status in statuses if status.get("state") == "暂时失败")
         intervals = [
@@ -321,6 +346,8 @@ class LiveWatcher:
             parts.append(f"{starting_count} 路启动中")
         if reconnect_count:
             parts.append(f"{reconnect_count} 路重连中")
+        if retry_count:
+            parts.append(f"{retry_count} 路心跳重试中")
         if waiting_count:
             parts.append(f"{waiting_count} 路等待开播")
         if failed_count:
@@ -336,14 +363,14 @@ class LiveWatcher:
         heartbeat_text = f"，请求成功 {heartbeat_count} 次" if heartbeat_count else ""
         server_rate = self._server_credit_rate()
         server_text = (
-            f"，目标 {worker_count}x / B 站实绩约 {server_rate:.1f}x"
+            f"，设置 {self._configured_watch_threads} 路 / B 站实绩约 {server_rate:.1f}x"
             if server_rate is not None
-            else f"，目标 {worker_count}x / 等待 B 站实绩样本"
+            else f"，设置 {self._configured_watch_threads} 路 / 等待 B 站实绩样本"
         )
         return (
             f"观看连接：{'，'.join(parts)}{interval_text}{heartbeat_text}{server_text}",
             normal_count,
-            failed_count + waiting_count + reconnect_count,
+            failed_count + waiting_count + reconnect_count + retry_count,
         )
 
     def _log_watch_status_summary(self, *, force: bool = False) -> None:
@@ -397,7 +424,7 @@ class LiveWatcher:
             self.log(message)
 
     def _watch_start_delay(self, worker_id: int) -> float:
-        """逐路错峰建立官方观看会话，避免批量注册触发瞬时频控。"""
+        """与竞品一致逐秒建立会话，避免 roomEntry/x25Kn 集中注册被合并。"""
         if worker_id <= 1:
             return 0.0
         return float(worker_id - 1) * WATCH_START_INTERVAL_SECONDS
@@ -439,7 +466,7 @@ class LiveWatcher:
                 and not self._stop.is_set()
                 and self._room is not None
                 and self._room.live_status == 1
-                and now - self._server_progress_advanced_at >= SERVER_PROGRESS_STALL_SECONDS
+                and now - self._server_progress_advanced_at >= self._server_progress_stall_seconds()
                 and now - self._last_watch_reconnect_at >= SERVER_PROGRESS_RECONNECT_COOLDOWN_SECONDS
             ):
                 self._watch_reconnect_generation += 1
@@ -448,10 +475,18 @@ class LiveWatcher:
                 self._server_progress_samples = []
                 reconnect = True
         if reconnect:
+            stall_seconds = self._server_progress_stall_seconds()
             self.log(
-                f"B站实绩连续 {int(SERVER_PROGRESS_STALL_SECONDS)} 秒未增加"
+                f"B站实绩连续 {int(stall_seconds)} 秒未增加"
                 f"（当前 {self._format_progress_value(score)} 分钟），正在自动重建观看会话"
             )
+
+    def _server_progress_stall_seconds(self) -> float:
+        """高倍率配置必须更快按 totalv2 反馈重建，低倍率则保留完整观察窗口。"""
+
+        target_rate = max(1, int(self._configured_watch_threads or 1))
+        adaptive_seconds = max(90.0, 6000.0 / target_rate)
+        return min(float(SERVER_PROGRESS_STALL_SECONDS), adaptive_seconds)
 
     def _reset_server_progress_tracking(self) -> None:
         with self._watch_status_lock:
@@ -475,14 +510,22 @@ class LiveWatcher:
     def _server_credit_rate(self) -> float | None:
         with self._watch_status_lock:
             samples = list(self._server_progress_samples)
+        return self._credit_rate_from_samples(samples)
+
+    @staticmethod
+    def _credit_rate_from_samples(samples: list[tuple[float, float]]) -> float | None:
         if len(samples) < 2:
             return None
         started_at, started_score = samples[0]
         ended_at, ended_score = samples[-1]
-        elapsed_minutes = (ended_at - started_at) / 60.0
-        if elapsed_minutes < 1.0:
+        elapsed_seconds = ended_at - started_at
+        progress_delta = ended_score - started_score
+        # 1x 的整数分钟样本至少观察满一分钟；高倍率出现明确增量后，20 秒即可给出实绩倍率，
+        # 避免 100 路已经生效却仍长时间显示“等待样本”。
+        if elapsed_seconds < 20.0 or (progress_delta <= 0 and elapsed_seconds < 60.0):
             return None
-        return max(0.0, (ended_score - started_score) / elapsed_minutes)
+        elapsed_minutes = elapsed_seconds / 60.0
+        return max(0.0, progress_delta / elapsed_minutes)
 
     def get_server_credit_rate(self) -> float | None:
         """返回最近三分钟 totalv2 实绩倍率，供多账号协调器和 UI 使用。"""
@@ -519,7 +562,7 @@ class LiveWatcher:
     def _heartbeat_watch_worker(self, worker_id: int, room: RoomInfo | None) -> None:
         client: BilibiliClient | None = None
         try:
-            # 先错峰，再申请独立设备指纹，避免所有 worker 在创建阶段同时访问指纹接口。
+            # 先错峰建立独立的观看路由，避免所有 worker 同时注册直播会话。
             start_delay = self._watch_start_delay(worker_id)
             if start_delay > 0:
                 self._stop.wait(start_delay)
@@ -563,7 +606,7 @@ class LiveWatcher:
                         worker_id,
                         "正常",
                         interval=state.interval,
-                        message="官方观看会话已验证，等待 B 站实绩增长",
+                        message="x25Kn 独立计时会话已建立，等待 B 站实绩增长",
                     )
                     self._record_heartbeat(state.interval)
                     if self._watch_detail_enabled():
@@ -584,15 +627,23 @@ class LiveWatcher:
                             break
                         current_room = latest_room
                         state = self._continue_heartbeat_session(client, current_room, state.qid, state)
-                        self._set_watch_status(
-                            worker_id,
-                            "正常",
-                            interval=state.interval,
-                            message="官方观看心跳已接受，等待 B 站实绩增长",
-                        )
-                        self._record_heartbeat(state.interval)
-                        if self._watch_detail_enabled():
-                            self.log(f"后台计时 {worker_id} 计时请求已提交，下一次约 {state.interval} 秒后")
+                        if state.last_cycle_success:
+                            self._set_watch_status(
+                                worker_id,
+                                "正常",
+                                interval=state.interval,
+                                message="x25Kn 计时心跳已接受，等待 B 站实绩增长",
+                            )
+                            self._record_heartbeat(state.interval)
+                            if self._watch_detail_enabled():
+                                self.log(f"后台计时 {worker_id} 计时请求已提交，下一次约 {state.interval} 秒后")
+                        else:
+                            self._set_watch_status(
+                                worker_id,
+                                "重试中",
+                                interval=state.interval,
+                                message=f"观看心跳暂未接受，约 {state.interval} 秒后原会话重试",
+                            )
                         self._log_watch_status_summary()
                         self._wait_for_watch_interval(state.interval, session_generation)
                 except Exception as exc:
@@ -600,7 +651,7 @@ class LiveWatcher:
                     if self._watch_detail_enabled():
                         self.log(f"后台计时 {worker_id} 暂时失败：{self._friendly_error(exc)}；稍后重试")
                     self._log_watch_status_summary()
-                    self._stop.wait(15)
+                    self._stop.wait(WATCH_SESSION_RECONNECT_SECONDS)
                     if not self._stop.is_set():
                         self._close_client(client)
                         client = None
@@ -609,19 +660,14 @@ class LiveWatcher:
                 self._close_client(client)
 
     def _new_watch_client(self) -> BilibiliClient:
-        client = BilibiliClient(
+        # 与真实浏览器多标签一致：共享账号原始 Cookie，只隔离
+        # x25Kn 路由负载中的 LIVE_BUVID/page UUID。额外申请并替换
+        # buvid3/buvid4 会把多路变成频繁换设备，服务端反而只入账少数路由。
+        return BilibiliClient(
             self.options.cookie,
             session_buvid=make_session_buvid(),
             session_device_uuid=make_session_device_uuid(),
         )
-        isolate = getattr(client, "isolate_watch_device_identity", None)
-        if callable(isolate):
-            try:
-                isolate()
-            except Exception:
-                self._close_client(client)
-                raise
-        return client
 
     def _wait_for_watch_interval(self, interval: int, generation: int) -> None:
         deadline = time.monotonic() + max(1, int(interval))
@@ -672,82 +718,75 @@ class LiveWatcher:
                 if data.get("legacy_next_due") is not None
                 else fallback.legacy_next_due
             ),
+            official_failures=int(
+                data.get("official_failures")
+                if data.get("official_failures") is not None
+                else fallback.official_failures
+            ),
+            legacy_failures=int(
+                data.get("legacy_failures")
+                if data.get("legacy_failures") is not None
+                else fallback.legacy_failures
+            ),
+            last_cycle_success=bool(
+                data.get("last_cycle_success")
+                if data.get("last_cycle_success") is not None
+                else fallback.last_cycle_success
+            ),
         )
 
     @staticmethod
-    def _legacy_heartbeat_values(data: dict[str, Any]) -> tuple[int, int, str, list[int]]:
-        interval = int(data.get("heartbeat_interval") or 0)
-        ets = int(data.get("timestamp") or 0)
-        secret_key = str(data.get("secret_key") or "")
-        secret_rule = [int(value) for value in data.get("secret_rule") or []]
+    def _legacy_heartbeat_values(
+        data: dict[str, Any],
+        fallback: HeartbeatState | None = None,
+    ) -> tuple[int, int, str, list[int]]:
+        interval = int(
+            data.get("heartbeat_interval")
+            or (fallback.legacy_interval if fallback is not None else 0)
+        )
+        ets = int(
+            data.get("timestamp")
+            or (fallback.legacy_ets if fallback is not None else 0)
+        )
+        secret_key = str(
+            data.get("secret_key")
+            or (fallback.legacy_secret_key if fallback is not None else "")
+        )
+        raw_secret_rule = data.get("secret_rule")
+        if isinstance(raw_secret_rule, list) and raw_secret_rule:
+            secret_rule = [int(value) for value in raw_secret_rule]
+        else:
+            secret_rule = list(fallback.legacy_secret_rule or []) if fallback is not None else []
         if interval <= 0 or ets <= 0 or not secret_key or not secret_rule:
             raise RuntimeError(
                 "B 站累计计时会话缺少 heartbeat_interval/timestamp/secret_key/secret_rule，需重建会话"
             )
         return max(10, interval), ets, secret_key, secret_rule
 
-    @staticmethod
-    def _next_heartbeat_wait(state: HeartbeatState, now: float | None = None) -> int:
-        current = time.monotonic() if now is None else now
-        deadlines = [value for value in (state.official_next_due, state.legacy_next_due) if value > 0]
-        if not deadlines:
-            return max(1, min(state.official_interval, state.legacy_interval))
-        return max(1, int(math.ceil(min(deadlines) - current)))
+    def _start_heartbeat_session(
+        self,
+        client: BilibiliClient,
+        room: RoomInfo,
+        fallback: HeartbeatState,
+    ) -> HeartbeatState:
+        """按竞品顺序建立一条独立路由：roomEntryAction -> x25Kn/E。"""
 
-    def _start_heartbeat_session(self, client: BilibiliClient, room: RoomInfo, fallback: HeartbeatState) -> HeartbeatState:
-        try:
-            client.room_entry_action(room)
-        except Exception as exc:
-            self._record_room_entry_failure()
-            if self._watch_detail_enabled():
-                self.log(f"进入直播间注册暂时失败：{self._friendly_error(exc)}；继续建立双计时会话")
-
-        errors: list[str] = []
-        try:
-            legacy_data = client.enter_room_heartbeat(room)
-            legacy_interval, legacy_ets, legacy_secret_key, legacy_secret_rule = self._legacy_heartbeat_values(
-                legacy_data
-            )
-        except Exception as exc:
-            errors.append(f"累计计时会话：{self._friendly_error(exc)}")
-            legacy_interval, legacy_ets, legacy_secret_key, legacy_secret_rule = 60, 0, "", []
-
-        play_url = ""
-        data: dict[str, Any] = {}
-        try:
-            play_url = client.get_live_play_url(room)
-            data = client.start_live_watch_session(room, play_url)
-        except Exception as exc:
-            errors.append(f"官方观看会话：{self._friendly_error(exc)}")
-        if errors:
-            raise RuntimeError("；".join(errors))
-        official_interval = max(10, int(data.get("hbil") or 60))
+        del fallback
+        client.room_entry_action(room)
+        data = client.enter_room_heartbeat(room)
+        interval, ets, secret_key, secret_rule = self._legacy_heartbeat_values(data)
         now = time.monotonic()
-        return self._extract_heartbeat_state(
-            {
-                **data,
-                "hbil": min(official_interval, legacy_interval),
-                "official_interval": official_interval,
-                "official_next_due": now + official_interval,
-                "play_url": play_url,
-                "qid": 1,
-                "legacy_interval": legacy_interval,
-                "legacy_ets": legacy_ets,
-                "legacy_secret_key": legacy_secret_key,
-                "legacy_secret_rule": legacy_secret_rule,
-                "legacy_sequence": 1,
-                "legacy_next_due": now + legacy_interval,
-            },
-            fallback,
+        return HeartbeatState(
+            interval=interval,
+            qid=1,
+            legacy_interval=interval,
+            legacy_ets=ets,
+            legacy_secret_key=secret_key,
+            legacy_secret_rule=secret_rule,
+            legacy_sequence=1,
+            legacy_next_due=now + interval,
+            last_cycle_success=True,
         )
-
-    def _record_room_entry_failure(self) -> None:
-        # 每 N 次失败汇总写一条日志，避免 20 路同时报错刷屏。
-        with self._watch_status_lock:
-            count = getattr(self, "_room_entry_fail_count", 0) + 1
-            self._room_entry_fail_count = count
-        if count == 1 or count % 50 == 0:
-            self.log(f"上报进入直播间累计失败 {count} 次（不影响心跳，可能是代理抖动）")
 
     def _continue_heartbeat_session(
         self,
@@ -756,78 +795,32 @@ class LiveWatcher:
         sequence: int,
         state: HeartbeatState,
     ) -> HeartbeatState:
-        if not state.session_id or not state.stky or not state.play_url:
-            raise RuntimeError("官方观看会话缺少 sid/stky/play_url，需要重新建立计时会话")
+        """发送一次 x25Kn/X；失败立即交给外层销毁并重建该路由。"""
+
+        del sequence
         if not state.legacy_ets or not state.legacy_secret_key or not state.legacy_secret_rule:
-            raise RuntimeError("累计计时会话缺少 timestamp/secret_key/secret_rule，需要重新建立")
-
-        now = time.monotonic()
-        legacy_due = state.legacy_next_due <= 0 or now >= state.legacy_next_due
-        official_due = state.official_next_due <= 0 or now >= state.official_next_due
-        errors: list[str] = []
-        legacy_interval = state.legacy_interval
-        legacy_ets = state.legacy_ets
-        legacy_secret_key = state.legacy_secret_key
-        legacy_secret_rule = list(state.legacy_secret_rule or [])
-        legacy_sequence = state.legacy_sequence
-        legacy_next_due = state.legacy_next_due
-        if legacy_due:
-            try:
-                legacy_data = client.in_room_heartbeat(
-                    room,
-                    state.legacy_sequence,
-                    state.legacy_interval,
-                    state.legacy_ets,
-                    state.legacy_secret_key,
-                    state.legacy_secret_rule,
-                )
-                legacy_interval, legacy_ets, legacy_secret_key, legacy_secret_rule = self._legacy_heartbeat_values(
-                    legacy_data
-                )
-                legacy_sequence += 1
-                legacy_next_due = time.monotonic() + legacy_interval
-            except Exception as exc:
-                errors.append(f"累计计时心跳：{self._friendly_error(exc)}")
-
-        data: dict[str, Any] = {}
-        official_interval = state.official_interval
-        official_qid = state.qid
-        official_next_due = state.official_next_due
-        if official_due:
-            try:
-                data = client.continue_live_watch_session(
-                    room,
-                    state.play_url,
-                    qid=sequence,
-                    session_id=state.session_id,
-                    stky=state.stky,
-                )
-                official_interval = max(10, int(data.get("hbil") or 0))
-                official_qid = sequence + 1
-                official_next_due = time.monotonic() + official_interval
-            except Exception as exc:
-                errors.append(f"官方观看心跳：{self._friendly_error(exc)}")
-        if errors:
-            raise RuntimeError("；".join(errors))
-
-        next_state = self._extract_heartbeat_state(
-            {
-                **data,
-                "hbil": min(official_interval, legacy_interval),
-                "official_interval": official_interval,
-                "official_next_due": official_next_due,
-                "qid": official_qid,
-                "legacy_interval": legacy_interval,
-                "legacy_ets": legacy_ets,
-                "legacy_secret_key": legacy_secret_key,
-                "legacy_secret_rule": legacy_secret_rule,
-                "legacy_sequence": legacy_sequence,
-                "legacy_next_due": legacy_next_due,
-            },
-            state,
+            raise RuntimeError("x25Kn 会话缺少 timestamp/secret_key/secret_rule")
+        data = client.in_room_heartbeat(
+            room,
+            state.legacy_sequence,
+            state.legacy_interval,
+            state.legacy_ets,
+            state.legacy_secret_key,
+            state.legacy_secret_rule,
         )
-        next_state.interval = self._next_heartbeat_wait(next_state)
-        return next_state
+        interval, ets, secret_key, secret_rule = self._legacy_heartbeat_values(data, state)
+        now = time.monotonic()
+        return HeartbeatState(
+            interval=interval,
+            qid=state.qid + 1,
+            legacy_interval=interval,
+            legacy_ets=ets,
+            legacy_secret_key=secret_key,
+            legacy_secret_rule=secret_rule,
+            legacy_sequence=state.legacy_sequence + 1,
+            legacy_next_due=now + interval,
+            last_cycle_success=True,
+        )
 
     def _start_auto_claim_thread(self) -> None:
         self._start_claim_thread(log_if_running=False)
@@ -1054,19 +1047,20 @@ class LiveWatcher:
             and self._progress_full(node)
             and not self._node_received(node)
         }
+        progress_score = self._task_summary_progress_score(progress)
+        progress_signature = self._task_progress_signature(progress)
+        has_watch_progress = bool(self._watch_progress_nodes(progress))
+        if track_server_progress and has_watch_progress:
+            if progress_signature != self._last_task_progress_signature:
+                self._last_task_progress_signature = progress_signature
+                self._last_task_progress_score = 0.0
+                self._reset_server_progress_tracking()
+            self._record_server_progress(
+                progress_score,
+                time.monotonic(),
+                expect_progress=self._has_pending_watch_progress(progress),
+            )
         if summary:
-            progress_score = self._task_summary_progress_score(progress)
-            progress_signature = self._task_progress_signature(progress)
-            if track_server_progress:
-                if progress_signature != self._last_task_progress_signature:
-                    self._last_task_progress_signature = progress_signature
-                    self._last_task_progress_score = 0.0
-                    self._reset_server_progress_tracking()
-                self._record_server_progress(
-                    progress_score,
-                    time.monotonic(),
-                    expect_progress=self._has_pending_watch_progress(progress),
-                )
             progress_went_backwards = (
                 bool(progress_signature)
                 and self._last_task_progress_score > 0
@@ -1172,11 +1166,12 @@ class LiveWatcher:
 
     def _task_summary_progress_score(self, progress: dict[str, Any]) -> float:
         score = 0.0
-        nodes = sorted(self._iter_task_nodes(progress), key=self._task_sort_key)
-        nodes, _group_label, _hidden_count = self._focus_task_nodes(nodes)
+        nodes = self._watch_progress_nodes(progress)
+        if not nodes and not self._activity_tracking_task_ids(progress):
+            all_nodes = sorted(self._iter_task_nodes(progress), key=self._task_sort_key)
+            all_nodes, _group_label, _hidden_count = self._focus_task_nodes(all_nodes)
+            nodes = [node for node in all_nodes if not self._skip_task_summary_node(node)]
         for node in nodes:
-            if self._skip_task_summary_node(node):
-                continue
             current, _target = self._task_progress_values(node)
             try:
                 score = max(score, float(current))
@@ -1185,13 +1180,8 @@ class LiveWatcher:
         return score
 
     def _has_pending_watch_progress(self, progress: dict[str, Any]) -> bool:
-        nodes = sorted(self._iter_task_nodes(progress), key=self._task_sort_key)
-        nodes, _group_label, _hidden_count = self._focus_task_nodes(nodes)
-        for node in nodes:
-            if self._skip_task_summary_node(node) or self._node_received(node):
-                continue
-            name = self._task_display_name(node)
-            if "观看" not in name and "直播" not in name:
+        for node in self._watch_progress_nodes(progress):
+            if self._node_received(node):
                 continue
             current, target = self._task_progress_values(node)
             try:
@@ -1200,6 +1190,59 @@ class LiveWatcher:
             except (TypeError, ValueError):
                 continue
         return False
+
+    def _watch_progress_nodes(self, progress: dict[str, Any]) -> list[dict[str, Any]]:
+        """只选出能代表直播时长的任务。
+
+        totalv2 一个页面常同时返回关注、分享、投票和观看任务；若直接取
+        所有任务的最大 current，非观看任务会污染 B 站实绩倍率和停滞判断。
+        若页面只有一个 totalv2 父任务，则允许无中文关键字的活动名称作为兼容回退。
+        """
+
+        nodes = sorted(self._iter_task_nodes(progress), key=self._task_sort_key)
+        nodes, _group_label, _hidden_count = self._focus_task_nodes(nodes)
+        # 已完成/已领取的观看任务仍要保留在实绩分数里，否则最后一次
+        # totalv2 从 28 -> 30 时会因 status=3 被过滤，UI 永远停在 28/30。
+        visible_nodes = [node for node in nodes if not self._skip_empty_placeholder_node(node)]
+        labeled_nodes = [node for node in visible_nodes if self._watch_task_name_matches(node)]
+        if labeled_nodes:
+            return labeled_nodes
+
+        tracking_task_ids = set(self._activity_tracking_task_ids(progress))
+        if len(tracking_task_ids) != 1:
+            return []
+        tracking_task_id = next(iter(tracking_task_ids))
+        matched_nodes = [
+            node
+            for node in visible_nodes
+            if self._tracking_task_id_from_node(node) == tracking_task_id
+        ]
+        if matched_nodes:
+            return matched_nodes
+        # 某些旧 totalv2 响应只在顶层返回 tracking_task_ids，子节点没有
+        # parent_task_id。单父任务时仍可安全回退到唯一可见节点。
+        return visible_nodes if len(visible_nodes) == 1 else []
+
+    def _watch_task_name_matches(self, node: dict[str, Any]) -> bool:
+        names = [self._task_display_name(node)]
+        task_id = self._task_id_from_node(node)
+        parent_task_id = str(node.get("parent_task_id") or node.get("parentTaskId") or "").strip()
+        with self._claim_lock:
+            for candidate in (task_id, parent_task_id):
+                if candidate:
+                    meta_name = str((self._activity_task_meta.get(candidate) or {}).get("task_name") or "")
+                    if meta_name:
+                        names.append(meta_name)
+        text = " ".join(names).casefold()
+        if any(hint in text for hint in NON_LIVE_WATCH_NAME_HINTS):
+            return False
+        return any(hint in text for hint in WATCH_TASK_NAME_HINTS)
+
+    def _tracking_task_id_from_node(self, node: dict[str, Any]) -> str:
+        parent_task_id = node.get("parent_task_id") or node.get("parentTaskId")
+        if parent_task_id is not None and str(parent_task_id).strip():
+            return str(parent_task_id).strip()
+        return self._task_id_from_node(node)
 
     def _task_progress_signature(self, progress: dict[str, Any]) -> tuple[str, ...]:
         nodes = sorted(self._iter_task_nodes(progress), key=self._task_sort_key)

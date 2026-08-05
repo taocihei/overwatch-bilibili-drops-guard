@@ -3,8 +3,6 @@ from __future__ import annotations
 import unittest
 from unittest.mock import patch
 
-import requests
-
 from bili_drop_guard import watcher as watcher_module
 from bili_drop_guard.bilibili import (
     BilibiliClient,
@@ -39,14 +37,14 @@ class MakeSessionIdentityTest(unittest.TestCase):
 
 
 class BilibiliClientSessionIdentityTest(unittest.TestCase):
-    def test_explicit_session_buvid_updates_payload_and_session_cookie_identity(self) -> None:
+    def test_explicit_session_buvid_only_updates_route_payload_identity(self) -> None:
         client = BilibiliClient(COOKIE_WITH_BUVID, session_buvid="MY-SESSION-BUVID")
         self.addCleanup(client.close)
 
         self.assertEqual(client.buvid, "MY-SESSION-BUVID")
         self.assertEqual(
             client.session.cookies.get("LIVE_BUVID", domain=".bilibili.com"),
-            "MY-SESSION-BUVID",
+            "SHARED-LIVE",
         )
 
     def test_explicit_session_device_uuid_overrides_default(self) -> None:
@@ -74,7 +72,7 @@ class BilibiliClientSessionIdentityTest(unittest.TestCase):
             "SHARED-BUVID-FROM-COOKIE",
         )
 
-    def test_session_identity_preserves_account_cookies_and_updates_route_identity(self) -> None:
+    def test_session_identity_preserves_complete_account_cookie_identity(self) -> None:
         client = BilibiliClient(
             COOKIE_WITH_BUVID,
             session_buvid="MY-FRESH-SESSION-BUVID",
@@ -85,6 +83,8 @@ class BilibiliClientSessionIdentityTest(unittest.TestCase):
         for name, original in {
             "buvid4": "SHARED-BUVID4",
             "buvid_fp": "SHARED-FP",
+            "LIVE_BUVID": "SHARED-LIVE",
+            "_uuid": "SHARED-UUID",
             "b_lsid": "SHARED-LSID",
             "b_nut": "1",
         }.items():
@@ -92,51 +92,13 @@ class BilibiliClientSessionIdentityTest(unittest.TestCase):
                 client.session.cookies.get(name, domain=".bilibili.com"),
                 original,
             )
-        self.assertEqual(
-            client.session.cookies.get("LIVE_BUVID", domain=".bilibili.com"),
-            "MY-FRESH-SESSION-BUVID",
-        )
-        self.assertEqual(client.session.cookies.get("_uuid", domain=".bilibili.com"), "device-1")
-
-    def test_watch_route_requests_and_applies_an_independent_official_fingerprint(self) -> None:
+    def test_route_uuid_is_independent_in_x25_body_without_rewriting_cookie(self) -> None:
         client = BilibiliClient(
             COOKIE_WITH_BUVID,
             session_buvid="MY-FRESH-SESSION-BUVID",
-            session_device_uuid="device-1",
+            session_device_uuid="route-device-uuid",
         )
         self.addCleanup(client.close)
-        response = requests.Response()
-        response.status_code = 200
-        response.headers["Content-Type"] = "application/json"
-        response._content = (
-            b'{"code":0,"data":{"b_3":"ROUTE-BUVID3","b_4":"ROUTE-BUVID4"},"message":"ok"}'
-        )
-
-        with patch.object(client.session, "get", return_value=response):
-            client.isolate_watch_device_identity()
-
-        self.assertEqual(client.session.cookies.get("buvid3", domain=".bilibili.com"), "ROUTE-BUVID3")
-        self.assertEqual(client.session.cookies.get("buvid4", domain=".bilibili.com"), "ROUTE-BUVID4")
-        self.assertEqual(client.session.cookies.get("LIVE_BUVID", domain=".bilibili.com"), "MY-FRESH-SESSION-BUVID")
-        self.assertNotEqual(client.session.cookies.get("b_lsid", domain=".bilibili.com"), "SHARED-LSID")
-        self.assertEqual(client.session.cookies.get("SESSDATA", domain=".bilibili.com"), "abc")
-        route_uuid = client.session.cookies.get("_uuid", domain=".bilibili.com")
-        self.assertEqual(client.device_uuid, route_uuid)
-        self.assertEqual(client.cookies["_uuid"], route_uuid)
-
-    def test_isolated_uuid_matches_x25_request_body_identity(self) -> None:
-        client = BilibiliClient(
-            COOKIE_WITH_BUVID,
-            session_buvid="MY-FRESH-SESSION-BUVID",
-            session_device_uuid="device-before-isolation",
-        )
-        self.addCleanup(client.close)
-        response = requests.Response()
-        response.status_code = 200
-        response.headers["Content-Type"] = "application/json"
-        response._content = b'{"code":0,"data":{"b_3":"ROUTE-BUVID3","b_4":"ROUTE-BUVID4"}}'
-        with patch.object(client.session, "get", return_value=response):
-            client.isolate_watch_device_identity()
 
         captured: dict[str, object] = {}
 
@@ -148,9 +110,10 @@ class BilibiliClientSessionIdentityTest(unittest.TestCase):
         with patch.object(client, "_post_wbi_query", side_effect=capture):
             client.enter_room_heartbeat(room)
 
-        self.assertIn(client.device_uuid, str(captured["device"]))
+        self.assertIn("MY-FRESH-SESSION-BUVID", str(captured["device"]))
+        self.assertIn("route-device-uuid", str(captured["device"]))
         self.assertEqual(
-            client.device_uuid,
+            "SHARED-UUID",
             client.session.cookies.get("_uuid", domain=".bilibili.com"),
         )
 
@@ -175,6 +138,9 @@ class WatcherHeartbeatWorkerUsesUniqueSessionIdentityTest(unittest.TestCase):
                 self._device_uuid = session_device_uuid or "fallback-device"
                 captured_buvids.append(self._buvid)
                 captured_device_uuids.append(self._device_uuid)
+
+            def isolate_watch_device_identity(self) -> None:
+                raise AssertionError("watch route must not replace the account cookie fingerprint")
 
             def close(self) -> None:
                 closed_clients.append(self._buvid)

@@ -99,7 +99,7 @@ class LiveWatchProtocolTest(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "hbil/sid/stky"):
             client.start_live_watch_session(RoomInfo(room_id=23612045, live_status=1), "https://example.com/live.flv")
 
-    def test_watcher_uses_current_protocol_and_increments_qid(self) -> None:
+    def test_watcher_uses_x25kn_only_and_increments_sequence(self) -> None:
         calls: list[tuple] = []
 
         class FakeClient:
@@ -145,20 +145,17 @@ class LiveWatchProtocolTest(unittest.TestCase):
         live_watcher = LiveWatcher(WatchOptions(cookie="a=b", room_id="1"), lambda _m: None)
         room = RoomInfo(room_id=23612045, live_status=1)
         state = live_watcher._start_heartbeat_session(FakeClient(), room, HeartbeatState())  # type: ignore[arg-type]
-        state.official_next_due = 0
-        state.legacy_next_due = 0
         state = live_watcher._continue_heartbeat_session(FakeClient(), room, state.qid, state)  # type: ignore[arg-type]
 
-        self.assertEqual(state.interval, 45)
+        self.assertEqual(state.interval, 60)
         self.assertEqual(state.qid, 2)
-        self.assertEqual(state.session_id, "sid-2")
         self.assertEqual(state.legacy_sequence, 2)
         self.assertEqual(state.legacy_ets, 200)
         self.assertEqual(
             [call[0] for call in calls],
-            ["entry", "legacy-start", "play", "start", "legacy-heartbeat", "heartbeat"],
+            ["entry", "legacy-start", "legacy-heartbeat"],
         )
-        self.assertEqual(calls[-1], ("heartbeat", 23612045, "https://example.com/live.flv", 1, "sid-1", "key-1"))
+        self.assertEqual(calls[-1][2], 1)
 
 
 class SkynetSignerTest(unittest.TestCase):

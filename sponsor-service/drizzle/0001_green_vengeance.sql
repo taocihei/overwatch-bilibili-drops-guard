@@ -1,0 +1,1 @@
+CREATE INDEX `sponsor_orders_reuse_idx` ON `sponsor_orders` (`amount_cents`,`status`,`expires_at`);

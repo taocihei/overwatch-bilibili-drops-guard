@@ -1,0 +1,1 @@
+ALTER TABLE `sponsor_orders` ADD `provider_checked_at` integer DEFAULT 0 NOT NULL;

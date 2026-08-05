@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import os
 from io import BytesIO
+from pathlib import Path
+import re
 import threading
+import uuid
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from urllib.parse import quote, urlparse
@@ -40,10 +43,18 @@ class SponsorUnavailable(SponsorError):
 @dataclass(frozen=True)
 class SponsorOrder:
     order_id: str
+    amount: str = ""
     qr_url: str = ""
     fallback_qr_url: str = ""
     expires_at: str = ""
     qr_content: str = ""
+    expires_in_seconds: int = 0
+
+
+@dataclass(frozen=True)
+class SponsorOrderBatch:
+    checkout_intent_id: str
+    orders: tuple[SponsorOrder, ...]
 
 
 @dataclass(frozen=True)
@@ -84,6 +95,19 @@ class SponsorClient:
         configured_url = os.environ.get(SPONSOR_API_ENV, "").strip()
         return cls(configured_url or DEFAULT_SPONSOR_API_URL)
 
+    def new_session_client(self) -> SponsorClient:
+        """Return an equivalent client backed by a new HTTP session.
+
+        Sponsor prefetches and status checks run concurrently.  Sharing one
+        ``requests.Session`` would serialize them behind ``_session_lock`` and
+        makes changing an amount appear much slower than the payment service.
+        """
+
+        return SponsorClient(self.base_url, timeout=self.timeout)
+
+    def close(self) -> None:
+        self.session.close()
+
     def warm_up(self) -> bool:
         """提前唤醒赞助服务并复用已建立的 HTTPS 连接。"""
 
@@ -104,8 +128,17 @@ class SponsorClient:
             return False
         return True
 
-    def create_order(self, amount: str | Decimal, *, app_version: str) -> SponsorOrder:
+    def create_order(
+        self,
+        amount: str | Decimal,
+        *,
+        app_version: str,
+        install_id: str,
+        checkout_intent_id: str,
+    ) -> SponsorOrder:
         normalized_amount = normalize_amount(amount)
+        normalized_install_id = normalize_client_key(install_id, minimum_length=16)
+        normalized_intent_id = normalize_client_key(checkout_intent_id, minimum_length=8)
         payload = self._request_json(
             "POST",
             "/orders",
@@ -114,9 +147,71 @@ class SponsorClient:
                 "product": "守望先锋 B站直播挂宝赞助",
                 "app_version": app_version,
                 "provider": "yungouos",
+                "install_id": normalized_install_id,
+                "checkout_intent_id": normalized_intent_id,
             },
         )
+        return self._parse_order(payload)
+
+    def reserve_orders(
+        self,
+        amounts: tuple[str | Decimal, ...] | list[str | Decimal],
+        *,
+        app_version: str,
+        install_id: str,
+        checkout_intent_id: str,
+    ) -> SponsorOrderBatch:
+        normalized_amounts = tuple(normalize_amount(amount) for amount in amounts)
+        if not normalized_amounts or len(normalized_amounts) > 5:
+            raise SponsorError("批量预留需要包含 1–5 个赞助金额")
+        if len(set(normalized_amounts)) != len(normalized_amounts):
+            raise SponsorError("批量预留金额不能重复")
+        normalized_install_id = normalize_client_key(install_id, minimum_length=16)
+        normalized_intent_id = normalize_client_key(checkout_intent_id, minimum_length=8)
+        payload = self._request_json(
+            "POST",
+            "/orders",
+            json={
+                "amounts": [f"{amount:.2f}" for amount in normalized_amounts],
+                "product": "守望先锋 B站直播挂宝赞助",
+                "app_version": app_version,
+                "provider": "yungouos",
+                "install_id": normalized_install_id,
+                "checkout_intent_id": normalized_intent_id,
+            },
+        )
+        response_intent_id = normalize_client_key(
+            str(payload.get("checkout_intent_id") or ""),
+            minimum_length=8,
+        )
+        if response_intent_id != normalized_intent_id:
+            raise SponsorError("赞助服务返回的结算意图标识不匹配")
+        raw_orders = payload.get("orders")
+        if not isinstance(raw_orders, list) or len(raw_orders) != len(normalized_amounts):
+            raise SponsorError("赞助服务返回的批量订单数量不匹配")
+        orders = tuple(
+            self._parse_order(raw_order)
+            for raw_order in raw_orders
+            if isinstance(raw_order, dict)
+        )
+        if len(orders) != len(normalized_amounts):
+            raise SponsorError("赞助服务返回的批量订单格式无效")
+        expected_amounts = {f"{amount:.2f}" for amount in normalized_amounts}
+        returned_amounts = {order.amount for order in orders}
+        if returned_amounts != expected_amounts:
+            raise SponsorError("赞助服务返回的批量订单金额不匹配")
+        return SponsorOrderBatch(
+            checkout_intent_id=response_intent_id,
+            orders=orders,
+        )
+
+    @staticmethod
+    def _parse_order(payload: dict[str, object]) -> SponsorOrder:
         order_id = str(payload.get("order_id") or "").strip()
+        try:
+            amount = f"{normalize_amount(str(payload.get('amount') or '')):.2f}"
+        except SponsorError:
+            amount = ""
         qr_url = str(payload.get("qr_url") or "").strip()
         fallback_qr_url = str(payload.get("fallback_qr_url") or "").strip()
         qr_content = str(payload.get("qr_content") or "").strip()
@@ -130,12 +225,21 @@ class SponsorClient:
             raise SponsorError("赞助服务返回的二维码内容无效")
         if not qr_content and not qr_url and not fallback_qr_url:
             raise SponsorError("赞助服务未返回二维码")
+        try:
+            expires_in_seconds = max(
+                0,
+                min(24 * 60 * 60, int(float(payload.get("expires_in_seconds") or 0))),
+            )
+        except (TypeError, ValueError):
+            expires_in_seconds = 0
         return SponsorOrder(
             order_id=order_id,
+            amount=amount,
             qr_url=qr_url,
             fallback_qr_url=fallback_qr_url,
             expires_at=str(payload.get("expires_at") or "").strip(),
             qr_content=qr_content,
+            expires_in_seconds=expires_in_seconds,
         )
 
     def query_order(self, order_id: str) -> SponsorOrderStatus:
@@ -232,6 +336,47 @@ def normalize_amount(value: str | Decimal) -> Decimal:
     if not amount.is_finite() or amount < MIN_SPONSOR_AMOUNT or amount > MAX_SPONSOR_AMOUNT:
         raise SponsorError("赞助金额需在 1–9999 元之间")
     return amount
+
+
+def normalize_client_key(
+    value: str,
+    *,
+    minimum_length: int,
+    maximum_length: int = 128,
+) -> str:
+    normalized = str(value or "").strip()
+    if (
+        len(normalized) < minimum_length
+        or len(normalized) > maximum_length
+        or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]*", normalized) is None
+    ):
+        raise SponsorError("赞助客户端标识无效")
+    return normalized
+
+
+def create_checkout_intent_id() -> str:
+    return f"checkout-{uuid.uuid4().hex}"
+
+
+def load_or_create_install_id(path: Path) -> str:
+    """Load the stable anonymous installation ID, atomically creating it once."""
+
+    try:
+        current = path.read_text(encoding="ascii").strip()
+        return normalize_client_key(current, minimum_length=16)
+    except (OSError, UnicodeError, SponsorError):
+        pass
+
+    install_id = f"desktop-{uuid.uuid4().hex}"
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary_path = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+        temporary_path.write_text(install_id, encoding="ascii")
+        os.replace(temporary_path, path)
+        persisted = path.read_text(encoding="ascii").strip()
+        return normalize_client_key(persisted, minimum_length=16)
+    except (OSError, UnicodeError, SponsorError):
+        return install_id
 
 
 def _normalize_base_url(value: str) -> str:

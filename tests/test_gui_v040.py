@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 import threading
+import tempfile
+import time
 import unittest
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -9,6 +13,7 @@ import tkinter as tk
 from tkinter import ttk
 
 from bili_drop_guard import gui
+from bili_drop_guard.sponsor import SponsorOrderBatch, SponsorError
 from bili_drop_guard.watcher import WatchWorkerStatus
 
 
@@ -35,6 +40,13 @@ class _HiddenRootCase(unittest.TestCase):
         for child in self.root.winfo_children():
             child.destroy()
         self.root.update_idletasks()
+
+
+class BackendNetworkLabelTest(unittest.TestCase):
+    def test_transient_heartbeat_retry_has_an_explicit_status(self) -> None:
+        rows = [WatchWorkerStatus(worker_id=1, state="重试中", interval=15, message="原会话重试")]
+
+        self.assertEqual(gui._backend_network_label(rows, None), "心跳重试中")
 
 
 class RoundedPanelLayoutTest(_HiddenRootCase):
@@ -200,7 +212,7 @@ class SmallWindowAndButtonLayoutTest(_HiddenRootCase):
             app.settings_canvas.yview_moveto(1.0)
             for _ in range(5):
                 app.update()
-            wanted = {"添加账号", "取消修改", "验证", "清空", "▶ 开始挂宝", "领取奖励"}
+            wanted = {"添加账号", "取消修改", "B站验证", "清空", "▶ 开始挂宝", "领取奖励"}
             found: dict[str, tk.Misc] = {}
 
             def collect(widget: tk.Misc) -> None:
@@ -536,6 +548,31 @@ class AppDialogTest(_HiddenRootCase):
         finally:
             dialog.destroy()
 
+    def test_pointer_click_reactivates_borderless_dialog(self) -> None:
+        dialog = gui.AppDialog(self.root, title="激活测试", width=360, height=260)
+        try:
+            dialog.bring_to_front = MagicMock()  # type: ignore[method-assign]
+            dialog._activate_from_pointer(SimpleNamespace(widget=dialog.titlebar))  # type: ignore[arg-type]
+            dialog.bring_to_front.assert_called_once_with(focus=True)
+        finally:
+            dialog.destroy()
+
+    def test_pointer_click_forces_keyboard_focus_back_to_entry(self) -> None:
+        self.root.deiconify()
+        dialog = gui.AppDialog(self.root, title="输入测试", width=360, height=260)
+        entry = tk.Entry(dialog.content)
+        entry.pack()
+        try:
+            for _ in range(3):
+                self.root.update()
+            dialog._activate_from_pointer(SimpleNamespace(widget=entry))  # type: ignore[arg-type]
+            for _ in range(3):
+                self.root.update()
+
+            self.assertIs(dialog.focus_get(), entry)
+        finally:
+            dialog.destroy()
+
 
 class SponsorDialogFlowTest(unittest.TestCase):
     def test_default_amount_automatically_requests_qr_without_generate_button(self) -> None:
@@ -567,6 +604,11 @@ class SponsorDialogFlowTest(unittest.TestCase):
             collect(dialog)
             start_order.assert_called_once_with()
             self.assertNotIn("生成赞助二维码", texts)
+            self.assertNotIn("确认金额", texts)
+            self.assertEqual(dialog.title_label.winfo_manager(), "")
+            self.assertIn("支持作者", texts)
+            self.assertIn("已经支持过？", texts)
+            self.assertIn("查看交流群  →", texts)
         finally:
             app._close_sponsor_dialog()
             app.destroy()
@@ -584,6 +626,7 @@ class SponsorDialogFlowTest(unittest.TestCase):
         app._sponsor_amount_buttons = buttons
         app._sponsor_custom_frame = MagicMock()
         app._sponsor_custom_frame.winfo_manager.return_value = ""
+        app._cancel_custom_sponsor_job = MagicMock()
         app._start_sponsor_order = MagicMock()
 
         gui.App._select_sponsor_amount(app, "20.00")
@@ -618,16 +661,54 @@ class SponsorDialogFlowTest(unittest.TestCase):
             app._close_sponsor_dialog()
             app.destroy()
 
-    def test_other_amount_is_validated_then_generates_order(self) -> None:
+    def test_reopening_existing_sponsor_dialog_raises_without_recentering(self) -> None:
+        app = gui.App(preview_mode=True)
+        app.withdraw()
+        app._start_sponsor_order = MagicMock()  # type: ignore[method-assign]
+        try:
+            with patch.object(gui.AppDialog, "_show_centered"):
+                dialog = app._show_sponsor_dialog()
+            dialog.bring_to_front = MagicMock()  # type: ignore[method-assign]
+
+            reopened = app._show_sponsor_dialog()
+
+            self.assertIs(reopened, dialog)
+            dialog.bring_to_front.assert_called_once_with()
+        finally:
+            app._close_sponsor_dialog()
+            app.destroy()
+
+    def test_claimed_sponsor_can_reveal_group_without_payment_check(self) -> None:
         app = gui.App(preview_mode=True)
         app.withdraw()
         app._start_sponsor_order = MagicMock()  # type: ignore[method-assign]
         try:
             with patch.object(gui.AppDialog, "_show_centered"):
                 app._show_sponsor_dialog()
+
+            app._reveal_sponsor_group()
+            app.update_idletasks()
+
+            self.assertTrue(app._sponsor_group_revealed)
+            self.assertFalse(bool(app._sponsor_group_prompt.winfo_manager()))
+            self.assertTrue(bool(app._sponsor_success_frame.winfo_manager()))
+            self.assertEqual(app._sponsor_status_var.get(), "群号已显示，可直接复制加入")
+        finally:
+            app._close_sponsor_dialog()
+            app.destroy()
+
+    def test_other_amount_automatically_generates_after_input_stops(self) -> None:
+        app = gui.App(preview_mode=True)
+        app.withdraw()
+        app._start_sponsor_order = MagicMock()  # type: ignore[method-assign]
+        try:
+            with patch.object(gui.AppDialog, "_show_centered"):
+                app._show_sponsor_dialog()
+            app._start_sponsor_order.reset_mock()
             app._select_sponsor_amount("other")
             app._sponsor_custom_amount_var.set("38.5")
-            app._confirm_custom_sponsor_amount()
+            app.after(600, app.quit)
+            app.mainloop()
 
             self.assertEqual(app._sponsor_amount_var.get(), "38.50")
             self.assertEqual(app._sponsor_amount_choice, "other")
@@ -635,6 +716,24 @@ class SponsorDialogFlowTest(unittest.TestCase):
         finally:
             app._close_sponsor_dialog()
             app.destroy()
+
+    def test_custom_amount_waits_until_typing_stops(self) -> None:
+        custom_var = MagicMock()
+        custom_var.get.return_value = "38.5"
+        app = SimpleNamespace(
+            _sponsor_amount_choice="other",
+            _sponsor_custom_amount_var=custom_var,
+            _sponsor_status_var=MagicMock(),
+            _sponsor_custom_job=None,
+            _cancel_custom_sponsor_job=MagicMock(),
+            after=MagicMock(return_value="job-1"),
+            _confirm_custom_sponsor_amount=MagicMock(),
+        )
+
+        gui.App._schedule_custom_sponsor_amount(app)
+
+        app.after.assert_called_once_with(500, app._confirm_custom_sponsor_amount)
+        self.assertEqual(app._sponsor_custom_job, "job-1")
 
     def test_refreshing_amount_resets_qr_label_to_text_dimensions(self) -> None:
         amount_var = MagicMock()
@@ -671,11 +770,11 @@ class SponsorDialogFlowTest(unittest.TestCase):
             height=12,
         )
 
-    def test_cached_sponsor_order_is_verified_before_reuse(self) -> None:
+    def test_cached_sponsor_order_is_painted_without_network_wait(self) -> None:
         amount_var = MagicMock()
         amount_var.get.return_value = "10.00"
         cached = (MagicMock(), MagicMock(), b"qr")
-        verify = MagicMock()
+        finish = MagicMock()
         app = SimpleNamespace(
             _sponsor_dialog_exists=MagicMock(return_value=True),
             _cancel_sponsor_poll=MagicMock(),
@@ -689,99 +788,182 @@ class SponsorDialogFlowTest(unittest.TestCase):
             _sponsor_status_var=MagicMock(),
             _sponsor_qr_label=MagicMock(),
             _cached_sponsor_order=MagicMock(return_value=cached),
-            _verify_cached_sponsor_order=verify,
+            _finish_sponsor_order=finish,
         )
 
         gui.App._start_sponsor_order(app)
 
-        verify.assert_called_once_with(
+        finish.assert_called_once_with(
             1,
             "10.00",
             *cached,
-        )
-        app._sponsor_status_var.set.assert_called_once_with(
-            "正在确认 ¥10 二维码状态…"
-        )
-
-    def test_pending_cached_order_is_reused_after_server_confirmation(self) -> None:
-        finish = MagicMock()
-        client = MagicMock()
-        order = MagicMock()
-        qr_data = b"qr"
-        app = SimpleNamespace(
-            _sponsor_generation=4,
-            _sponsor_dialog_exists=MagicMock(return_value=True),
-            _finish_sponsor_order=finish,
-        )
-
-        gui.App._apply_cached_sponsor_order(
-            app,
-            4,
-            "10.00",
-            client,
-            order,
-            qr_data,
-            gui.SponsorOrderStatus("pending"),
-        )
-
-        finish.assert_called_once_with(
-            4,
-            "10.00",
-            client,
-            order,
-            qr_data,
             cache_result=False,
         )
 
-    def test_terminal_cached_order_is_discarded_and_recreated(self) -> None:
-        app = SimpleNamespace(
-            _sponsor_generation=4,
-            _sponsor_dialog_exists=MagicMock(return_value=True),
-            _sponsor_order_cache={"10.00": object()},
-            _start_sponsor_order=MagicMock(),
+    def test_startup_prioritizes_default_then_batches_remaining_presets(self) -> None:
+        priority_client = MagicMock()
+        priority_client.create_order.return_value = gui.SponsorOrder(
+            order_id="order-10.00",
+            amount="10.00",
         )
-
-        gui.App._apply_cached_sponsor_order(
-            app,
-            4,
-            "10.00",
-            MagicMock(),
-            MagicMock(),
-            b"qr",
-            gui.SponsorOrderStatus("expired"),
-        )
-
-        self.assertNotIn("10.00", app._sponsor_order_cache)
-        app._start_sponsor_order.assert_called_once_with()
-
-    def test_paid_cached_order_returns_success_instead_of_old_qr(self) -> None:
+        priority_client.download_order_qr.return_value = b"qr"
         client = MagicMock()
-        order = MagicMock()
-        apply_status = MagicMock()
-        app = SimpleNamespace(
-            _sponsor_generation=4,
-            _sponsor_dialog_exists=MagicMock(return_value=True),
-            _sponsor_client=None,
-            _sponsor_order=None,
-            _sponsor_loading=True,
-            _apply_sponsor_status=apply_status,
+        amounts = ["10.00", "5.00", "20.00", "50.00", "100.00"]
+        remaining_amounts = ["5.00", "20.00", "50.00", "100.00"]
+        client.reserve_orders.return_value = SponsorOrderBatch(
+            checkout_intent_id="checkout-0123456789abcdef",
+            orders=tuple(
+                gui.SponsorOrder(order_id=f"order-{amount}", amount=amount)
+                for amount in remaining_amounts
+            ),
         )
-        status = gui.SponsorOrderStatus("paid")
+        client.download_order_qr.return_value = b"qr"
 
-        gui.App._apply_cached_sponsor_order(
-            app,
-            4,
+        class ImmediateThread:
+            def __init__(self, *, target, **_kwargs) -> None:
+                self.target = target
+
+            def start(self) -> None:
+                self.target()
+
+            def join(self) -> None:
+                return None
+
+        app = object.__new__(gui.App)
+        app.preview_mode = False
+        app._sponsor_warm_started = False
+        app._sponsor_warm_ready = threading.Event()
+        app._sponsor_prefetch_ready = threading.Event()
+        app._sponsor_order_cache = {}
+        app._sponsor_cache_lock = threading.RLock()
+        app._sponsor_order_inflight = {}
+        app._sponsor_order_errors = {}
+        app._persist_sponsor_order_cache = MagicMock()
+        app._sponsor_install_id = "desktop-0123456789abcdef"
+        app._sponsor_checkout_intent_id = "checkout-0123456789abcdef"
+
+        with (
+            patch.object(
+                gui.SponsorClient,
+                "from_environment",
+                side_effect=[priority_client, client],
+            ),
+            patch.object(gui.threading, "Thread", ImmediateThread),
+        ):
+            gui.App._warm_sponsor_service(app)
+
+        priority_client.create_order.assert_called_once_with(
             "10.00",
-            client,
-            order,
-            b"qr",
-            status,
+            app_version=gui.__version__,
+            install_id=app._sponsor_install_id,
+            checkout_intent_id=app._sponsor_checkout_intent_id,
         )
+        client.reserve_orders.assert_called_once_with(
+            tuple(remaining_amounts),
+            app_version=gui.__version__,
+            install_id=app._sponsor_install_id,
+            checkout_intent_id=app._sponsor_checkout_intent_id,
+        )
+        self.assertEqual(set(app._sponsor_order_cache), set(amounts))
+        self.assertTrue(app._sponsor_warm_ready.is_set())
+        self.assertTrue(app._sponsor_prefetch_ready.is_set())
 
-        self.assertIs(app._sponsor_client, client)
-        self.assertIs(app._sponsor_order, order)
-        self.assertFalse(app._sponsor_loading)
-        apply_status.assert_called_once_with(4, status)
+    def test_batch_failure_falls_back_to_independent_single_order_clients(self) -> None:
+        priority_client = MagicMock(name="priority")
+        batch_client = MagicMock()
+        batch_client.reserve_orders.side_effect = SponsorError("old service")
+        fallback_clients = [MagicMock(name=f"fallback-{index}") for index in range(4)]
+        created_amounts: list[str] = []
+        for client in [priority_client, *fallback_clients]:
+            client.create_order.side_effect = lambda amount, **_kwargs: (
+                created_amounts.append(amount)
+                or gui.SponsorOrder(order_id=f"order-{amount}", amount=amount)
+            )
+            client.download_order_qr.return_value = b"qr"
+
+        class ImmediateThread:
+            def __init__(self, *, target, **_kwargs) -> None:
+                self.target = target
+
+            def start(self) -> None:
+                self.target()
+
+            def join(self) -> None:
+                return None
+
+        app = object.__new__(gui.App)
+        app.preview_mode = False
+        app._sponsor_warm_started = False
+        app._sponsor_warm_ready = threading.Event()
+        app._sponsor_prefetch_ready = threading.Event()
+        app._sponsor_order_cache = {}
+        app._sponsor_cache_lock = threading.RLock()
+        app._sponsor_order_inflight = {}
+        app._sponsor_order_errors = {}
+        app._persist_sponsor_order_cache = MagicMock()
+        app._sponsor_install_id = "desktop-0123456789abcdef"
+        app._sponsor_checkout_intent_id = "checkout-0123456789abcdef"
+
+        with (
+            patch.object(
+                gui.SponsorClient,
+                "from_environment",
+                side_effect=[priority_client, batch_client, *fallback_clients],
+            ),
+            patch.object(gui.threading, "Thread", ImmediateThread),
+        ):
+            gui.App._warm_sponsor_service(app)
+
+        self.assertEqual(
+            created_amounts,
+            ["10.00", "5.00", "20.00", "50.00", "100.00"],
+        )
+        self.assertTrue(all(client.create_order.call_count == 1 for client in fallback_clients))
+        self.assertEqual(set(app._sponsor_order_cache), set(created_amounts))
+        self.assertTrue(app._sponsor_prefetch_ready.is_set())
+
+    def test_same_amount_uses_singleflight_and_shares_cached_result(self) -> None:
+        app = object.__new__(gui.App)
+        app._sponsor_order_cache = {}
+        app._sponsor_cache_lock = threading.RLock()
+        app._sponsor_order_inflight = {}
+        app._sponsor_order_errors = {}
+        app._persist_sponsor_order_cache = MagicMock()
+        app._sponsor_install_id = "desktop-0123456789abcdef"
+        app._sponsor_checkout_intent_id = "checkout-0123456789abcdef"
+        client = MagicMock()
+        entered = threading.Event()
+        release = threading.Event()
+
+        def create_order(amount: str, **_kwargs: object) -> gui.SponsorOrder:
+            entered.set()
+            self.assertTrue(release.wait(2.0))
+            return gui.SponsorOrder(order_id=f"order-{amount}")
+
+        client.create_order.side_effect = create_order
+        client.download_order_qr.return_value = b"qr"
+        results: list[tuple[object, object, bytes]] = []
+
+        def fetch() -> None:
+            results.append(gui.App._get_or_create_sponsor_order(app, "10.00"))
+
+        with patch.object(gui.SponsorClient, "from_environment", return_value=client):
+            first = threading.Thread(target=fetch)
+            second = threading.Thread(target=fetch)
+            first.start()
+            self.assertTrue(entered.wait(1.0))
+            second.start()
+            release.set()
+            first.join(2.0)
+            second.join(2.0)
+
+        self.assertFalse(first.is_alive())
+        self.assertFalse(second.is_alive())
+        self.assertEqual(client.create_order.call_count, 1)
+        self.assertEqual(len(results), 2)
+        self.assertIs(results[0][1], results[1][1])
+        self.assertEqual(results[0][2], results[1][2])
+        self.assertIn("10.00", app._sponsor_order_cache)
 
     def test_sponsor_order_cache_expires_before_payment_order(self) -> None:
         client = MagicMock()
@@ -794,14 +976,102 @@ class SponsorDialogFlowTest(unittest.TestCase):
                     order,
                     b"qr",
                 )
-            }
+            },
+            _sponsor_cache_lock=threading.RLock(),
+            _sponsor_cache_lifetime_seconds=MagicMock(
+                return_value=gui.SPONSOR_ORDER_CACHE_TTL_SECONDS
+            ),
+            _remove_cached_sponsor_order=MagicMock(),
         )
 
-        with patch.object(gui.time, "monotonic", return_value=100.0 + 12 * 60):
+        with patch.object(
+            gui.time,
+            "time",
+            return_value=100.0 + gui.SPONSOR_ORDER_CACHE_TTL_SECONDS,
+        ):
             result = gui.App._cached_sponsor_order(app, "10.00")
 
         self.assertIsNone(result)
-        self.assertNotIn("10.00", app._sponsor_order_cache)
+        app._remove_cached_sponsor_order.assert_called_once_with("10.00")
+
+    def test_sponsor_order_cache_rejects_absolute_provider_expiry(self) -> None:
+        client = MagicMock()
+        order = gui.SponsorOrder(
+            order_id="order_expired_123",
+            expires_at=(datetime.now(timezone.utc) - timedelta(seconds=5)).isoformat(),
+            expires_in_seconds=6_000,
+        )
+        app = SimpleNamespace(
+            _sponsor_order_cache={"10.00": (time.time(), client, order, b"qr")},
+            _sponsor_cache_lock=threading.RLock(),
+            _remove_cached_sponsor_order=MagicMock(),
+        )
+        app._sponsor_cache_lifetime_seconds = gui.App._sponsor_cache_lifetime_seconds
+        app._sponsor_order_has_expired = gui.App._sponsor_order_has_expired
+
+        result = gui.App._cached_sponsor_order(app, "10.00")
+
+        self.assertIsNone(result)
+        app._remove_cached_sponsor_order.assert_called_once_with("10.00")
+
+    def test_expired_provider_status_automatically_refreshes_once(self) -> None:
+        app = SimpleNamespace(
+            _sponsor_generation=4,
+            _sponsor_dialog_exists=MagicMock(return_value=True),
+            _forget_current_sponsor_order=MagicMock(),
+            _rotate_sponsor_checkout_intent=MagicMock(),
+            _sponsor_auto_refresh_attempts=0,
+            _sponsor_status_var=MagicMock(),
+            _start_sponsor_order=MagicMock(),
+            _show_sponsor_retry=MagicMock(),
+        )
+
+        gui.App._apply_sponsor_status(app, 4, gui.SponsorOrderStatus(state="expired"))
+
+        app._start_sponsor_order.assert_called_once_with(automatic_retry=True)
+        app._show_sponsor_retry.assert_not_called()
+        self.assertEqual(app._sponsor_auto_refresh_attempts, 1)
+
+    def test_sponsor_order_cache_survives_application_restart(self) -> None:
+        client = MagicMock()
+        client.base_url = "https://sponsor.example/api/sponsor"
+        expires_at = (datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat()
+        order = gui.SponsorOrder(order_id="order_12345678", expires_at=expires_at)
+        qr_data = b"\x89PNG\r\n\x1a\nfast-qr"
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            cache_directory = Path(temporary_directory)
+            cache_path = cache_directory / "sponsor-orders.json"
+            writer = object.__new__(gui.App)
+            writer._sponsor_cache_lock = threading.RLock()
+            writer._sponsor_order_cache = {}
+            with (
+                patch.object(gui, "APP_DIR", cache_directory),
+                patch.object(gui, "SPONSOR_ORDER_CACHE_PATH", cache_path),
+            ):
+                gui.App._cache_sponsor_order(
+                    writer,
+                    "10.00",
+                    client,
+                    order,
+                    qr_data,
+                )
+
+                reader = object.__new__(gui.App)
+                reader._sponsor_cache_lock = threading.RLock()
+                reader._sponsor_order_cache = {}
+                reader._sponsor_http_client = None
+                with patch.object(
+                    gui.SponsorClient,
+                    "from_environment",
+                    return_value=client,
+                ):
+                    gui.App._load_persistent_sponsor_order_cache(reader)
+
+            cached = reader._sponsor_order_cache["10.00"]
+            self.assertEqual(cached[2].order_id, order.order_id)
+            self.assertEqual(cached[3], qr_data)
+            self.assertIs(reader._sponsor_http_client, client)
 
 
 if __name__ == "__main__":

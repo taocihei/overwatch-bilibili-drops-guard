@@ -236,11 +236,11 @@ class MultiAccountWatcher:
             summary += f"，下一次约 {min(next_intervals)} 秒后"
         if server_rates:
             if len(server_rates) == 1 or max(server_rates) - min(server_rates) < 0.05:
-                summary += f"，目标 {target_routes}x / B 站实绩约 {sum(server_rates) / len(server_rates):.1f}x"
+                summary += f"，设置 {target_routes} 路 / B 站实绩约 {sum(server_rates) / len(server_rates):.1f}x"
             else:
-                summary += f"，目标 {target_routes}x / 各账号实绩约 {min(server_rates):.1f}x-{max(server_rates):.1f}x"
+                summary += f"，每账号 {target_routes} 路 / 各账号实绩约 {min(server_rates):.1f}x-{max(server_rates):.1f}x"
         else:
-            summary += f"，目标 {target_routes}x / 等待 B 站实绩样本"
+            summary += f"，每账号 {target_routes} 路 / 等待 B 站实绩样本"
         return rows, summary
 
     def get_local_watch_estimate_minutes(self) -> float:

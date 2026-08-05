@@ -216,7 +216,7 @@ class MultiAccountStatusTest(unittest.TestCase):
         _rows, summary = mw.get_watch_status_snapshot()
 
         self.assertIn("2/2 心跳已接受", summary)
-        self.assertIn("目标 2x", summary)
+        self.assertIn("每账号 2 路", summary)
         self.assertIn("各账号实绩约 1.0x-2.0x", summary)
         self.assertEqual(mw.get_server_credit_rate(), 3.0)
 
@@ -239,7 +239,7 @@ class MultiAccountStatusTest(unittest.TestCase):
 
         _rows, summary = mw.get_watch_status_snapshot()
 
-        self.assertIn("目标 100x", summary)
+        self.assertIn("设置 100 路", summary)
         self.assertIn("B 站实绩约 6.5x", summary)
 
     def test_summary_reports_reconnecting_failed_and_waiting_routes(self) -> None:

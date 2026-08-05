@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import queue
 import unittest
 from datetime import datetime, timedelta
@@ -67,6 +68,44 @@ class FakeBoolVar:
 
     def set(self, value: bool) -> None:
         self.value = value
+
+
+class CookieBilibiliValidationTest(unittest.TestCase):
+    def test_validation_worker_uses_bilibili_login_endpoint_client(self) -> None:
+        app = object.__new__(gui.App)
+        app.log_queue = queue.Queue()
+        login = SimpleNamespace(logged_in=True, uname="测试账号", mid=12345, message="已登录")
+
+        with patch("bili_drop_guard.gui.BilibiliClient") as client_class:
+            client_class.return_value.check_login.return_value = login
+            app._validate_cookie_worker("SESSDATA=x; bili_jct=y; DedeUserID=1", 7)
+
+        client_class.assert_called_once_with("SESSDATA=x; bili_jct=y; DedeUserID=1")
+        client_class.return_value.check_login.assert_called_once_with()
+        client_class.return_value.close.assert_called_once_with()
+        message = app.log_queue.get_nowait()
+        payload = json.loads(message.removeprefix("__COOKIE_VERIFY__:"))
+        self.assertTrue(payload["logged_in"])
+        self.assertEqual(payload["uname"], "测试账号")
+        self.assertEqual(payload["mid"], 12345)
+
+    def test_success_result_is_labeled_as_bilibili_validation(self) -> None:
+        app = object.__new__(gui.App)
+        cookie = "SESSDATA=x; bili_jct=y; DedeUserID=1"
+        app.cookie_text = FakeText(cookie)
+        app.cookie_validation_var = FakeVar("B站验证中…")
+        app._cookie_validation_generation = 3
+        app._cookie_validation_cookie = cookie
+        logs: list[str] = []
+        app._log = logs.append
+        app._show_notice = lambda *_args, **_kwargs: None
+
+        app._apply_cookie_validation_result(
+            {"generation": 3, "logged_in": True, "uname": "测试账号", "mid": 12345, "message": "已登录"}
+        )
+
+        self.assertEqual(app.cookie_validation_var.get(), "B站已登录")
+        self.assertEqual(logs, ["B 站验证通过：测试账号（12345）"])
 
 
 class BackendNetworkLabelTest(unittest.TestCase):

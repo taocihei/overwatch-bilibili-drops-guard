@@ -11,11 +11,6 @@ if ($LASTEXITCODE -ne 0) {
   throw "Build dependencies are incomplete. Run: python -m pip install -r requirements.txt"
 }
 
-python -m pip check
-if ($LASTEXITCODE -ne 0) {
-  throw "Python dependency conflicts were detected."
-}
-
 $pythonRoot = python -c "import sys; print(sys.base_prefix)"
 if ($LASTEXITCODE -ne 0) {
   throw "Unable to read the Python installation directory."

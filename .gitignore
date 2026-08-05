@@ -21,3 +21,7 @@ config.json
 
 assets/_sponsor_*
 assets/sponsor_crop.png
+
+# Local research captures and framework build cache.
+_reverse_official/
+sponsor-service/.vite/

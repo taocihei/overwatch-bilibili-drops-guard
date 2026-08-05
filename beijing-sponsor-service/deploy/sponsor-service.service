@@ -1,0 +1,35 @@
+[Unit]
+Description=Overwatch Bilibili Drops Sponsor Service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=sponsor-service
+Group=sponsor-service
+WorkingDirectory=/opt/beijing-sponsor-service/current
+EnvironmentFile=/etc/sponsor-service.env
+# Make at least one ready order per preset before accepting traffic. Existing
+# valid pool rows make this operation complete without a provider call.
+ExecStartPre=/opt/beijing-sponsor-service/current/.venv/bin/python -m sponsor_service prefill --minimum 1
+ExecStart=/opt/beijing-sponsor-service/current/.venv/bin/python -m sponsor_service serve
+Restart=always
+RestartSec=3
+TimeoutStartSec=120
+TimeoutStopSec=15
+KillSignal=SIGTERM
+
+StateDirectory=beijing-sponsor-service
+StateDirectoryMode=0750
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/beijing-sponsor-service
+CapabilityBoundingSet=
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RestrictSUIDSGID=true
+
+[Install]
+WantedBy=multi-user.target

@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import base64
+import json
+import os
 import queue
 import re
 import sys
@@ -21,7 +24,7 @@ except Exception:  # Pillow 是界面抗锯齿增强；缺失时回退到 Tk 原
     Image = ImageDraw = ImageFilter = ImageTk = None  # type: ignore[assignment]
 
 from . import __version__
-from .bilibili import normalize_room_id
+from .bilibili import BilibiliClient, normalize_room_id
 from .config import APP_DIR, DEFAULT_ROOM_ID, MAX_CHECK_INTERVAL, MAX_WATCH_THREADS, MIN_CHECK_INTERVAL, AccountProfile, AppConfig, load_config, parse_task_ids, sanitize_config, save_config
 from .cookie_capture import capture_bilibili_cookie, open_bilibili_login_page
 from .notifier import send_notification
@@ -33,6 +36,8 @@ from .sponsor import (
     SponsorOrder,
     SponsorOrderStatus,
     SponsorUnavailable,
+    create_checkout_intent_id,
+    load_or_create_install_id,
     normalize_amount,
 )
 from .watcher import LiveWatcher, WatchWorkerStatus
@@ -40,7 +45,11 @@ from .multi_account import MultiAccountWatcher, build_account_options, find_dupl
 
 
 SOURCE_URL = "https://github.com/taocihei/overwatch-bilibili-drops-guard"
-SPONSOR_ORDER_CACHE_TTL_SECONDS = 12 * 60
+SPONSOR_ORDER_CACHE_TTL_SECONDS = 100 * 60
+SPONSOR_ORDER_CACHE_PATH = APP_DIR / "sponsor-orders.json"
+SPONSOR_INSTALL_ID_PATH = APP_DIR / "sponsor-install-id"
+SPONSOR_ORDER_CACHE_MAX_BYTES = 1024 * 1024
+SPONSOR_ORDER_CACHE_EXPIRY_GUARD_SECONDS = 30
 APP_BG = "#eef3f9"
 SURFACE = "#ffffff"
 GLASS = "#fbfdff"
@@ -83,6 +92,8 @@ def _backend_network_label(rows: list[WatchWorkerStatus], server_rate: float | N
         return "异常"
     if "重连中" in states:
         return "会话重建中"
+    if "重试中" in states:
+        return "心跳重试中"
     if any("等待" in state for state in states):
         return "等待开播"
     accepted = sum(1 for row in rows if row.state == "正常")
@@ -626,6 +637,7 @@ class AppDialog(tk.Toplevel):
         height: int,
         on_close: Callable[[], None] | None = None,
         modal: bool = False,
+        show_title: bool = True,
     ) -> None:
         super().__init__(parent)
         self.withdraw()
@@ -636,6 +648,7 @@ class AppDialog(tk.Toplevel):
         self._modal = modal
         self._drag_offset = (0, 0)
         self._closing = False
+        self._topmost_release_job: str | None = None
 
         self.overrideredirect(True)
         self.configure(bg=PANEL_SHADOW)
@@ -654,7 +667,15 @@ class AppDialog(tk.Toplevel):
         )
         shell.pack(fill="both", expand=True)
 
-        self.titlebar = tk.Frame(shell, bg=SURFACE, height=48, cursor="fleur", highlightthickness=0, borderwidth=0)
+        titlebar_height = 44 if show_title else 38
+        self.titlebar = tk.Frame(
+            shell,
+            bg=SURFACE,
+            height=titlebar_height,
+            cursor="fleur",
+            highlightthickness=0,
+            borderwidth=0,
+        )
         self.titlebar.pack(fill="x")
         self.titlebar.pack_propagate(False)
         self.titlebar.columnconfigure(0, weight=1)
@@ -666,7 +687,8 @@ class AppDialog(tk.Toplevel):
             font=("Microsoft YaHei UI", 11, "bold"),
             cursor="fleur",
         )
-        self.title_label.grid(row=0, column=0, sticky="w", padx=(18, 8), pady=13)
+        if show_title:
+            self.title_label.grid(row=0, column=0, sticky="w", padx=(18, 8), pady=11)
         self.close_button = tk.Label(
             self.titlebar,
             text="×",
@@ -691,6 +713,7 @@ class AppDialog(tk.Toplevel):
         self.close_button.bind("<Enter>", lambda _event: self.close_button.configure(bg=DANGER_BG, fg=DANGER))
         self.close_button.bind("<Leave>", lambda _event: self.close_button.configure(bg=SURFACE, fg=MUTED))
         self.bind("<Escape>", lambda _event: self.request_close())
+        self.bind("<ButtonPress-1>", self._activate_from_pointer, add="+")
         self.protocol("WM_DELETE_WINDOW", self.request_close)
         self.geometry(f"{width}x{height}")
         self.after_idle(self._show_centered)
@@ -715,14 +738,69 @@ class AppDialog(tk.Toplevel):
         # 不用主屏幕坐标截断。Windows 多显示器会使副屏的合法坐标为
         # 负数或大于主屏宽度；截断后反而会把弹窗甩到其他屏幕边缘。
         self.geometry(f"{self._dialog_width}x{self._dialog_height}{x:+d}{y:+d}")
-        self.deiconify()
-        self.lift()
-        self.focus_force()
+        self.bring_to_front()
         if self._modal:
             try:
                 self.grab_set()
             except tk.TclError:
                 pass
+
+    def bring_to_front(self, *, focus: bool = True) -> None:
+        """激活无边框窗口，并用短暂置顶绕过 Windows 的 Z 序限制。"""
+
+        if not self.winfo_exists():
+            return
+        self.deiconify()
+        self.lift()
+        try:
+            self.attributes("-topmost", True)
+        except tk.TclError:
+            pass
+        if focus:
+            try:
+                self.focus_force()
+            except tk.TclError:
+                pass
+        if self._topmost_release_job is not None:
+            try:
+                self.after_cancel(self._topmost_release_job)
+            except tk.TclError:
+                pass
+        self._topmost_release_job = self.after(120, self._release_temporary_topmost)
+
+    def _release_temporary_topmost(self) -> None:
+        self._topmost_release_job = None
+        if not self.winfo_exists():
+            return
+        try:
+            self.attributes("-topmost", False)
+            self.lift()
+        except tk.TclError:
+            pass
+
+    def _activate_from_pointer(self, event: tk.Event) -> None:
+        # overrideredirect 窗口在 Windows 上不会稳定地随鼠标点击进入前台。
+        widget = getattr(event, "widget", None)
+        is_text_input = isinstance(
+            widget,
+            (tk.Entry, tk.Text, ttk.Entry, ttk.Combobox),
+        )
+        self.bring_to_front(focus=not is_text_input)
+        if is_text_input:
+            try:
+                self.after_idle(lambda target=widget: self._focus_text_input(target))
+            except tk.TclError:
+                pass
+
+    def _focus_text_input(self, widget: tk.Misc) -> None:
+        if not self.winfo_exists():
+            return
+        try:
+            if widget.winfo_exists() and widget.winfo_toplevel() is self:
+                self.lift()
+                widget.focus_force()
+        except tk.TclError:
+            pass
 
     def _begin_move(self, event: tk.Event) -> None:
         self._drag_offset = (event.x_root - self.winfo_x(), event.y_root - self.winfo_y())
@@ -965,12 +1043,13 @@ class WatchStatusCard(tk.Frame):
         "计时中": "#f59e0b",
         "启动中": "#f59e0b",
         "重连中": "#f59e0b",
+        "重试中": "#f59e0b",
         "等待开播": MUTED,
         "暂时失败": DANGER,
     }
     STATE_LABELS = (
         ("正常", SUCCESS),
-        ("启动/重连", "#f59e0b"),
+        ("启动/重试", "#f59e0b"),
         ("等待", MUTED),
         ("失败", DANGER),
     )
@@ -979,6 +1058,7 @@ class WatchStatusCard(tk.Frame):
         "计时中": "warning",
         "启动中": "warning",
         "重连中": "warning",
+        "重试中": "warning",
         "等待开播": "muted",
         "暂时失败": "danger",
     }
@@ -1022,7 +1102,7 @@ class WatchStatusCard(tk.Frame):
     def show_detail_window(self) -> tk.Toplevel:
         if self._detail_window is not None and self._detail_window.winfo_exists():
             if isinstance(self._detail_window, AppDialog):
-                self._detail_window._show_centered()
+                self._detail_window.bring_to_front()
             else:
                 self._detail_window.lift()
                 self._detail_window.focus_set()
@@ -1335,7 +1415,22 @@ def build_notice_dialog(
 
 class App(tk.Tk):
     def __init__(self, *, preview_mode: bool = False) -> None:
-        super().__init__()
+        # Windows 上杀毒/索引服务偶尔会让 Tcl 在启动瞬间把实际存在的 *.tcl 文件
+        # 报成“no such file”。只重试这种引导阶段 I/O 错误，其他 Tcl 错误仍原样抛出。
+        for attempt in range(3):
+            try:
+                super().__init__()
+                break
+            except tk.TclError as exc:
+                message = str(exc).lower()
+                transient_bootstrap_error = (
+                    "can't find a usable" in message
+                    or "couldn't read file" in message
+                    or "tcl_findlibrary" in message
+                )
+                if not transient_bootstrap_error or attempt >= 2:
+                    raise
+                time.sleep(0.05 * (attempt + 1))
         self.title(f"守望先锋 B 站直播挂宝 v{__version__}")
         self.geometry("1280x840")
         self.minsize(1080, 660)
@@ -1364,14 +1459,32 @@ class App(tk.Tk):
         self._sponsor_client: SponsorClient | None = None
         self._sponsor_http_client: SponsorClient | None = None
         self._sponsor_warm_ready = threading.Event()
+        self._sponsor_prefetch_ready = threading.Event()
         self._sponsor_warm_started = False
         self._sponsor_order_cache: dict[
             str, tuple[float, SponsorClient, SponsorOrder, bytes]
         ] = {}
+        self._sponsor_cache_lock = threading.RLock()
+        self._sponsor_order_inflight: dict[str, threading.Event] = {}
+        self._sponsor_order_errors: dict[str, SponsorError] = {}
+        self._sponsor_install_id = (
+            "desktop-preview-install"
+            if self.preview_mode
+            else load_or_create_install_id(SPONSOR_INSTALL_ID_PATH)
+        )
+        self._sponsor_checkout_intent_id = create_checkout_intent_id()
+        if not self.preview_mode:
+            self._load_persistent_sponsor_order_cache()
         self._sponsor_poll_job: str | None = None
+        self._sponsor_custom_job: str | None = None
         self._sponsor_generation = 0
         self._sponsor_loading = False
         self._sponsor_success_shown = False
+        self._sponsor_group_revealed = False
+        self._sponsor_auto_refresh_attempts = 0
+        if not self.preview_mode:
+            # 与界面构建并行预热 HTTPS，用户打开赞助窗口时通常已完成握手。
+            self._warm_sponsor_service()
 
         self.cookie_var = tk.StringVar(value=self.config_data.cookie)
         self.selected_account_var = tk.StringVar(value=self.config_data.account_name)
@@ -1395,6 +1508,8 @@ class App(tk.Tk):
         self.task_id_status_var = tk.StringVar(value="任务 ID：按直播间自动获取")
         self.credential_status_var = tk.StringVar(value=f"凭据：{'已填写' if self.config_data.cookie else '未填写'}")
         self.cookie_validation_var = tk.StringVar(value=f"Cookie {'未填写' if not self.config_data.cookie else '已填写'}")
+        self._cookie_validation_generation = 0
+        self._cookie_validation_cookie = ""
         self.elapsed_status_var = tk.StringVar(value="计时：未开始")
         self.reward_status_var = tk.StringVar(value="领奖：未开始")
         self.status_hint_var = tk.StringVar(value="点击「开始挂宝」启动")
@@ -1418,8 +1533,7 @@ class App(tk.Tk):
         self._build_ui()
         if self.preview_mode:
             self._sponsor_warm_ready.set()
-        else:
-            self.after(400, self._warm_sponsor_service)
+            self._sponsor_prefetch_ready.set()
         self.after(1000, self._poll_watch_status)
         self.after(100, self._clear_initial_focus)
         self.after(200, self._drain_logs)
@@ -1744,7 +1858,7 @@ class App(tk.Tk):
         self.save_account_button.grid(row=0, column=0, sticky="ew", padx=(0, 8))
         self.cancel_account_button = LabelButton(cookie_actions, "取消修改", self._cancel_account_edit, fill=SECONDARY, foreground=TEXT, active_fill=SECONDARY_ACTIVE, height=34, font=("Microsoft YaHei UI", 9, "bold"), radius=11, outline=SUBTLE_OUTLINE)
         self.cancel_account_button.grid(row=0, column=1, sticky="ew", padx=(0, 8))
-        LabelButton(cookie_actions, "验证", self._validate_cookie_text, fill=GLASS, foreground=MUTED, active_fill=SECONDARY_ACTIVE, height=34, width=58, font=("Microsoft YaHei UI", 8, "bold"), radius=11, outline="").grid(row=0, column=2, sticky="e", padx=(0, 4))
+        LabelButton(cookie_actions, "B站验证", self._validate_cookie_text, fill=GLASS, foreground=MUTED, active_fill=SECONDARY_ACTIVE, height=34, width=70, font=("Microsoft YaHei UI", 8, "bold"), radius=11, outline="").grid(row=0, column=2, sticky="e", padx=(0, 4))
         LabelButton(cookie_actions, "清空", self._clear_cookie_text, fill=GLASS, foreground=MUTED, active_fill=SECONDARY_ACTIVE, height=34, width=58, font=("Microsoft YaHei UI", 8, "bold"), radius=11, outline="").grid(row=0, column=3, sticky="e")
         self._refresh_account_editor_actions()
 
@@ -1902,7 +2016,7 @@ class App(tk.Tk):
         room_entry.grid(row=0, column=0, sticky="ew")
 
         ttk.Label(card, text="检查间隔（秒）", style="Body.TLabel").grid(row=4, column=0, sticky="w")
-        ttk.Label(card, text=f"观看连接数 (最多 {MAX_WATCH_THREADS})", style="Body.TLabel").grid(row=4, column=1, sticky="w", padx=(14, 0))
+        ttk.Label(card, text=f"观看线程数 (最多 {MAX_WATCH_THREADS})", style="Body.TLabel").grid(row=4, column=1, sticky="w", padx=(14, 0))
 
         NumberInput(card, self.interval_var, minimum=MIN_CHECK_INTERVAL, maximum=MAX_CHECK_INTERVAL).grid(row=5, column=0, sticky="ew", pady=(6, 6))
         NumberInput(card, self.watch_threads_var, minimum=1, maximum=MAX_WATCH_THREADS).grid(row=5, column=1, sticky="ew", padx=(14, 0), pady=(6, 6))
@@ -2305,8 +2419,9 @@ class App(tk.Tk):
         controls.columnconfigure(0, weight=1, minsize=118)
         controls.columnconfigure(1, weight=0, minsize=128)
         controls.columnconfigure(2, weight=0, minsize=88)
-        controls.columnconfigure(3, weight=0, minsize=216)
-        controls.columnconfigure(4, weight=0, minsize=92)
+        # 右侧运行状态已经在下方“运行状态”卡片中完整呈现。执行栏不再重复
+        # 放置“状态 / 未运行”，既减少信息重复，也为默认窗口宽度释放空间。
+        controls.columnconfigure(3, weight=1, minsize=216)
         controls.rowconfigure(0, minsize=22)
         controls.rowconfigure(1, minsize=42)
 
@@ -2317,10 +2432,9 @@ class App(tk.Tk):
         tk.Label(intro, text="启动、领奖与连接设置", bg=GLASS, fg=MUTED, font=("Microsoft YaHei UI", 8)).pack(anchor="w", pady=(3, 0))
 
         label_font = ("Microsoft YaHei UI", 8, "bold")
-        tk.Label(controls, text="观看连接", bg=GLASS, fg=MUTED, font=label_font).grid(row=0, column=1, sticky="sw", padx=(0, 12), pady=(0, 4))
+        tk.Label(controls, text="观看线程", bg=GLASS, fg=MUTED, font=label_font).grid(row=0, column=1, sticky="sw", padx=(0, 12), pady=(0, 4))
         tk.Label(controls, text="自动领取", bg=GLASS, fg=MUTED, font=label_font).grid(row=0, column=2, sticky="sw", padx=(0, 12), pady=(0, 4))
         tk.Label(controls, text="操作", bg=GLASS, fg=MUTED, font=label_font).grid(row=0, column=3, sticky="sw", padx=(0, 12), pady=(0, 4))
-        tk.Label(controls, text="状态", bg=GLASS, fg=MUTED, font=label_font).grid(row=0, column=4, sticky="sw", pady=(0, 4))
 
         NumberInput(
             controls,
@@ -2371,25 +2485,6 @@ class App(tk.Tk):
             radius=12,
             outline=SUBTLE_OUTLINE,
         ).pack(side="left")
-
-        status_card = RoundedPanel(
-            controls,
-            fill=FIELD_BG,
-            background=GLASS,
-            radius=13,
-            padding=(10, 5),
-            min_height=40,
-            outline=SUBTLE_OUTLINE,
-            shadow=False,
-            auto_height=False,
-        )
-        self.status_card = status_card
-        status_card.configure(width=92)
-        status_card.grid(row=1, column=4, sticky="w")
-        status_inner = status_card.inner
-        status_inner.columnconfigure(1, weight=1)
-        self._status_dot(status_inner, color=FAINT, background=FIELD_BG, size=7).grid(row=0, column=0, sticky="w", padx=(0, 7))
-        tk.Label(status_inner, textvariable=self.status_var, bg=FIELD_BG, fg=TEXT, font=("Microsoft YaHei UI", 8, "bold")).grid(row=0, column=1, sticky="w")
 
     def _build_monitor_workspace(self, parent: ttk.Frame) -> None:
         parent.columnconfigure(0, weight=1)
@@ -2904,11 +2999,20 @@ class App(tk.Tk):
         content = self.cookie_text.get("1.0", "end").strip()
         if content:
             self.cookie_empty_label.place_forget()
-            if hasattr(self, "cookie_validation_var") and self.cookie_validation_var.get() in {"Cookie 未验证", "Cookie 未填写", "Cookie 待验证"}:
-                self.cookie_validation_var.set("Cookie 已填写")
+            if hasattr(self, "cookie_validation_var"):
+                validation_snapshot = getattr(self, "_cookie_validation_cookie", "")
+                if validation_snapshot and content != validation_snapshot:
+                    self._cookie_validation_generation = getattr(self, "_cookie_validation_generation", 0) + 1
+                    self._cookie_validation_cookie = ""
+                    self.cookie_validation_var.set("Cookie 待验证")
+                elif self.cookie_validation_var.get() in {"Cookie 未验证", "Cookie 未填写"}:
+                    self.cookie_validation_var.set("Cookie 已填写")
         else:
             self.cookie_empty_label.place(relx=0.5, rely=0.5, anchor="center")
             if hasattr(self, "cookie_validation_var"):
+                if getattr(self, "_cookie_validation_cookie", ""):
+                    self._cookie_validation_generation = getattr(self, "_cookie_validation_generation", 0) + 1
+                    self._cookie_validation_cookie = ""
                 self.cookie_validation_var.set("Cookie 未填写")
 
     def _refresh_backend_summary(self, snapshot: list[WatchWorkerStatus] | None = None) -> None:
@@ -2967,13 +3071,9 @@ class App(tk.Tk):
             if narrow:
                 self.execution_intro.grid_remove()
                 self.controls.columnconfigure(0, minsize=0)
-                self.controls.columnconfigure(4, minsize=0)
-                self.status_card.grid_remove()
             else:
                 self.execution_intro.grid()
                 self.controls.columnconfigure(0, minsize=118)
-                self.controls.columnconfigure(4, minsize=92)
-                self.status_card.grid()
         if compact == self._compact_layout:
             return
         self._compact_layout = compact
@@ -3066,49 +3166,385 @@ class App(tk.Tk):
         self.clipboard_append(SOURCE_URL)
         self._log("开源地址已复制")
 
+    @staticmethod
+    def _sponsor_cache_lifetime_seconds(order: SponsorOrder) -> float:
+        provider_lifetime = int(order.expires_in_seconds or 0)
+        if provider_lifetime <= 0:
+            return float(SPONSOR_ORDER_CACHE_TTL_SECONDS)
+        return float(
+            min(
+                SPONSOR_ORDER_CACHE_TTL_SECONDS,
+                max(0, provider_lifetime - SPONSOR_ORDER_CACHE_EXPIRY_GUARD_SECONDS),
+            )
+        )
+
+    @staticmethod
+    def _sponsor_order_has_expired(order: SponsorOrder, now: float | None = None) -> bool:
+        """Reject a cached QR by its absolute provider deadline, not only cache age."""
+
+        expires_at = str(order.expires_at or "").strip()
+        if not expires_at:
+            return False
+        try:
+            deadline = datetime.fromisoformat(expires_at.replace("Z", "+00:00")).timestamp()
+        except (TypeError, ValueError, OverflowError):
+            return False
+        current = time.time() if now is None else now
+        return deadline <= current + SPONSOR_ORDER_CACHE_EXPIRY_GUARD_SECONDS
+
+    def _load_persistent_sponsor_order_cache(self) -> None:
+        """Load still-valid QR orders so the first dialog paint does not wait on HTTPS."""
+
+        try:
+            if not SPONSOR_ORDER_CACHE_PATH.exists():
+                return
+            if SPONSOR_ORDER_CACHE_PATH.stat().st_size > SPONSOR_ORDER_CACHE_MAX_BYTES:
+                return
+            payload = json.loads(SPONSOR_ORDER_CACHE_PATH.read_text(encoding="utf-8"))
+            records = payload.get("orders", {}) if isinstance(payload, dict) else {}
+            if not isinstance(records, dict):
+                return
+            client = SponsorClient.from_environment()
+        except (OSError, ValueError, SponsorError):
+            return
+
+        now = time.time()
+        loaded: dict[str, tuple[float, SponsorClient, SponsorOrder, bytes]] = {}
+        for raw_amount, raw_record in records.items():
+            if not isinstance(raw_record, dict):
+                continue
+            try:
+                amount = f"{normalize_amount(str(raw_amount)):.2f}"
+                saved_at = float(raw_record.get("saved_at") or 0)
+                expires_at = str(raw_record.get("expires_at") or "").strip()
+                expires_in_seconds = int(raw_record.get("expires_in_seconds") or 0)
+                order_id = str(raw_record.get("order_id") or "").strip()
+                qr_encoded = str(raw_record.get("qr_png") or "")
+                qr_data = base64.b64decode(qr_encoded, validate=True)
+                cached_base_url = str(raw_record.get("base_url") or "").rstrip("/")
+            except (ValueError, TypeError, SponsorError):
+                continue
+            if cached_base_url != client.base_url:
+                continue
+            if not re.fullmatch(r"[A-Za-z0-9_-]{8,128}", order_id):
+                continue
+            if not qr_data.startswith(b"\x89PNG\r\n\x1a\n") or len(qr_data) > 512 * 1024:
+                continue
+            order = SponsorOrder(
+                order_id=order_id,
+                expires_at=expires_at,
+                expires_in_seconds=expires_in_seconds,
+            )
+            cache_age = now - saved_at
+            if (
+                saved_at <= 0
+                or cache_age < 0
+                or cache_age >= self._sponsor_cache_lifetime_seconds(order)
+                or self._sponsor_order_has_expired(order, now)
+            ):
+                continue
+            loaded[amount] = (
+                saved_at,
+                client,
+                order,
+                qr_data,
+            )
+
+        with self._sponsor_cache_lock:
+            self._sponsor_order_cache.update(loaded)
+        if loaded:
+            self._sponsor_http_client = client
+
+    def _persist_sponsor_order_cache(self) -> None:
+        now = time.time()
+        records: dict[str, dict[str, object]] = {}
+        with self._sponsor_cache_lock:
+            snapshot = tuple(self._sponsor_order_cache.items())
+            for amount, (saved_at, client, order, qr_data) in snapshot:
+                cache_age = now - saved_at
+                if (
+                    cache_age < 0
+                    or cache_age >= self._sponsor_cache_lifetime_seconds(order)
+                    or self._sponsor_order_has_expired(order, now)
+                ):
+                    continue
+                records[amount] = {
+                    "saved_at": saved_at,
+                    "base_url": client.base_url,
+                    "order_id": order.order_id,
+                    "expires_at": order.expires_at,
+                    "expires_in_seconds": order.expires_in_seconds,
+                    "qr_png": base64.b64encode(qr_data).decode("ascii"),
+                }
+            payload = json.dumps(
+                {"version": 1, "orders": records},
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+            try:
+                APP_DIR.mkdir(parents=True, exist_ok=True)
+                temporary_path = SPONSOR_ORDER_CACHE_PATH.with_suffix(".tmp")
+                temporary_path.write_text(payload, encoding="utf-8")
+                os.replace(temporary_path, SPONSOR_ORDER_CACHE_PATH)
+            except OSError:
+                return
+
+    def _cache_sponsor_order(
+        self,
+        amount: str,
+        client: SponsorClient,
+        order: SponsorOrder,
+        qr_data: bytes,
+    ) -> None:
+        with self._sponsor_cache_lock:
+            self._sponsor_order_cache[amount] = (
+                time.time(),
+                client,
+                order,
+                qr_data,
+            )
+        self._persist_sponsor_order_cache()
+
+    def _remove_cached_sponsor_order(self, amount: str) -> None:
+        with self._sponsor_cache_lock:
+            self._sponsor_order_cache.pop(amount, None)
+        self._persist_sponsor_order_cache()
+
     def _warm_sponsor_service(self) -> None:
-        """在用户打开赞助窗口前唤醒服务，并保留连接供下单复用。"""
+        """Prefetch the default amount first, then the remaining presets."""
 
         if self.preview_mode or self._sponsor_warm_started:
             return
         self._sponsor_warm_started = True
 
+        preset_amounts = ["10.00"] + [
+            f"{amount:.2f}"
+            for amount in SPONSOR_PRESET_AMOUNTS
+            if f"{amount:.2f}" != "10.00"
+        ]
         def warm_up() -> None:
-            try:
-                client = SponsorClient.from_environment()
-                client.warm_up()
-                self._sponsor_http_client = client
-            except SponsorError:
-                self._sponsor_http_client = None
-            finally:
+            intent_id = self._sponsor_checkout_intent_id
+            claimed: dict[str, threading.Event] = {}
+            waiters: dict[str, threading.Event] = {}
+            for amount in preset_amounts:
+                if self._cached_sponsor_order(amount) is not None:
+                    continue
+                with self._sponsor_cache_lock:
+                    inflight = self._sponsor_order_inflight.get(amount)
+                    if inflight is None:
+                        inflight = threading.Event()
+                        self._sponsor_order_inflight[amount] = inflight
+                        self._sponsor_order_errors.pop(amount, None)
+                        claimed[amount] = inflight
+                    else:
+                        waiters[amount] = inflight
+
+            workers: list[threading.Thread] = []
+
+            def prefetch_one(amount: str, inflight: threading.Event) -> None:
+                error: SponsorError | None = None
+                try:
+                    if self._cached_sponsor_order(amount) is None:
+                        self._create_sponsor_order_network(amount, intent_id=intent_id)
+                except SponsorError as exc:
+                    error = exc
+                finally:
+                    self._complete_sponsor_order_inflight(amount, inflight, error)
+                    if amount == "10.00":
+                        # The sponsor dialog defaults to ¥10.  Do not make it
+                        # wait for the slowest of the other four provider calls.
+                        self._sponsor_warm_ready.set()
+
+            default_inflight = claimed.pop("10.00", None)
+            if default_inflight is not None:
+                default_worker = threading.Thread(
+                    target=lambda: prefetch_one("10.00", default_inflight),
+                    name="SponsorPrefetch-10.00",
+                    daemon=True,
+                )
+                workers.append(default_worker)
+                default_worker.start()
+            elif self._cached_sponsor_order("10.00") is not None:
                 self._sponsor_warm_ready.set()
 
+            def prefetch_remaining() -> None:
+                if not claimed:
+                    return
+                batch_error: SponsorError | None = None
+                try:
+                    client = SponsorClient.from_environment()
+                    batch = client.reserve_orders(
+                        tuple(claimed),
+                        app_version=__version__,
+                        install_id=self._sponsor_install_id,
+                        checkout_intent_id=intent_id,
+                    )
+                    orders = {order.amount: order for order in batch.orders}
+                    for amount, inflight in claimed.items():
+                        order = orders[amount]
+                        qr_data = client.download_order_qr(order)
+                        self._cache_sponsor_order(amount, client, order, qr_data)
+                        self._complete_sponsor_order_inflight(amount, inflight)
+                except SponsorError as exc:
+                    batch_error = exc
+                except Exception:
+                    batch_error = SponsorUnavailable("批量预留失败")
+
+                if batch_error is None:
+                    return
+                # 老服务或批量接口临时失败：其余金额各用独立 Session 并行回退。
+                fallback_threads: list[threading.Thread] = []
+                for amount, inflight in claimed.items():
+                    thread = threading.Thread(
+                        target=lambda value=amount, event=inflight: prefetch_one(value, event),
+                        name=f"SponsorPrefetch-{amount}",
+                        daemon=True,
+                    )
+                    fallback_threads.append(thread)
+                    thread.start()
+                for thread in fallback_threads:
+                    thread.join()
+
+            if claimed:
+                remaining_worker = threading.Thread(
+                    target=prefetch_remaining,
+                    name="SponsorPrefetch-Presets",
+                    daemon=True,
+                )
+                workers.append(remaining_worker)
+                remaining_worker.start()
+
+            for worker in workers:
+                worker.join()
+
+            for amount, inflight in waiters.items():
+                inflight.wait(45.0)
+                if amount == "10.00":
+                    self._sponsor_warm_ready.set()
+            self._sponsor_warm_ready.set()
+            self._sponsor_prefetch_ready.set()
+
         threading.Thread(target=warm_up, name="SponsorWarmup", daemon=True).start()
+
+    def _complete_sponsor_order_inflight(
+        self,
+        amount: str,
+        inflight: threading.Event,
+        error: SponsorError | None = None,
+    ) -> None:
+        with self._sponsor_cache_lock:
+            if error is not None:
+                self._sponsor_order_errors[amount] = error
+            if self._sponsor_order_inflight.get(amount) is inflight:
+                self._sponsor_order_inflight.pop(amount, None)
+            inflight.set()
+
+    def _create_sponsor_order_network(
+        self,
+        amount: str,
+        *,
+        intent_id: str,
+    ) -> tuple[SponsorClient, SponsorOrder, bytes]:
+        client = SponsorClient.from_environment()
+        for attempt in range(3):
+            try:
+                order = client.create_order(
+                    amount,
+                    app_version=__version__,
+                    install_id=self._sponsor_install_id,
+                    checkout_intent_id=intent_id,
+                )
+                qr_data = client.download_order_qr(order)
+                self._cache_sponsor_order(amount, client, order, qr_data)
+                return client, order, qr_data
+            except SponsorUnavailable:
+                if attempt < 2:
+                    time.sleep(0.6 * (attempt + 1))
+                    continue
+                raise
+        raise SponsorUnavailable("支付订单生成失败，请稍后重试")
+
+    def _get_or_create_sponsor_order(
+        self,
+        amount: str,
+    ) -> tuple[SponsorClient, SponsorOrder, bytes]:
+        """Return a cached order or singleflight one network request per amount."""
+
+        cached = self._cached_sponsor_order(amount)
+        if cached is not None:
+            return cached
+
+        with self._sponsor_cache_lock:
+            inflight = self._sponsor_order_inflight.get(amount)
+            if inflight is None:
+                inflight = threading.Event()
+                self._sponsor_order_inflight[amount] = inflight
+                self._sponsor_order_errors.pop(amount, None)
+                leader = True
+            else:
+                leader = False
+
+        if not leader:
+            if not inflight.wait(45.0):
+                raise SponsorUnavailable("支付订单生成超时，请稍后重试")
+            cached = self._cached_sponsor_order(amount)
+            if cached is not None:
+                return cached
+            with self._sponsor_cache_lock:
+                error = self._sponsor_order_errors.get(amount)
+            if error is not None:
+                raise error
+            raise SponsorUnavailable("支付订单生成失败，请稍后重试")
+
+        error: SponsorError | None = None
+        try:
+            return self._create_sponsor_order_network(
+                amount,
+                intent_id=self._sponsor_checkout_intent_id,
+            )
+        except SponsorError as exc:
+            error = exc
+            raise
+        except Exception as exc:
+            error = SponsorUnavailable("二维码生成失败，请稍后重试")
+            raise error from exc
+        finally:
+            self._complete_sponsor_order_inflight(amount, inflight, error)
 
     def _cached_sponsor_order(
         self,
         amount: str,
     ) -> tuple[SponsorClient, SponsorOrder, bytes] | None:
-        cached = self._sponsor_order_cache.get(amount)
+        with self._sponsor_cache_lock:
+            cached = self._sponsor_order_cache.get(amount)
         if cached is None:
             return None
         created_at, client, order, qr_data = cached
-        if time.monotonic() - created_at >= SPONSOR_ORDER_CACHE_TTL_SECONDS:
-            self._sponsor_order_cache.pop(amount, None)
+        now = time.time()
+        cache_age = now - created_at
+        if (
+            cache_age < 0
+            or cache_age >= self._sponsor_cache_lifetime_seconds(order)
+            or self._sponsor_order_has_expired(order, now)
+        ):
+            self._remove_cached_sponsor_order(amount)
             return None
         return client, order, qr_data
 
     def _forget_current_sponsor_order(self) -> None:
         amount_var = getattr(self, "_sponsor_amount_var", None)
         if amount_var is not None:
-            self._sponsor_order_cache.pop(amount_var.get(), None)
+            self._remove_cached_sponsor_order(amount_var.get())
+
+    def _rotate_sponsor_checkout_intent(self) -> None:
+        self._sponsor_checkout_intent_id = create_checkout_intent_id()
 
     def _show_sponsor_dialog(self) -> tk.Toplevel:
         if self._sponsor_window is not None:
             try:
                 if self._sponsor_window.winfo_exists():
                     if isinstance(self._sponsor_window, AppDialog):
-                        self._sponsor_window._show_centered()
+                        self._sponsor_window.bring_to_front()
                     else:
                         self._sponsor_window.deiconify()
                         self._sponsor_window.lift()
@@ -3123,6 +3559,7 @@ class App(tk.Tk):
             width=560,
             height=720,
             on_close=self._close_sponsor_dialog,
+            show_title=False,
         )
         self._sponsor_window = top
         self._sponsor_generation += 1
@@ -3132,7 +3569,23 @@ class App(tk.Tk):
         self._sponsor_success_shown = False
         container = tk.Frame(top.content, bg=APP_BG, padx=26, pady=18)
         container.pack(fill="both", expand=True)
-        tk.Label(container, text="选择支持金额", bg=APP_BG, fg=TEXT, font=("Microsoft YaHei UI", 15, "bold")).pack(anchor="w")
+        sponsor_heading = tk.Frame(container, bg=APP_BG, highlightthickness=0, borderwidth=0)
+        sponsor_heading.pack(fill="x")
+        tk.Frame(
+            sponsor_heading,
+            bg=ACCENT,
+            width=3,
+            height=20,
+            highlightthickness=0,
+            borderwidth=0,
+        ).pack(side="left", padx=(0, 10))
+        tk.Label(
+            sponsor_heading,
+            text="支持作者",
+            bg=APP_BG,
+            fg=TEXT,
+            font=("Microsoft YaHei UI", 15, "bold"),
+        ).pack(side="left")
         tk.Label(
             container,
             text="选择金额后会自动刷新二维码 · 完全自愿，不解锁任何功能",
@@ -3229,19 +3682,18 @@ class App(tk.Tk):
             font=("Microsoft YaHei UI", 10),
         )
         self._sponsor_custom_entry.pack(side="left", fill="x", expand=True)
-        self._sponsor_custom_entry.bind("<Return>", lambda _event: self._confirm_custom_sponsor_amount())
-        LabelButton(
+        self._sponsor_custom_entry.bind("<Return>", self._submit_custom_sponsor_amount)
+        self._sponsor_custom_amount_var.trace_add(
+            "write",
+            self._schedule_custom_sponsor_amount,
+        )
+        tk.Label(
             self._sponsor_custom_frame,
-            "确认金额",
-            self._confirm_custom_sponsor_amount,
-            fill=ACCENT,
-            foreground="#ffffff",
-            active_fill=ACCENT_ACTIVE,
-            height=36,
-            width=96,
-            font=("Microsoft YaHei UI", 9, "bold"),
-            radius=10,
-        ).grid(row=0, column=2, sticky="e", padx=(10, 0))
+            text="停止输入后自动生成",
+            bg=SURFACE,
+            fg=MUTED,
+            font=("Microsoft YaHei UI", 8),
+        ).grid(row=1, column=1, sticky="w", pady=(5, 0))
 
         qr_panel = RoundedPanel(
             container,
@@ -3278,30 +3730,70 @@ class App(tk.Tk):
             justify="center",
         ).grid(row=1, column=0, sticky="ew")
 
-        self._sponsor_success_frame = tk.Frame(container, bg=SUCCESS, padx=14, pady=11)
+        self._sponsor_success_frame = RoundedPanel(
+            container,
+            fill=ACCENT_SOFT,
+            background=APP_BG,
+            radius=14,
+            padding=(14, 10),
+            min_height=54,
+            outline=ACCENT_BORDER,
+            shadow=False,
+            auto_height=True,
+        )
+        sponsor_group_row = tk.Frame(
+            self._sponsor_success_frame.inner,
+            bg=ACCENT_SOFT,
+            highlightthickness=0,
+            borderwidth=0,
+        )
+        sponsor_group_row.pack(fill="x")
         success_title = tk.Label(
-            self._sponsor_success_frame,
-            text=f"QQ群：{SPONSOR_QQ_GROUP}",
-            bg=SUCCESS,
-            fg="#ffffff",
-            font=("Microsoft YaHei UI", 12, "bold"),
+            sponsor_group_row,
+            text=f"交流群  {SPONSOR_QQ_GROUP}",
+            bg=ACCENT_SOFT,
+            fg=TEXT,
+            font=("Microsoft YaHei UI", 11, "bold"),
         )
         success_title.pack(side="left")
-        tk.Button(
-            self._sponsor_success_frame,
+        LabelButton(
+            sponsor_group_row,
             text="复制群号",
             command=self._copy_sponsor_group,
-            bg="#ffffff",
-            fg=SUCCESS_ACTIVE,
-            activebackground="#effcf5",
-            activeforeground=SUCCESS_ACTIVE,
-            relief="flat",
-            borderwidth=0,
-            padx=12,
-            pady=5,
-            cursor="hand2",
+            fill=SURFACE,
+            foreground=ACCENT,
+            active_fill=ACCENT_SOFT_ACTIVE,
+            outline=ACCENT_BORDER,
+            height=34,
+            width=88,
             font=("Microsoft YaHei UI", 9, "bold"),
         ).pack(side="right")
+
+        self._sponsor_group_prompt = tk.Frame(
+            container,
+            bg=APP_BG,
+            highlightthickness=0,
+            borderwidth=0,
+        )
+        self._sponsor_group_prompt.pack(pady=(10, 0))
+        tk.Label(
+            self._sponsor_group_prompt,
+            text="已经支持过？",
+            bg=APP_BG,
+            fg=MUTED,
+            font=("Microsoft YaHei UI", 9),
+        ).pack(side="left")
+        self._sponsor_group_button = FlatButton(
+            self._sponsor_group_prompt,
+            "查看交流群  →",
+            self._reveal_sponsor_group,
+            fill=APP_BG,
+            foreground=ACCENT,
+            active_fill=ACCENT_SOFT,
+            active_foreground=ACCENT_ACTIVE,
+            font=("Microsoft YaHei UI", 9, "bold"),
+        )
+        self._sponsor_group_button.pack(side="left", padx=(2, 0))
 
         self._sponsor_retry_button = PillButton(
             container,
@@ -3313,10 +3805,11 @@ class App(tk.Tk):
             outline=BUTTON_OUTLINE,
             height=38,
         )
-        top.after(160, self._start_sponsor_order)
+        self._start_sponsor_order()
         return top
 
     def _select_sponsor_amount(self, amount: str) -> None:
+        self._cancel_custom_sponsor_job()
         if amount == self._sponsor_amount_choice and self._sponsor_order is not None:
             return
         self._sponsor_amount_choice = amount
@@ -3325,7 +3818,8 @@ class App(tk.Tk):
             self._sponsor_generation += 1
             self._sponsor_order = None
             self._sponsor_client = None
-            self._sponsor_success_frame.pack_forget()
+            if not getattr(self, "_sponsor_group_revealed", False):
+                self._sponsor_success_frame.pack_forget()
             self._hide_sponsor_retry()
             if not self._sponsor_custom_frame.winfo_manager():
                 self._sponsor_custom_frame.pack(fill="x", pady=(12, 0))
@@ -3360,6 +3854,7 @@ class App(tk.Tk):
             )
 
     def _confirm_custom_sponsor_amount(self) -> None:
+        self._cancel_custom_sponsor_job()
         try:
             amount = normalize_amount(self._sponsor_custom_amount_var.get().strip())
         except SponsorError as exc:
@@ -3369,9 +3864,36 @@ class App(tk.Tk):
         normalized = f"{amount:.2f}"
         self._sponsor_amount_choice = "other"
         self._sponsor_amount_var.set(normalized)
-        self._sponsor_custom_amount_var.set(normalized.removesuffix(".00"))
         self._refresh_sponsor_amount_buttons()
         self._start_sponsor_order()
+
+    def _schedule_custom_sponsor_amount(self, *_args: object) -> None:
+        self._cancel_custom_sponsor_job()
+        if getattr(self, "_sponsor_amount_choice", "") != "other":
+            return
+        value = self._sponsor_custom_amount_var.get().strip()
+        if not value:
+            self._sponsor_status_var.set("请输入 1–9999 元，最多两位小数")
+            return
+        self._sponsor_status_var.set("输入完成后将自动生成二维码")
+        self._sponsor_custom_job = self.after(
+            500,
+            self._confirm_custom_sponsor_amount,
+        )
+
+    def _submit_custom_sponsor_amount(self, _event: tk.Event | None = None) -> str:
+        self._confirm_custom_sponsor_amount()
+        return "break"
+
+    def _cancel_custom_sponsor_job(self) -> None:
+        job = getattr(self, "_sponsor_custom_job", None)
+        if job is None:
+            return
+        try:
+            self.after_cancel(job)
+        except tk.TclError:
+            pass
+        self._sponsor_custom_job = None
 
     def _show_sponsor_retry(self, text: str = "重新获取二维码") -> None:
         self._sponsor_retry_button.set_appearance(
@@ -3387,36 +3909,32 @@ class App(tk.Tk):
         if self._sponsor_retry_button.winfo_manager():
             self._sponsor_retry_button.pack_forget()
 
-    def _start_sponsor_order(self) -> None:
+    def _start_sponsor_order(self, *, automatic_retry: bool = False) -> None:
         if not self._sponsor_dialog_exists():
             return
         self._cancel_sponsor_poll()
+        if not automatic_retry:
+            self._sponsor_auto_refresh_attempts = 0
         self._sponsor_loading = True
         self._sponsor_generation += 1
         generation = self._sponsor_generation
         amount = self._sponsor_amount_var.get()
         self._sponsor_order = None
         self._sponsor_success_shown = False
-        self._sponsor_success_frame.pack_forget()
+        if not getattr(self, "_sponsor_group_revealed", False):
+            self._sponsor_success_frame.pack_forget()
         self._hide_sponsor_retry()
         amount_label = amount.removesuffix(".00")
         cached = self._cached_sponsor_order(amount)
         if cached is not None:
             client, order, qr_data = cached
-            self._sponsor_status_var.set(f"正在确认 ¥{amount_label} 二维码状态…")
-            self._sponsor_qr_label.configure(
-                image="",
-                text=f"正在确认 ¥{amount_label} 二维码…",
-                fg=ACCENT,
-                width=28,
-                height=12,
-            )
-            self._verify_cached_sponsor_order(
+            self._finish_sponsor_order(
                 generation,
                 amount,
                 client,
                 order,
                 qr_data,
+                cache_result=False,
             )
             return
 
@@ -3437,30 +3955,21 @@ class App(tk.Tk):
         )
 
         def create_order() -> None:
-            last_error = "二维码生成失败，请稍后重试"
-            if self._sponsor_warm_started and not self._sponsor_warm_ready.is_set():
-                self._sponsor_warm_ready.wait(13.0)
-            client = self._sponsor_http_client
-            for attempt in range(3):
-                try:
-                    client = client or SponsorClient.from_environment()
-                    order = client.create_order(amount, app_version=__version__)
-                    qr_data = client.download_order_qr(order)
-                    break
-                except SponsorUnavailable as exc:
-                    last_error = str(exc)
-                    if attempt < 2:
-                        time.sleep(0.6 * (attempt + 1))
-                        continue
-                    self.after(0, lambda message=last_error: self._finish_sponsor_error(generation, message))
-                    return
-                except SponsorError as exc:
-                    message = str(exc)
-                    self.after(0, lambda message=message: self._finish_sponsor_error(generation, message))
-                    return
-                except Exception:
-                    self.after(0, lambda: self._finish_sponsor_error(generation, last_error))
-                    return
+            try:
+                client, order, qr_data = self._get_or_create_sponsor_order(amount)
+            except SponsorError as exc:
+                message = str(exc)
+                self.after(0, lambda: self._finish_sponsor_error(generation, message))
+                return
+            except Exception:
+                self.after(
+                    0,
+                    lambda: self._finish_sponsor_error(
+                        generation,
+                        "二维码生成失败，请稍后重试",
+                    ),
+                )
+                return
             self.after(
                 0,
                 lambda: self._finish_sponsor_order(
@@ -3469,78 +3978,11 @@ class App(tk.Tk):
                     client,
                     order,
                     qr_data,
+                    cache_result=False,
                 ),
             )
 
         threading.Thread(target=create_order, name="SponsorOrder", daemon=True).start()
-
-    def _verify_cached_sponsor_order(
-        self,
-        generation: int,
-        amount: str,
-        client: SponsorClient,
-        order: SponsorOrder,
-        qr_data: bytes,
-    ) -> None:
-        def verify_order() -> None:
-            try:
-                status = client.query_order(order.order_id)
-            except Exception:
-                self.after(
-                    0,
-                    lambda: self._finish_sponsor_error(
-                        generation,
-                        "订单状态确认失败，请重新获取二维码",
-                    ),
-                )
-                return
-            self.after(
-                0,
-                lambda: self._apply_cached_sponsor_order(
-                    generation,
-                    amount,
-                    client,
-                    order,
-                    qr_data,
-                    status,
-                ),
-            )
-
-        threading.Thread(
-            target=verify_order,
-            name="SponsorCacheCheck",
-            daemon=True,
-        ).start()
-
-    def _apply_cached_sponsor_order(
-        self,
-        generation: int,
-        amount: str,
-        client: SponsorClient,
-        order: SponsorOrder,
-        qr_data: bytes,
-        status: SponsorOrderStatus,
-    ) -> None:
-        if generation != self._sponsor_generation or not self._sponsor_dialog_exists():
-            return
-        if status.paid:
-            self._sponsor_client = client
-            self._sponsor_order = order
-            self._sponsor_loading = False
-            self._apply_sponsor_status(generation, status)
-            return
-        if status.terminal:
-            self._sponsor_order_cache.pop(amount, None)
-            self._start_sponsor_order()
-            return
-        self._finish_sponsor_order(
-            generation,
-            amount,
-            client,
-            order,
-            qr_data,
-            cache_result=False,
-        )
 
     def _finish_sponsor_order(
         self,
@@ -3569,12 +4011,7 @@ class App(tk.Tk):
         self._sponsor_client = client
         self._sponsor_order = order
         if cache_result:
-            self._sponsor_order_cache[amount] = (
-                time.monotonic(),
-                client,
-                order,
-                qr_data,
-            )
+            self._cache_sponsor_order(amount, client, order, qr_data)
         self._sponsor_loading = False
         suffix = f" · 有效至 {order.expires_at}" if order.expires_at else ""
         self._sponsor_status_var.set(f"请使用微信扫码支付，支付成功后自动显示群号{suffix}")
@@ -3584,6 +4021,10 @@ class App(tk.Tk):
         if generation != self._sponsor_generation or not self._sponsor_dialog_exists():
             return
         self._sponsor_loading = False
+        # A failed provider reservation is tied to the current checkout intent.
+        # Rotate it before the user clicks retry so a transient failure can
+        # never make this amount permanently unrecoverable.
+        self._rotate_sponsor_checkout_intent()
         self._sponsor_status_var.set(message)
         self._sponsor_qr_label.configure(image="", text="暂时无法生成二维码", fg=DANGER, width=28, height=12)
         self._show_sponsor_retry("重试获取二维码")
@@ -3602,14 +4043,20 @@ class App(tk.Tk):
         generation = self._sponsor_generation
 
         def query_order() -> None:
+            status_client: SponsorClient | None = None
             try:
-                status = client.query_order(order.order_id)
+                # 状态查询也不占用生成二维码时的 Session。
+                status_client = client.new_session_client()
+                status = status_client.query_order(order.order_id)
             except SponsorError:
                 self.after(0, lambda: self._schedule_sponsor_poll(10000))
                 return
             except Exception:
                 self.after(0, lambda: self._schedule_sponsor_poll(10000))
                 return
+            finally:
+                if status_client is not None:
+                    status_client.close()
             self.after(0, lambda: self._apply_sponsor_status(generation, status))
 
         threading.Thread(target=query_order, name="SponsorStatus", daemon=True).start()
@@ -3620,24 +4067,50 @@ class App(tk.Tk):
         if status.paid:
             self._cancel_sponsor_poll()
             self._forget_current_sponsor_order()
+            self._rotate_sponsor_checkout_intent()
             self._sponsor_status_var.set("付款成功，感谢支持")
             self._sponsor_qr_label.configure(image="", text="✓\n支付成功", fg=SUCCESS, width=28, height=12)
+            self._sponsor_group_revealed = True
+            self._sponsor_group_prompt.pack_forget()
             self._sponsor_success_frame.pack(fill="x", pady=(12, 0))
             self._hide_sponsor_retry()
             self._sponsor_success_shown = True
             return
         if status.state == "expired":
             self._forget_current_sponsor_order()
-            self._sponsor_status_var.set("二维码已过期，请重新生成")
-            self._show_sponsor_retry()
+            self._rotate_sponsor_checkout_intent()
+            if self._sponsor_auto_refresh_attempts < 1:
+                self._sponsor_auto_refresh_attempts += 1
+                self._sponsor_status_var.set("二维码已过期，正在自动刷新…")
+                self._start_sponsor_order(automatic_retry=True)
+            else:
+                self._sponsor_status_var.set("二维码已过期，请重新生成")
+                self._show_sponsor_retry()
             return
         if status.state == "closed":
             self._forget_current_sponsor_order()
-            self._sponsor_status_var.set("订单已关闭，请重新生成")
-            self._show_sponsor_retry()
+            self._rotate_sponsor_checkout_intent()
+            if self._sponsor_auto_refresh_attempts < 1:
+                self._sponsor_auto_refresh_attempts += 1
+                self._sponsor_status_var.set("订单已关闭，正在自动刷新…")
+                self._start_sponsor_order(automatic_retry=True)
+            else:
+                self._sponsor_status_var.set("订单已关闭，请重新生成")
+                self._show_sponsor_retry()
             return
         self._sponsor_status_var.set(status.message or "等待付款确认…")
         self._schedule_sponsor_poll(10000)
+
+    def _reveal_sponsor_group(self) -> None:
+        """信任用户自报赞助，直接展示交流群，不校验支付订单。"""
+
+        if not self._sponsor_dialog_exists():
+            return
+        self._sponsor_group_revealed = True
+        self._sponsor_group_prompt.pack_forget()
+        if not self._sponsor_success_frame.winfo_manager():
+            self._sponsor_success_frame.pack(fill="x", pady=(12, 0))
+        self._sponsor_status_var.set("群号已显示，可直接复制加入")
 
     def _copy_sponsor_group(self) -> None:
         self.clipboard_clear()
@@ -3662,6 +4135,7 @@ class App(tk.Tk):
 
     def _close_sponsor_dialog(self) -> None:
         self._sponsor_generation += 1
+        self._cancel_custom_sponsor_job()
         self._cancel_sponsor_poll()
         if self._sponsor_window is not None:
             try:
@@ -3672,6 +4146,8 @@ class App(tk.Tk):
         self._sponsor_order = None
         self._sponsor_client = None
         self._sponsor_loading = False
+        self._sponsor_group_revealed = False
+        self._rotate_sponsor_checkout_intent()
 
     def _focus_setup_area(self) -> None:
         if hasattr(self, "room_entry"):
@@ -3711,8 +4187,73 @@ class App(tk.Tk):
             self.cookie_validation_var.set("Cookie 缺少字段")
             self._show_notice("Cookie 不完整", "Cookie 缺少必要字段：\n" + "、".join(missing))
             return
-        self.cookie_validation_var.set("Cookie 格式正常")
-        self._log("Cookie 本地格式校验通过")
+        self._cookie_validation_generation = getattr(self, "_cookie_validation_generation", 0) + 1
+        generation = self._cookie_validation_generation
+        self._cookie_validation_cookie = cookie
+        self.cookie_validation_var.set("B站验证中…")
+        self._log("正在向 B 站验证 Cookie 登录状态")
+        threading.Thread(
+            target=self._validate_cookie_worker,
+            args=(cookie, generation),
+            name="BilibiliCookieValidation",
+            daemon=True,
+        ).start()
+
+    def _validate_cookie_worker(self, cookie: str, generation: int) -> None:
+        client: BilibiliClient | None = None
+        try:
+            client = BilibiliClient(cookie)
+            login = client.check_login()
+            payload = {
+                "generation": generation,
+                "logged_in": bool(login.logged_in),
+                "uname": login.uname,
+                "mid": login.mid,
+                "message": login.message,
+            }
+        except Exception as exc:
+            payload = {
+                "generation": generation,
+                "logged_in": False,
+                "uname": "",
+                "mid": 0,
+                "message": f"B 站登录状态检查失败：{exc}",
+            }
+        finally:
+            if client is not None:
+                try:
+                    client.close()
+                except Exception:
+                    pass
+        self.log_queue.put("__COOKIE_VERIFY__:" + json.dumps(payload, ensure_ascii=False))
+
+    def _apply_cookie_validation_result(self, payload: dict[str, object]) -> None:
+        try:
+            generation = int(payload.get("generation", -1))
+        except (TypeError, ValueError):
+            return
+        if generation != getattr(self, "_cookie_validation_generation", 0):
+            return
+        current_cookie = self.cookie_text.get("1.0", "end").strip()
+        if current_cookie != getattr(self, "_cookie_validation_cookie", ""):
+            self.cookie_validation_var.set("Cookie 已修改")
+            return
+
+        if bool(payload.get("logged_in")):
+            uname = str(payload.get("uname") or "未知账号")
+            try:
+                mid = int(payload.get("mid") or 0)
+            except (TypeError, ValueError):
+                mid = 0
+            account = f"{uname}（{mid}）" if mid else uname
+            self.cookie_validation_var.set("B站已登录")
+            self._log(f"B 站验证通过：{account}")
+            return
+
+        message = str(payload.get("message") or "Cookie 未登录或已过期")
+        self.cookie_validation_var.set("B站未登录")
+        self._log(f"B 站验证失败：{message}")
+        self._show_notice("B 站验证失败", message, kind="error")
 
     def _clear_log(self) -> None:
         view = self.log_view_var.get() if hasattr(self, "log_view_var") else "all"
@@ -4194,7 +4735,7 @@ class App(tk.Tk):
 
         config = self._save()
         if requested_watch_threads != config.watch_threads:
-            self._log(f"观看连接数已调整为 {config.watch_threads}，当前版本最多支持 {MAX_WATCH_THREADS} 路")
+            self._log(f"观看线程数已调整为 {config.watch_threads}，当前版本最多 {MAX_WATCH_THREADS} 路")
         if self.watcher and self.watcher.running:
             self._log("当前已经在运行")
             return
@@ -4205,12 +4746,6 @@ class App(tk.Tk):
         if not account_options:
             self._show_notice("没有可用账号", "请至少勾选一个已保存且含 Cookie 的账号。")
             return
-        total_threads = len(account_options) * config.watch_threads
-        if total_threads > 20:
-            self._log(
-                f"提示：当前共 {len(account_options)} 个账号 × 每账号 {config.watch_threads} 路 = {total_threads} 路，"
-                f"单 IP 下路数过多可能触发 B 站风控，必要时减少账号或每账号路数"
-            )
         if self.watcher:
             # 停掉上一个协调器（例如此前只点过“领取”而临时建的那个），避免线程泄漏
             self.watcher.stop()
@@ -4232,7 +4767,7 @@ class App(tk.Tk):
         self.reward_detail_var.set("任务完成后这里会显示可领取")
         start_message = (
             f"已启动 {len(account_options)} 个账号并行：房间 {config.room_id}，"
-            f"每账号 {config.watch_threads} 路，自动领奖={'开启' if config.auto_claim else '关闭'}"
+            f"每账号 {config.watch_threads} 路独立计时，自动领奖={'开启' if config.auto_claim else '关闭'}"
         )
         self._notify_from_message(start_message)
         self._log(start_message)
@@ -4804,6 +5339,16 @@ class App(tk.Tk):
                 message = self.log_queue.get_nowait()
             except queue.Empty:
                 break
+            if message.startswith("__COOKIE_VERIFY__:"):
+                try:
+                    payload = json.loads(message.removeprefix("__COOKIE_VERIFY__:"))
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    self.cookie_validation_var.set("B站验证失败")
+                    self._log("B 站验证失败：返回结果无法解析")
+                else:
+                    if isinstance(payload, dict):
+                        self._apply_cookie_validation_result(payload)
+                continue
             if message.startswith("__COOKIE__:"):
                 self.cookie_text.delete("1.0", "end")
                 self.cookie_text.insert("1.0", message.removeprefix("__COOKIE__:"))

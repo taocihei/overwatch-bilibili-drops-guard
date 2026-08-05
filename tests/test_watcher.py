@@ -82,7 +82,7 @@ class LiveWatcherTest(unittest.TestCase):
         self.assertEqual(next_state.play_url, "https://example.com/live.flv")
         self.assertEqual(next_state.qid, 4)
 
-    def test_live_watch_runs_both_credit_and_current_session_protocols(self) -> None:
+    def test_live_watch_matches_competitor_x25kn_lifecycle(self) -> None:
         calls: list[str] = []
 
         class FakeClient:
@@ -92,121 +92,105 @@ class LiveWatcherTest(unittest.TestCase):
 
             def enter_room_heartbeat(self, room: RoomInfo) -> dict[str, object]:
                 calls.append("X25_E")
-                return {"heartbeat_interval": 30, "timestamp": 100, "secret_key": "legacy", "secret_rule": [0]}
+                return {
+                    "heartbeat_interval": 30,
+                    "timestamp": 100,
+                    "secret_key": "legacy",
+                    "secret_rule": [0],
+                }
 
-            def in_room_heartbeat(
-                self,
-                room: RoomInfo,
-                sequence: int,
-                interval: int,
-                ets: int,
-                secret_key: str,
-                secret_rule: list[int],
-            ) -> dict[str, object]:
+            def in_room_heartbeat(self, *args, **kwargs) -> dict[str, object]:
                 calls.append("X25_X")
-                return {"heartbeat_interval": 30, "timestamp": 200, "secret_key": "legacy-2", "secret_rule": [1]}
+                return {
+                    "heartbeat_interval": 45,
+                    "timestamp": 200,
+                    "secret_key": "legacy-2",
+                    "secret_rule": [1],
+                }
 
-            def get_live_play_url(self, room: RoomInfo) -> str:
-                calls.append("PLAY")
-                return "https://example.com/live.flv"
+            def get_live_play_url(self, _room):
+                raise AssertionError("competitor route must not start the player protocol")
 
-            def start_live_watch_session(self, room: RoomInfo, play_url: str) -> dict[str, object]:
-                calls.append("TE9KL")
-                return {"hbil": 30, "sid": "sid-1", "stky": "key-1"}
+            def start_live_watch_session(self, *_args, **_kwargs):
+                raise AssertionError("competitor route must not call te9Kl")
 
-            def continue_live_watch_session(
-                self,
-                room: RoomInfo,
-                play_url: str,
-                qid: int,
-                session_id: str,
-                stky: str,
-            ) -> dict[str, object]:
-                calls.append("S82TQ")
-                return {"hbil": 45, "sid": "sid-2", "stky": "key-2"}
+            def continue_live_watch_session(self, *_args, **_kwargs):
+                raise AssertionError("competitor route must not call s82Tq")
 
         live_watcher = LiveWatcher(WatchOptions(cookie="a=b", room_id="1"), lambda _message: None)
         room = RoomInfo(room_id=23612045, live_status=1)
 
         state = live_watcher._start_heartbeat_session(FakeClient(), room, watcher.HeartbeatState())
-        state.official_next_due = 0
-        state.legacy_next_due = 0
-        next_state = live_watcher._continue_heartbeat_session(FakeClient(), room, 1, state)
-
-        self.assertEqual(calls, ["ENTRY", "X25_E", "PLAY", "TE9KL", "X25_X", "S82TQ"])
-        self.assertEqual(next_state.interval, 30)
-        self.assertEqual(next_state.qid, 2)
-
-    def test_dual_protocols_run_only_when_their_own_deadline_is_due(self) -> None:
-        calls: list[str] = []
-
-        class FakeClient:
-            def in_room_heartbeat(self, *_args, **_kwargs):
-                calls.append("legacy")
-                return {"heartbeat_interval": 60, "timestamp": 200, "secret_key": "next", "secret_rule": [1]}
-
-            def continue_live_watch_session(self, *_args, **_kwargs):
-                calls.append("official")
-                return {"hbil": 45, "sid": "sid-2", "stky": "key-2"}
-
-        live_watcher = LiveWatcher(WatchOptions(cookie="a=b", room_id="1"), lambda _message: None)
-        room = RoomInfo(room_id=1, live_status=1)
-        future = time.monotonic() + 300
-        state = watcher.HeartbeatState(
-            session_id="sid-1",
-            stky="key-1",
-            play_url="https://example.com/live.flv",
-            legacy_ets=100,
-            legacy_secret_key="legacy",
-            legacy_secret_rule=[0],
-            official_next_due=future,
-            legacy_next_due=0,
-        )
-
         next_state = live_watcher._continue_heartbeat_session(FakeClient(), room, state.qid, state)
 
-        self.assertEqual(calls, ["legacy"])
-        self.assertEqual(next_state.qid, 1)
+        self.assertEqual(calls, ["ENTRY", "X25_E", "X25_X"])
+        self.assertEqual(state.legacy_sequence, 1)
         self.assertEqual(next_state.legacy_sequence, 2)
-        self.assertEqual(next_state.official_next_due, future)
+        self.assertEqual(next_state.interval, 45)
 
-        calls.clear()
-        next_state.official_next_due = 0
-        next_state.legacy_next_due = time.monotonic() + 300
-        final_state = live_watcher._continue_heartbeat_session(FakeClient(), room, next_state.qid, next_state)
-
-        self.assertEqual(calls, ["official"])
-        self.assertEqual(final_state.qid, 2)
-        self.assertEqual(final_state.legacy_sequence, 2)
-
-    def test_due_current_heartbeat_is_still_attempted_when_legacy_rotation_is_invalid(self) -> None:
+    def test_room_entry_must_succeed_before_x25kn_enter(self) -> None:
         calls: list[str] = []
 
         class FakeClient:
-            def in_room_heartbeat(self, *_args, **_kwargs):
-                calls.append("legacy")
-                return {"heartbeat_interval": 60, "timestamp": 0, "secret_key": "", "secret_rule": []}
+            def room_entry_action(self, _room):
+                calls.append("ENTRY")
+                raise RuntimeError("entry rejected")
 
-            def continue_live_watch_session(self, *_args, **_kwargs):
-                calls.append("official")
-                return {"hbil": 60, "sid": "sid-2", "stky": "key-2"}
+            def enter_room_heartbeat(self, _room):
+                calls.append("X25_E")
+                return {}
 
         live_watcher = LiveWatcher(WatchOptions(cookie="a=b", room_id="1"), lambda _message: None)
+
+        with self.assertRaisesRegex(RuntimeError, "entry rejected"):
+            live_watcher._start_heartbeat_session(
+                FakeClient(), RoomInfo(room_id=1, live_status=1), watcher.HeartbeatState()
+            )
+
+        self.assertEqual(calls, ["ENTRY"])
+
+    def test_x25kn_failure_is_propagated_for_route_rebuild(self) -> None:
+        class FakeClient:
+            def in_room_heartbeat(self, *_args, **_kwargs):
+                raise RuntimeError("x25 rejected")
+
         state = watcher.HeartbeatState(
-            session_id="sid-1",
-            stky="key-1",
-            play_url="https://example.com/live.flv",
+            legacy_interval=60,
             legacy_ets=100,
             legacy_secret_key="legacy",
             legacy_secret_rule=[0],
-            official_next_due=0,
-            legacy_next_due=0,
+            legacy_sequence=1,
+        )
+        live_watcher = LiveWatcher(WatchOptions(cookie="a=b", room_id="1"), lambda _message: None)
+
+        with self.assertRaisesRegex(RuntimeError, "x25 rejected"):
+            live_watcher._continue_heartbeat_session(
+                FakeClient(), RoomInfo(room_id=1, live_status=1), state.qid, state
+            )
+
+    def test_x25kn_rotation_reuses_previous_fields_when_response_omits_them(self) -> None:
+        class FakeClient:
+            def in_room_heartbeat(self, *_args, **_kwargs):
+                return {"heartbeat_interval": 45}
+
+        state = watcher.HeartbeatState(
+            legacy_interval=60,
+            legacy_ets=100,
+            legacy_secret_key="legacy",
+            legacy_secret_rule=[2, 5],
+            legacy_sequence=4,
+        )
+        live_watcher = LiveWatcher(WatchOptions(cookie="a=b", room_id="1"), lambda _message: None)
+
+        next_state = live_watcher._continue_heartbeat_session(
+            FakeClient(), RoomInfo(room_id=1, live_status=1), state.qid, state
         )
 
-        with self.assertRaisesRegex(RuntimeError, "累计计时心跳"):
-            live_watcher._continue_heartbeat_session(FakeClient(), RoomInfo(room_id=1), 1, state)
-
-        self.assertEqual(calls, ["legacy", "official"])
+        self.assertEqual(next_state.legacy_interval, 45)
+        self.assertEqual(next_state.legacy_ets, 100)
+        self.assertEqual(next_state.legacy_secret_key, "legacy")
+        self.assertEqual(next_state.legacy_secret_rule, [2, 5])
+        self.assertEqual(next_state.legacy_sequence, 5)
 
     def test_claim_worker_uses_single_sequential_path(self) -> None:
         calls: list[tuple[int, str | None]] = []
@@ -838,14 +822,14 @@ class LiveWatcherTest(unittest.TestCase):
         self.assertIn("manual-activity", live_watcher._activity_task_ids)
         self.assertIn("manual-activity", live_watcher._claimable_task_ids)
 
-    def test_watch_start_delay_spreads_one_hundred_routes_over_fifteen_seconds(self) -> None:
+    def test_watch_start_delay_matches_competitor_one_route_per_second(self) -> None:
         live_watcher = LiveWatcher(WatchOptions(cookie="a=b", room_id="1"), lambda _m: None)
         self.assertEqual(live_watcher._watch_start_delay(1), 0.0)
-        self.assertAlmostEqual(live_watcher._watch_start_delay(5), 0.6)
-        self.assertAlmostEqual(live_watcher._watch_start_delay(10), 1.35)
-        self.assertAlmostEqual(live_watcher._watch_start_delay(11), 1.5)
-        self.assertAlmostEqual(live_watcher._watch_start_delay(42), 6.15)
-        self.assertAlmostEqual(live_watcher._watch_start_delay(100), 14.85)
+        self.assertEqual(live_watcher._watch_start_delay(5), 4.0)
+        self.assertEqual(live_watcher._watch_start_delay(10), 9.0)
+        self.assertEqual(live_watcher._watch_start_delay(11), 10.0)
+        self.assertEqual(live_watcher._watch_start_delay(42), 41.0)
+        self.assertEqual(live_watcher._watch_start_delay(100), 99.0)
 
     def test_heartbeat_count_appears_in_status_summary(self) -> None:
         live_watcher = LiveWatcher(WatchOptions(cookie="a=b", room_id="1", watch_threads=2), lambda _m: None)
@@ -867,8 +851,39 @@ class LiveWatcherTest(unittest.TestCase):
         summary, _normal, _problem = live_watcher._watch_status_summary_info()
 
         self.assertIn("40/40 心跳已接受", summary)
-        self.assertIn("目标 40x", summary)
+        self.assertIn("设置 40 路", summary)
         self.assertIn("B 站实绩约 1.0x", summary)
+
+    def test_high_multiplier_totalv2_rate_is_available_after_twenty_seconds(self) -> None:
+        live_watcher = LiveWatcher(WatchOptions(cookie="a=b", room_id="1", watch_threads=100), lambda _m: None)
+        live_watcher._record_server_progress(100, 1_000.0)
+        live_watcher._record_server_progress(110, 1_020.0)
+
+        self.assertAlmostEqual(live_watcher.get_server_credit_rate() or 0.0, 30.0, delta=0.01)
+
+    def test_configured_thread_count_is_never_expanded_in_background(self) -> None:
+        live_watcher = RecordingWatcher(
+            WatchOptions(cookie="a=b", room_id="1", watch_threads=2)
+        )
+        room = RoomInfo(room_id=1, live_status=1)
+        live_watcher._room = room
+        live_watcher._start_watch_threads(room)
+        for thread in list(live_watcher._watch_threads):
+            thread.join(timeout=3)
+
+        live_watcher._record_server_progress(0, 1_000.0, expect_progress=True)
+        live_watcher._record_server_progress(1, 1_060.0, expect_progress=True)
+
+        self.assertEqual(live_watcher.started_workers, [1, 2])
+        self.assertEqual(live_watcher._watch_worker_count, 2)
+        self.assertEqual(len(live_watcher._watch_threads), 2)
+
+    def test_high_route_count_uses_faster_totalv2_stall_detection(self) -> None:
+        hundred = LiveWatcher(WatchOptions(cookie="a=b", room_id="1", watch_threads=100), lambda _m: None)
+        ten = LiveWatcher(WatchOptions(cookie="a=b", room_id="1", watch_threads=10), lambda _m: None)
+
+        self.assertEqual(hundred._server_progress_stall_seconds(), 90.0)
+        self.assertEqual(ten._server_progress_stall_seconds(), 150.0)
 
     def test_stalled_totalv2_requests_a_single_session_rebuild(self) -> None:
         logs: list[str] = []
@@ -905,11 +920,8 @@ class LiveWatcherTest(unittest.TestCase):
                 return {}
 
             def enter_room_heartbeat(self, room: RoomInfo) -> dict[str, object]:
-                return {"heartbeat_interval": 30, "timestamp": 100, "secret_key": "legacy", "secret_rule": [0]}
-
-            def start_live_watch_session(self, room: RoomInfo, play_url: str) -> dict[str, object]:
                 started.append(self.number)
-                return {"hbil": 30, "sid": f"sid-{self.number}", "stky": f"key-{self.number}"}
+                return {"heartbeat_interval": 30, "timestamp": 100, "secret_key": "legacy", "secret_rule": [0]}
 
             def close(self) -> None:
                 closed.append(self.number)
@@ -989,6 +1001,71 @@ class LiveWatcherTest(unittest.TestCase):
         self.assertFalse(live_watcher._has_pending_watch_progress({
             "list": [{"task_name": "完成指定互动", "current": 0, "target": 1, "task_status": 1}],
         }))
+
+    def test_totalv2_activity_does_not_depend_on_chinese_watch_keywords(self) -> None:
+        live_watcher = LiveWatcher(WatchOptions(cookie="a=b", room_id="1"), lambda _message: None)
+
+        self.assertTrue(live_watcher._has_pending_watch_progress({
+            "tracking_task_ids": ["parent-a"],
+            "list": [{"task_id": "parent-a", "task_name": "OWCS Drops", "current": 140, "target": 180, "task_status": 1}],
+        }))
+
+    def test_totalv2_mixed_tasks_only_use_live_minutes_for_server_progress(self) -> None:
+        live_watcher = LiveWatcher(WatchOptions(cookie="a=b", room_id="1"), lambda _message: None)
+        progress = {
+            "tracking_task_ids": ["follow-parent", "watch-parent", "vote-parent"],
+            "list": [
+                {
+                    "task_id": "follow-parent",
+                    "task_name": "关注推荐主播",
+                    "current": 24,
+                    "target": 24,
+                    "task_status": 3,
+                },
+                {
+                    "task_id": "watch-parent",
+                    "task_name": "每日观看官方直播间30分钟",
+                    "current": 16,
+                    "target": 30,
+                    "task_status": 1,
+                },
+                {
+                    "task_id": "vote-parent",
+                    "task_name": "累计投票",
+                    "current": 15,
+                    "target": 20,
+                    "task_status": 1,
+                },
+            ],
+        }
+
+        self.assertEqual(live_watcher._task_summary_progress_score(progress), 16.0)
+        self.assertTrue(live_watcher._has_pending_watch_progress(progress))
+
+    def test_totalv2_pending_non_watch_task_does_not_trigger_watch_stall(self) -> None:
+        live_watcher = LiveWatcher(WatchOptions(cookie="a=b", room_id="1"), lambda _message: None)
+        progress = {
+            "tracking_task_ids": ["watch-parent", "share-parent"],
+            "list": [
+                {
+                    "task_id": "watch-parent",
+                    "task_name": "观看直播30分钟",
+                    "current": 30,
+                    "target": 30,
+                    "task_status": 2,
+                },
+                {
+                    "task_id": "share-parent",
+                    "task_name": "每日分享活动页",
+                    "current": 0,
+                    "target": 1,
+                    "task_status": 1,
+                },
+            ],
+        }
+
+        self.assertEqual(live_watcher._task_summary_progress_score(progress), 30.0)
+        self.assertFalse(live_watcher._has_pending_watch_progress(progress))
 
     def test_totalv2_signature_does_not_change_when_claim_checkpoints_change(self) -> None:
         live_watcher = LiveWatcher(WatchOptions(cookie="a=b", room_id="1"), lambda _message: None)

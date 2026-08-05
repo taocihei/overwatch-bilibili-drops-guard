@@ -10,14 +10,16 @@ type CallbackOrderRow = {
 
 export async function POST(request: Request): Promise<Response> {
   try {
-    const contentType = request.headers.get("content-type")?.toLowerCase() ?? "";
-    if (!contentType.includes("application/x-www-form-urlencoded")) {
-      return callbackResponse("FAIL", 415);
+    // YunGouOS 文档规定为表单回调，但少数边缘节点会省略或改写
+    // Content-Type。签名和金额校验才是可信边界，不因请求头差异丢单。
+    const body = await request.text();
+    if (!body || body.length > 8_192) {
+      return callbackResponse("FAIL", 413);
     }
-
-    const values = new URLSearchParams(await request.text());
+    const values = new URLSearchParams(body);
     const { merchantId, paymentKey } = getPaymentCredentials();
     if (!verifyPaymentCallback(values, merchantId, paymentKey)) {
+      console.warn("SPONSOR_CALLBACK_REJECTED", "SIGNATURE_INVALID");
       return callbackResponse("FAIL", 400);
     }
 
@@ -30,11 +32,13 @@ export async function POST(request: Request): Promise<Response> {
       .bind(providerOrderNo)
       .first<CallbackOrderRow>();
     if (!order) {
+      console.warn("SPONSOR_CALLBACK_REJECTED", "ORDER_NOT_FOUND");
       return callbackResponse("FAIL", 404);
     }
 
     const paidAmount = moneyToCents(values.get("money"));
     if (paidAmount !== order.amount_cents) {
+      console.warn("SPONSOR_CALLBACK_REJECTED", "AMOUNT_MISMATCH", order.id);
       return callbackResponse("FAIL", 400);
     }
 
@@ -42,7 +46,8 @@ export async function POST(request: Request): Promise<Response> {
       await database
         .prepare(
           `UPDATE sponsor_orders
-           SET status = 'paid', paid_at = ?, payment_no = ?
+           SET status = 'paid', paid_at = ?, payment_no = ?,
+               state_version = state_version + 1
            WHERE id = ? AND status != 'paid'`,
         )
         .bind(Date.now(), values.get("payNo")?.trim() ?? "", order.id)

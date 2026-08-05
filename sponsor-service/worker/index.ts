@@ -5,6 +5,7 @@ import handler from "vinext/server/app-router-entry";
 interface Env {
   ASSETS: Fetcher;
   DB: D1Database;
+  SPONSOR_POOL_REFILL_TOKEN?: string;
   IMAGES: {
     input(stream: ReadableStream): {
       transform(options: Record<string, unknown>): {
@@ -40,7 +41,35 @@ const worker = {
       }, allowedWidths);
     }
 
-    return handler.fetch(request, env, ctx);
+    const response = await handler.fetch(request, env, ctx);
+    if (
+      request.method === "POST" &&
+      url.pathname === "/api/sponsor/orders" &&
+      response.ok &&
+      env.SPONSOR_POOL_REFILL_TOKEN
+    ) {
+      const refillRequest = new Request(
+        new URL("/api/sponsor/pool/refill", request.url),
+        {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${env.SPONSOR_POOL_REFILL_TOKEN}`,
+            "content-type": "application/json",
+          },
+          body: "{}",
+        },
+      );
+      // Refill happens after the client already has its QR response.  It never
+      // adds latency to the current checkout and prepares the next launch.
+      ctx.waitUntil(
+        handler.fetch(refillRequest, env, ctx).then(async (refillResponse) => {
+          if (!refillResponse.ok) {
+            console.warn("SPONSOR_POOL_REFILL_DEFERRED", refillResponse.status);
+          }
+        }),
+      );
+    }
+    return response;
   },
 };
 
