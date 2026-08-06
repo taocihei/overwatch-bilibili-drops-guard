@@ -1,6 +1,6 @@
 # 守望先锋 B 站直播挂宝 / Overwatch Bilibili Live Drops Guard
 
-当前版本：`v0.5.23`
+当前版本：`v0.5.24`
 
 开源地址：<https://github.com/taocihei/overwatch-bilibili-drops-guard>
 
@@ -24,7 +24,7 @@
 
 1. 打开项目页面：<https://github.com/taocihei/overwatch-bilibili-drops-guard>
 2. 进入右侧或页面中的 `Releases`。
-3. 下载 `OverwatchBiliDrops-v0.5.23.exe`。
+3. 下载 `OverwatchBiliDrops-v0.5.24.exe`。
 4. 双击运行。
 5. 如果 Windows 提示“未知发布者”或“Windows 已保护你的电脑”，点击“更多信息”，再点“仍要运行”。这是个人开源软件常见提示，不代表一定有病毒。
 6. 第一次使用先点“自动获取 Cookie”，在弹出的独立 Edge/Chrome 窗口里登录 B 站。
@@ -47,6 +47,13 @@
 - `通知 URL`：可留空。填写后，启动、检测到可领取、领取成功、领取失败、Cookie 获取成功等关键事件会向该地址发送 JSON POST。
 - `观看进度`：优先显示本次观看进度，比如“还差 48 分钟”“已完成，待领取”“已领取”。
 - `运行日志`：保留登录、计时、任务识别和领取记录，适合排查异常。
+
+## v0.5.24 新增与修复
+
+- **修复 4K 高 DPI 全局模糊**：Windows 安装包加入 GDI 高 DPI 缩放清单，系统不再对整个 Tk 窗口做低清位图拉伸，文字和 GDI 图元按显示器 DPI 重新渲染。
+- **保持默认界面完整尺寸**：继续使用经过校准的 `1280×840` 逻辑画布，由 Windows 在 150%/175%/200% 缩放下映射到物理像素，避免模块因字体放大但容器未同步放大而被裁切。
+- **修复运行状态首字被遮挡**：四行状态改为独立布局，图标、标签和实时值不再共用易收缩的网格列，完整显示“启动时间、运行时长、下次计时、网络状态”。
+- **打包回归检查**：新增 Windows Manifest 自动测试，并在构建后校验 EXE 内嵌的 DPI 声明，防止后续 PyInstaller 配置变更导致问题复发。
 
 ## v0.5.23 新增与修复
 
@@ -452,7 +459,7 @@ dist\OverwatchBiliDrops.exe
 发布时会同时生成带版本号的文件，例如：
 
 ```text
-dist\OverwatchBiliDrops-v0.5.23.exe
+dist\OverwatchBiliDrops-v0.5.24.exe
 ```
 ## 赞助
 
@@ -468,7 +475,7 @@ dist\OverwatchBiliDrops-v0.5.23.exe
 
 Project name: **守望先锋 B 站直播挂宝 / Overwatch Bilibili Live Drops Guard**
 
-Version: `v0.5.23`
+Version: `v0.5.24`
 
 Repository: <https://github.com/taocihei/overwatch-bilibili-drops-guard>
 
@@ -532,5 +539,5 @@ dist\OverwatchBiliDrops.exe
 Release builds are also copied with a versioned file name, for example:
 
 ```text
-dist\OverwatchBiliDrops-v0.5.23.exe
+dist\OverwatchBiliDrops-v0.5.24.exe
 ```

@@ -46,6 +46,35 @@ if (-not (Test-Path -LiteralPath $versionedArtifact -PathType Leaf)) {
   throw "The versioned release artifact was not created: $versionedArtifact"
 }
 
+# Fail the release build if PyInstaller stops embedding the Windows high-DPI
+# manifest. This catches the exact regression that makes 4K displays blurry.
+$manifestVerifier = @'
+import sys
+from PyInstaller.utils.win32.winresource import get_resources
+
+resources = get_resources(sys.argv[1], types=[24])
+manifests = [
+    payload
+    for names in resources.values()
+    for languages in names.values()
+    for payload in languages.values()
+]
+text = b"\n".join(manifests).decode("utf-8", "replace").lower()
+required = (
+    "<dpiaware xmlns=\"http://schemas.microsoft.com/smi/2005/windowssettings\">false</dpiaware>",
+    "<dpiawareness xmlns=\"http://schemas.microsoft.com/smi/2016/windowssettings\">unaware</dpiawareness>",
+    "<gdiscaling xmlns=\"http://schemas.microsoft.com/smi/2017/windowssettings\">true</gdiscaling>",
+)
+missing = [entry for entry in required if entry not in text]
+if missing:
+    raise SystemExit("Packaged high-DPI manifest verification failed: " + ", ".join(missing))
+print("Packaged high-DPI manifest OK")
+'@
+$manifestVerifier | python - $versionedArtifact
+if ($LASTEXITCODE -ne 0) {
+  throw "Packaged high-DPI manifest verification failed."
+}
+
 $selfTest = Start-Process -FilePath $versionedArtifact -ArgumentList "--self-test-skynet" -Wait -PassThru
 if ($selfTest.ExitCode -ne 0) {
   throw "Packaged Skynet/WASM self-test failed with exit code $($selfTest.ExitCode)."

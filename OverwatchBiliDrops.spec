@@ -86,4 +86,5 @@ exe = EXE(
     entitlements_file=None,
     icon=['assets\\app.ico'],
     version='assets\\windows_version_info.txt',
+    manifest='assets\\windows_app.manifest',
 )

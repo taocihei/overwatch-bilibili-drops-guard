@@ -2544,25 +2544,43 @@ class App(tk.Tk):
         self._section_title(status_pane, "运行状态", "status", background=SURFACE).grid(row=0, column=0, sticky="w")
         status_grid = tk.Frame(status_pane, bg=SURFACE, highlightthickness=0, borderwidth=0)
         status_grid.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(10, 0))
-        status_grid.columnconfigure(1, weight=1)
-        status_grid.columnconfigure(2, weight=0)
+        status_grid.columnconfigure(0, weight=1)
+        self.status_metric_rows: list[tk.Frame] = []
+        self.status_metric_labels: list[tk.Label] = []
         for index, (icon, label, variable) in enumerate((
             ("start", "启动时间", self.backend_start_var),
             ("elapsed", "运行时长", self.backend_elapsed_var),
             ("next", "下次计时", self.backend_next_var),
             ("network", "网络状态", self.backend_network_var),
         )):
-            self._metric_icon(status_grid, icon, background=SURFACE).grid(row=index, column=0, sticky="w", pady=3)
-            tk.Label(status_grid, text=label, bg=SURFACE, fg=MUTED, font=("Microsoft YaHei UI", 9)).grid(row=index, column=1, sticky="w", padx=(8, 0), pady=3)
+            # 独立行容器避免 Windows 高 DPI 字体度量变化时，图标列侵入文字列并裁掉首字。
+            # 标签保留固定字符宽度，实时值使用剩余空间并靠右显示。
+            metric_row = tk.Frame(status_grid, bg=SURFACE, highlightthickness=0, borderwidth=0)
+            metric_row.grid(row=index, column=0, sticky="ew", pady=3)
+            metric_row.columnconfigure(1, weight=1, minsize=72)
+            metric_row.columnconfigure(2, weight=0)
+            self._metric_icon(metric_row, icon, background=SURFACE).grid(row=0, column=0, sticky="w", padx=(0, 8))
+            metric_label = tk.Label(
+                metric_row,
+                text=label,
+                bg=SURFACE,
+                fg=MUTED,
+                font=("Microsoft YaHei UI", 9),
+                width=6,
+                anchor="w",
+            )
+            metric_label.grid(row=0, column=1, sticky="w")
             tk.Label(
-                status_grid,
+                metric_row,
                 textvariable=variable,
                 bg=SURFACE,
                 fg=MUTED,
                 font=("Microsoft YaHei UI", 8, "bold"),
                 anchor="e",
                 justify="right",
-            ).grid(row=index, column=2, sticky="e", padx=(8, 0), pady=3)
+            ).grid(row=0, column=2, sticky="e", padx=(8, 0))
+            self.status_metric_rows.append(metric_row)
+            self.status_metric_labels.append(metric_label)
         self.watch_status_card = WatchStatusCard(status_pane, background=SURFACE)
         # 完整连接卡在默认高度会被裁切；主卡只放可达入口，详细状态统一在应用内弹窗显示。
         LabelButton(

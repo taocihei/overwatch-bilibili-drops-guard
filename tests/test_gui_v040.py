@@ -128,6 +128,28 @@ class SmallWindowLayoutRegressionTest(unittest.TestCase):
         finally:
             app.destroy()
 
+    def test_status_metrics_keep_complete_labels_in_independent_rows(self) -> None:
+        app = gui.App(preview_mode=True)
+        try:
+            app.geometry("1280x840+0+0")
+            for _ in range(5):
+                app.update()
+
+            self.assertEqual(
+                [label.cget("text") for label in app.status_metric_labels],
+                ["启动时间", "运行时长", "下次计时", "网络状态"],
+            )
+            self.assertEqual(len(app.status_metric_rows), 4)
+            for row, label in zip(app.status_metric_rows, app.status_metric_labels):
+                self.assertGreaterEqual(label.winfo_width(), label.winfo_reqwidth())
+                self.assertGreaterEqual(label.winfo_rootx(), row.winfo_rootx() + 20)
+                self.assertLessEqual(
+                    label.winfo_rootx() + label.winfo_width(),
+                    row.winfo_rootx() + row.winfo_width(),
+                )
+        finally:
+            app.destroy()
+
     def test_default_runtime_metrics_keep_label_and_value_separated(self) -> None:
         app = gui.App(preview_mode=True)
         try:
