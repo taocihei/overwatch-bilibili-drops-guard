@@ -23,6 +23,17 @@ def _run() -> None:
             if not png.startswith(b"\x89PNG\r\n\x1a\n"):
                 raise RuntimeError("Packaged sponsor QR self-test failed")
             return
+        if "--self-test-browser-drivers" in sys.argv:
+            from bili_drop_guard.cookie_capture import _load_webdriver_class
+
+            for module_name in (
+                "selenium.webdriver.chrome.webdriver",
+                "selenium.webdriver.edge.webdriver",
+            ):
+                driver_class = _load_webdriver_class(module_name)
+                if driver_class.__name__ != "WebDriver":
+                    raise RuntimeError(f"Packaged browser driver self-test failed: {module_name}")
+            return
         main()
     except Exception as exc:
         APP_DIR.mkdir(parents=True, exist_ok=True)

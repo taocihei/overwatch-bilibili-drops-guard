@@ -41,8 +41,18 @@ def test_pyinstaller_requires_complete_tcl_tk_runtime() -> None:
     assert "Missing required Tcl/Tk packaging resources" in spec
 
 
+def test_onefile_build_does_not_bundle_every_selenium_and_pillow_module() -> None:
+    spec = SPEC.read_text(encoding="utf-8")
+    assert "collect_all('selenium')" not in spec
+    assert "collect_all('PIL')" not in spec
+    assert "selenium.webdriver.chrome.webdriver" in spec
+    assert "selenium.webdriver.edge.webdriver" in spec
+    assert "excludes=['numpy']" in spec
+
+
 def test_release_build_launches_and_cleans_up_packaged_gui() -> None:
     script = BUILD_SCRIPT.read_text(encoding="utf-8")
+    assert "--self-test-browser-drivers" in script
     assert "$guiSmokeProcess" in script
     assert "MainWindowHandle -ne 0" in script
     assert "$_.Responding" in script

@@ -83,6 +83,10 @@ $qrSelfTest = Start-Process -FilePath $versionedArtifact -ArgumentList "--self-t
 if ($qrSelfTest.ExitCode -ne 0) {
   throw "Packaged sponsor QR self-test failed with exit code $($qrSelfTest.ExitCode)."
 }
+$browserSelfTest = Start-Process -FilePath $versionedArtifact -ArgumentList "--self-test-browser-drivers" -Wait -PassThru
+if ($browserSelfTest.ExitCode -ne 0) {
+  throw "Packaged browser driver self-test failed with exit code $($browserSelfTest.ExitCode)."
+}
 
 # The command-line checks above deliberately return before Tk starts. Launch the
 # actual frozen application as well so a release cannot pass while missing the

@@ -43,7 +43,13 @@ datas = [
     ('assets/live_watch_skynet.wasm', 'assets'),
 ]
 binaries = []
-hiddenimports = ['_tkinter', 'qrcode.image.pil']
+hiddenimports = [
+    '_tkinter',
+    'qrcode.image.pil',
+    # cookie_capture 按浏览器类型动态加载这两个模块，静态分析无法发现。
+    'selenium.webdriver.chrome.webdriver',
+    'selenium.webdriver.edge.webdriver',
+]
 for source, target in (
     (tcl_library, '_tcl_data'),
     (tk_library, '_tk_data'),
@@ -56,10 +62,9 @@ for source, target in (
     (tk_dll, '.'),
 ):
     binaries.append((str(source), target))
-tmp_ret = collect_all('selenium')
-datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
-tmp_ret = collect_all('PIL')
-datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
+# Selenium 与 Pillow 使用 PyInstaller 官方 hook 即可。collect_all 会把未使用
+# 的 Firefox/Safari/IE 驱动、Pillow 全部图片插件，甚至 pytest/pygments 一并
+# 塞进 one-file 包；每次启动都要解压这些内容，既增大约几十 MB，也拖慢首屏。
 tmp_ret = collect_all('wasmtime')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 
@@ -73,7 +78,9 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    # Pillow 的 hook 会自动带入可选 numpy 支持；本项目只做图标和
+    # 二维码的基本绘制，不使用 numpy。排除后可减少 one-file 解包量。
+    excludes=['numpy'],
     noarchive=False,
     optimize=0,
 )

@@ -61,6 +61,51 @@ class RoundedPanelLayoutTest(_HiddenRootCase):
         self.assertGreater(configured_height, 30)
         self.assertLess(configured_height, 80)
 
+    def test_panels_and_buttons_use_fast_vector_items(self) -> None:
+        panel = gui.RoundedPanel(
+            self.root,
+            fill=gui.SURFACE,
+            background=gui.APP_BG,
+            padding=(14, 10),
+            shadow=True,
+        )
+        panel.pack(fill="x")
+        button = gui.LabelButton(
+            panel.inner,
+            "开始挂宝",
+            lambda: None,
+            fill=gui.ACCENT,
+            shadow=True,
+        )
+        button.pack()
+
+        self.root.update_idletasks()
+        panel._redraw()
+        button._redraw()
+
+        self.assertTrue(panel.find_withtag("panel"))
+        self.assertFalse(panel.find_withtag("panel_image"))
+        self.assertIsNone(panel._panel_image)
+        self.assertIsNone(button._button_image)
+        self.assertNotIn("image", {button.type(item) for item in button.find_all()})
+
+
+class StartupRenderingRegressionTest(unittest.TestCase):
+    def test_sponsor_warmup_is_deferred_until_after_first_frame(self) -> None:
+        config = gui.AppConfig(room_id=gui.DEFAULT_ROOM_ID, auto_claim=False, watch_threads=1)
+        with (
+            patch.object(gui, "load_config", return_value=config),
+            patch.object(gui, "load_or_create_install_id", return_value="test-install-id"),
+            patch.object(gui.App, "_load_persistent_sponsor_order_cache"),
+            patch.object(gui.App, "_warm_sponsor_service") as warm,
+        ):
+            app = gui.App(preview_mode=False)
+            try:
+                self.assertTrue(app.winfo_viewable())
+                warm.assert_not_called()
+            finally:
+                app.destroy()
+
 
 class SmallWindowLayoutRegressionTest(unittest.TestCase):
     def test_initial_window_size_is_clamped_to_high_dpi_work_area(self) -> None:

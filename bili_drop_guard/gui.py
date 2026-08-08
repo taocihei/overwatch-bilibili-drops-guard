@@ -20,9 +20,9 @@ from tkinter import ttk
 from typing import Callable
 
 try:
-    from PIL import Image, ImageDraw, ImageFilter, ImageTk
+    from PIL import Image, ImageDraw, ImageTk
 except Exception:  # Pillow 是界面抗锯齿增强；缺失时回退到 Tk 原生绘制。
-    Image = ImageDraw = ImageFilter = ImageTk = None  # type: ignore[assignment]
+    Image = ImageDraw = ImageTk = None  # type: ignore[assignment]
 
 from . import __version__
 from .bilibili import BilibiliClient, normalize_room_id
@@ -213,12 +213,16 @@ class RoundedPanel(tk.Canvas):
         self.delete("panel_image")
         width = max(1, self.winfo_width())
         height = max(1, self.winfo_height())
-        if not self._draw_antialiased_panel(width, height):
-            if self.shadow and width > 8 and height > 8:
-                self._rounded_rect(2, 4, width - 2, height - 1, self.radius, fill=PANEL_SHADOW, outline="", tags="shadow")
-            self._rounded_rect(1, 1, width - 3, height - 4, self.radius, fill=self.fill, outline=self.outline, tags="panel")
-            self.tag_lower("panel", self._window)
-            self.tag_lower("shadow", "panel")
+        # Tk Canvas 的平滑曲线已足以绘制这些纯色卡片。旧实现会在每次
+        # <Configure> 时用 Pillow 创建 3 倍大图、做高斯模糊再缩放；首屏
+        # 25 次重绘中仅这一项就会占用约 600 ms，并让窗口出现后仍明显卡顿。
+        # 改用矢量项后也不再需要在 Tk 中上传整张 PhotoImage。
+        self._panel_image = None
+        if self.shadow and width > 8 and height > 8:
+            self._rounded_rect(2, 4, width - 2, height - 1, self.radius, fill=PANEL_SHADOW, outline="", tags="shadow")
+        self._rounded_rect(1, 1, width - 3, height - 4, self.radius, fill=self.fill, outline=self.outline, tags="panel")
+        self.tag_lower("panel", self._window)
+        self.tag_lower("shadow", "panel")
         self.coords(self._window, self.pad_x, self.pad_y)
         window_options: dict[str, int] = {"width": max(1, width - self.pad_x * 2)}
         if not self.auto_height:
@@ -226,51 +230,6 @@ class RoundedPanel(tk.Canvas):
         self.itemconfigure(self._window, **window_options)
         if self.auto_height:
             self.after_idle(self._sync_height)
-
-    def _draw_antialiased_panel(self, width: int, height: int) -> bool:
-        if Image is None or ImageDraw is None or ImageTk is None:
-            return False
-        try:
-            scale = 3
-            image = Image.new("RGBA", (width * scale, height * scale), (0, 0, 0, 0))
-            radius = self.radius * scale
-            if self.shadow and width > 12 and height > 12:
-                shadow = Image.new("RGBA", image.size, (0, 0, 0, 0))
-                shadow_draw = ImageDraw.Draw(shadow)
-                shadow_draw.rounded_rectangle(
-                    (4 * scale, 7 * scale, (width - 4) * scale, (height - 4) * scale),
-                    radius=radius,
-                    fill=self._rgba(PANEL_SHADOW, 92),
-                )
-                if ImageFilter is not None:
-                    shadow = shadow.filter(ImageFilter.GaussianBlur(5 * scale))
-                image.alpha_composite(shadow)
-
-            draw = ImageDraw.Draw(image)
-            box = (0, 0, (width - 1) * scale, (height - 1) * scale)
-            outline = self._rgba(self.outline, 255) if self.outline else None
-            draw.rounded_rectangle(
-                box,
-                radius=radius,
-                fill=self._rgba(self.fill, 246),
-                outline=outline,
-                width=scale if outline else 1,
-            )
-            image = image.resize((width, height), Image.Resampling.LANCZOS)
-            self._panel_image = ImageTk.PhotoImage(image)
-            self.create_image(0, 0, anchor="nw", image=self._panel_image, tags="panel_image")
-            self.tag_lower("panel_image", self._window)
-            return True
-        except Exception:
-            self._panel_image = None
-            return False
-
-    def _rgba(self, color: str, alpha: int) -> tuple[int, int, int, int]:
-        try:
-            red, green, blue = self.winfo_rgb(color)
-        except tk.TclError:
-            red, green, blue = 65535, 65535, 65535
-        return red // 256, green // 256, blue // 256, alpha
 
     def _rounded_rect(self, x1: int, y1: int, x2: int, y2: int, radius: int, **kwargs: object) -> None:
         points = [
@@ -497,38 +456,24 @@ class LabelButton(tk.Canvas):
         height = max(self._height, self.winfo_height())
         if self.winfo_height() < self._height:
             self.configure(height=self._height)
-        if Image is not None and ImageDraw is not None and ImageTk is not None and width > 3 and height > 3:
-            try:
-                scale = 3
-                image = Image.new("RGBA", (width * scale, height * scale), (0, 0, 0, 0))
-                if self.shadow:
-                    shadow = Image.new("RGBA", image.size, (0, 0, 0, 0))
-                    shadow_draw = ImageDraw.Draw(shadow)
-                    shadow_draw.rounded_rectangle(
-                        (2 * scale, 4 * scale, (width - 2) * scale, (height - 1) * scale),
-                        radius=self.radius * scale,
-                        fill=self._rgba(fill, 66),
-                    )
-                    if ImageFilter is not None:
-                        shadow = shadow.filter(ImageFilter.GaussianBlur(3 * scale))
-                    image.alpha_composite(shadow)
-
-                draw = ImageDraw.Draw(image)
-                box = (0, 0, (width - 1) * scale, (height - 1) * scale)
-                draw.rounded_rectangle(
-                    box,
-                    radius=self.radius * scale,
-                    fill=self._rgba(fill, 255),
-                    outline=self._rgba(self.outline, 255) if self.outline else None,
-                    width=scale if self.outline else 1,
-                )
-                image = image.resize((width, height), Image.Resampling.LANCZOS)
-                self._button_image = ImageTk.PhotoImage(image)
-                self.create_image(0, 0, anchor="nw", image=self._button_image)
-            except Exception:
-                self._draw_canvas_button(width, height, fill)
-        else:
-            self._draw_canvas_button(width, height, fill)
+        # 按钮同样保持为 Canvas 矢量项，避免初次布局时为每个按钮重复
+        # 创建并上传 3 倍分辨率位图。阴影由低成本的偏移轮廓表达。
+        self._button_image = None
+        if self.shadow and width > 5 and height > 5:
+            shadow_radius = self.radius
+            self.create_polygon(
+                shadow_radius, 4, width - shadow_radius, 4,
+                width - 1, 4, width - 1, shadow_radius + 3,
+                width - 1, height - shadow_radius, width - 1, height - 1,
+                width - shadow_radius, height - 1, shadow_radius, height - 1,
+                1, height - 1, 1, height - shadow_radius, 1, shadow_radius + 3,
+                1, 4, shadow_radius, 4,
+                smooth=True,
+                splinesteps=18,
+                fill=PANEL_SHADOW,
+                outline="",
+            )
+        self._draw_canvas_button(width, height, fill)
         self.create_text(width // 2, height // 2 - 1, text=self.text, fill=foreground, font=self.font, anchor="center")
 
     def _draw_canvas_button(self, width: int, height: int, fill: str) -> None:
@@ -1464,6 +1409,10 @@ class App(tk.Tk):
                 if not transient_bootstrap_error or attempt >= 2:
                     raise
                 time.sleep(0.05 * (attempt + 1))
+        # 生产启动时先在隐藏窗口中完成一次布局，避免用户看到卡片、按钮
+        # 逐块跳动。preview_mode 保持原行为，便于布局测试直接控制窗口。
+        if not preview_mode:
+            self.withdraw()
         self.title(f"守望先锋 B 站直播挂宝 v{__version__}")
         initial_width, initial_height = _initial_window_size(self)
         self.geometry(f"{initial_width}x{initial_height}")
@@ -1516,10 +1465,6 @@ class App(tk.Tk):
         self._sponsor_success_shown = False
         self._sponsor_group_revealed = False
         self._sponsor_auto_refresh_attempts = 0
-        if not self.preview_mode:
-            # 与界面构建并行预热 HTTPS，用户打开赞助窗口时通常已完成握手。
-            self._warm_sponsor_service()
-
         self.cookie_var = tk.StringVar(value=self.config_data.cookie)
         self.selected_account_var = tk.StringVar(value=self.config_data.account_name)
         self.account_name_var = tk.StringVar(value=self.config_data.account_name)
@@ -1568,6 +1513,13 @@ class App(tk.Tk):
         if self.preview_mode:
             self._sponsor_warm_ready.set()
             self._sponsor_prefetch_ready.set()
+        else:
+            self.update_idletasks()
+            self.deiconify()
+            # 先让主界面完成首帧，再进行赞助服务的后台预热。旧逻辑在
+            # 控件构建前就启动网络、二维码和缓存写入，会与 Tk 首次绘制
+            # 争用 CPU / I/O，造成窗口刚出现时拖动、点击都有顿挫感。
+            self.after(700, self._warm_sponsor_service)
         self.after(1000, self._poll_watch_status)
         self.after(100, self._clear_initial_focus)
         self.after(200, self._drain_logs)
