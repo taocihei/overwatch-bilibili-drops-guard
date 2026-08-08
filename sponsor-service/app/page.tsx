@@ -44,7 +44,7 @@ export default function Home() {
         </ol>
 
         <footer>
-          <span>v0.5.20</span>
+          <span>v0.5.25</span>
           <span>不保存 Cookie · 不收集 B 站账号</span>
         </footer>
       </section>

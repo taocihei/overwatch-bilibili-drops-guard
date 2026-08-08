@@ -359,10 +359,29 @@ class SponsorClientTest(unittest.TestCase):
         self.assertEqual(str(normalize_amount("5")), "5.00")
         self.assertEqual(str(normalize_amount("37.5")), "37.50")
         self.assertEqual(str(normalize_amount("100")), "100.00")
+        self.assertEqual(str(normalize_amount("1.00")), "1.00")
+        self.assertEqual(str(normalize_amount("9999.00")), "9999.00")
         with self.assertRaisesRegex(SponsorError, "1–9999"):
             normalize_amount("0")
         with self.assertRaisesRegex(SponsorError, "1–9999"):
             normalize_amount("10000")
+
+    def test_amount_rejects_precision_and_notation_bypasses(self) -> None:
+        invalid_amounts = (
+            "0.999",
+            "1.234",
+            "9999.001",
+            "1e2",
+            "1E+2",
+            "+5",
+            "-5",
+            "1.",
+            ".5",
+        )
+        for amount in invalid_amounts:
+            with self.subTest(amount=amount):
+                with self.assertRaisesRegex(SponsorError, "赞助金额无效"):
+                    normalize_amount(amount)
 
 
 if __name__ == "__main__":

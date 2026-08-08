@@ -76,14 +76,24 @@ def normalize_room_id(value: str) -> str:
     text = str(value or "").strip()
     if not text:
         return ""
-    if text.isdigit():
+    # B 站直播间号是 ASCII 正整数。str.isdigit() 还会接受全角数字等
+    # Unicode 字符，“0”和前导零也会让无效房间通过 GUI 的本地校验。
+    if re.fullmatch(r"[1-9][0-9]*", text):
         return text
 
-    match = re.search(r"(?:^|[/:])live\.bilibili\.com/(?:blanc/)?(\d+)", text, re.IGNORECASE)
+    match = re.search(
+        r"(?:^|[/:])live\.bilibili\.com/(?:blanc/)?([1-9][0-9]*)(?=$|[/?#\s])",
+        text,
+        re.IGNORECASE,
+    )
     if match:
         return match.group(1)
 
-    match = re.search(r"live\.bilibili\.com/(?:blanc/)?(\d+)", text, re.IGNORECASE)
+    match = re.search(
+        r"live\.bilibili\.com/(?:blanc/)?([1-9][0-9]*)(?=$|[/?#\s])",
+        text,
+        re.IGNORECASE,
+    )
     if match:
         return match.group(1)
 

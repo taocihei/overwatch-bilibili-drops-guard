@@ -329,13 +329,16 @@ class SponsorClient:
 
 
 def normalize_amount(value: str | Decimal) -> Decimal:
+    raw_value = str(value).strip()
+    if re.fullmatch(r"[0-9]+(?:\.[0-9]{1,2})?", raw_value) is None:
+        raise SponsorError("赞助金额无效，最多保留两位小数")
     try:
-        amount = Decimal(str(value)).quantize(Decimal("0.01"))
+        amount = Decimal(raw_value)
     except (InvalidOperation, ValueError) as exc:
         raise SponsorError("赞助金额无效") from exc
     if not amount.is_finite() or amount < MIN_SPONSOR_AMOUNT or amount > MAX_SPONSOR_AMOUNT:
         raise SponsorError("赞助金额需在 1–9999 元之间")
-    return amount
+    return amount.quantize(Decimal("0.01"))
 
 
 def normalize_client_key(

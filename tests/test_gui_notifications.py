@@ -791,6 +791,72 @@ class GuiAccountSelectionTest(unittest.TestCase):
                          [("默认账号", "SESSDATA=a")])
         self.assertEqual(config.active_accounts, ["默认账号"])
 
+    def test_close_persists_runtime_settings_without_saving_account_draft(self) -> None:
+        app = object.__new__(gui.App)
+        app.preview_mode = False
+        app.config_data = gui.AppConfig(
+            cookie="SESSDATA=saved",
+            account_name="主号",
+            accounts=[gui.AccountProfile(name="主号", cookie="SESSDATA=saved")],
+            room_id="23612045",
+            watch_threads=10,
+            active_accounts=["主号"],
+        )
+        app.editing_account_name = "主号"
+        app.account_checks = {"主号": FakeBoolVar(True)}
+        app.room_var = FakeVar("https://live.bilibili.com/123456")
+        app.interval_var = FakeVar("35")
+        app.auto_claim_var = FakeBoolVar(True)
+        app.task_ids_text = FakeText("")
+        app.watch_threads_var = FakeVar("100")
+        app.notify_url_var = FakeVar("")
+
+        with patch.object(gui, "save_config") as saved:
+            gui.App._save_runtime_settings_on_close(app)
+
+        persisted = saved.call_args.args[0]
+        self.assertEqual(persisted.room_id, "123456")
+        self.assertEqual(persisted.watch_threads, 100)
+        self.assertTrue(persisted.auto_claim)
+        self.assertEqual(persisted.accounts[0].cookie, "SESSDATA=saved")
+
+    def test_close_keeps_last_valid_room_when_input_is_invalid(self) -> None:
+        app = object.__new__(gui.App)
+        app.preview_mode = False
+        app.config_data = gui.AppConfig(
+            account_name="主号",
+            accounts=[gui.AccountProfile(name="主号", cookie="SESSDATA=saved")],
+            room_id="23612045",
+            active_accounts=["主号"],
+        )
+        app.editing_account_name = "主号"
+        app.account_checks = {"主号": FakeBoolVar(True)}
+        app.room_var = FakeVar("abc")
+        app.interval_var = FakeVar("10")
+        app.auto_claim_var = FakeBoolVar(False)
+        app.task_ids_text = FakeText("")
+        app.watch_threads_var = FakeVar("10")
+        app.notify_url_var = FakeVar("")
+
+        with patch.object(gui, "save_config") as saved:
+            gui.App._save_runtime_settings_on_close(app)
+
+        self.assertEqual(app.room_var.get(), "23612045")
+        self.assertEqual(saved.call_args.args[0].room_id, "23612045")
+
+    def test_claim_rejects_invalid_room_before_config_sanitization(self) -> None:
+        app = object.__new__(gui.App)
+        app.watcher = None
+        app.room_var = FakeVar("abc")
+        app._account_editor_is_dirty = lambda: False  # type: ignore[method-assign]
+        notices: list[tuple[str, str]] = []
+        app._show_notice = lambda title, body, **_kwargs: notices.append((title, body))  # type: ignore[method-assign]
+        app._current_config = lambda: self.fail("无效房号不应进入配置归一化")  # type: ignore[method-assign]
+
+        gui.App._claim(app)
+
+        self.assertEqual(notices[0][0], "直播间号无效")
+
     def test_new_account_name_change_marks_draft_dirty(self) -> None:
         app = object.__new__(gui.App)
         app.editing_account_name = None

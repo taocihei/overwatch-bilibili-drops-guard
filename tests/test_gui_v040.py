@@ -63,6 +63,15 @@ class RoundedPanelLayoutTest(_HiddenRootCase):
 
 
 class SmallWindowLayoutRegressionTest(unittest.TestCase):
+    def test_initial_window_size_is_clamped_to_high_dpi_work_area(self) -> None:
+        root = SimpleNamespace(
+            winfo_screenwidth=lambda: 1536,
+            winfo_screenheight=lambda: 824,
+        )
+
+        with patch.object(gui.sys, "platform", "linux"):
+            self.assertEqual(gui._initial_window_size(root), (1280, 776))
+
     def test_three_digit_watch_connection_value_is_not_clipped(self) -> None:
         app = gui.App(preview_mode=True)
         try:
@@ -84,6 +93,29 @@ class SmallWindowLayoutRegressionTest(unittest.TestCase):
             number_input = number_inputs[0]
             self.assertEqual(app.watch_threads_var.get(), 100)
             self.assertGreaterEqual(number_input.entry.winfo_width(), number_input.entry.winfo_reqwidth())
+        finally:
+            app.destroy()
+
+    def test_minimum_window_keeps_overview_text_and_log_header_complete(self) -> None:
+        app = gui.App(preview_mode=True)
+        try:
+            app.geometry("1080x660+0+0")
+            for _ in range(6):
+                app.update()
+
+            for widget in (
+                app.progress_title_label,
+                app.progress_detail_label,
+                *app.status_metric_labels,
+            ):
+                self.assertGreaterEqual(widget.winfo_width() + 1, widget.winfo_reqwidth())
+            self.assertTrue(app.log_title_group.winfo_ismapped())
+            self.assertTrue(app.log_tools.winfo_ismapped())
+            self.assertEqual(int(app.log_tools.grid_info()["row"]), 1)
+            self.assertLessEqual(
+                app.log_tools.winfo_rootx() + app.log_tools.winfo_width(),
+                app.log_panel.winfo_rootx() + app.log_panel.winfo_width(),
+            )
         finally:
             app.destroy()
 
@@ -539,6 +571,17 @@ class OnboardingGuideTest(_HiddenRootCase):
 
 
 class AppDialogTest(_HiddenRootCase):
+    def test_dialog_is_visible_immediately_without_waiting_for_idle_queue(self) -> None:
+        self.root.deiconify()
+        self.root.geometry("900x640+100+80")
+        self.root.update()
+
+        dialog = gui.AppDialog(self.root, title="即时显示", width=360, height=260)
+        try:
+            self.assertNotEqual(dialog.state(), "withdrawn")
+        finally:
+            dialog.destroy()
+
     def test_dialog_is_centered_and_supports_titlebar_dragging(self) -> None:
         dialog = gui.AppDialog(self.root, title="测试弹窗", width=360, height=260)
         try:
@@ -784,6 +827,7 @@ class SponsorDialogFlowTest(unittest.TestCase):
         with patch.object(gui.threading, "Thread"):
             gui.App._start_sponsor_order(app)
 
+        app._warm_sponsor_service.assert_called_once_with()
         qr_label.configure.assert_called_once_with(
             image="",
             text="正在生成 ¥10 二维码…",
@@ -889,6 +933,7 @@ class SponsorDialogFlowTest(unittest.TestCase):
         self.assertEqual(set(app._sponsor_order_cache), set(amounts))
         self.assertTrue(app._sponsor_warm_ready.is_set())
         self.assertTrue(app._sponsor_prefetch_ready.is_set())
+        self.assertFalse(app._sponsor_warm_started)
 
     def test_batch_failure_falls_back_to_independent_single_order_clients(self) -> None:
         priority_client = MagicMock(name="priority")

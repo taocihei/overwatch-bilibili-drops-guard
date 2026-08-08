@@ -1114,6 +1114,22 @@ class LiveWatcherTest(unittest.TestCase):
         self.assertEqual(live_watcher._heartbeat_count, 0)
         self.assertEqual(live_watcher.get_local_watch_estimate_minutes(), 0.0)
 
+    def test_wait_for_stop_reports_auxiliary_thread_timeout(self) -> None:
+        live_watcher = LiveWatcher(WatchOptions(cookie="a=b", room_id="1"), lambda _m: None)
+        release = threading.Event()
+        claim_thread = threading.Thread(target=lambda: release.wait(1), daemon=True)
+        live_watcher._claim_thread = claim_thread
+        claim_thread.start()
+
+        try:
+            self.assertFalse(live_watcher.wait_for_stop(timeout=0.01))
+            self.assertTrue(claim_thread.is_alive())
+        finally:
+            release.set()
+            claim_thread.join(timeout=1)
+
+        self.assertTrue(live_watcher.wait_for_stop(timeout=0.1))
+
     def test_status_summary_logs_only_on_problem_not_when_normal(self) -> None:
         logs: list[str] = []
         live_watcher = LiveWatcher(WatchOptions(cookie="a=b", room_id="1", watch_threads=3), logs.append)

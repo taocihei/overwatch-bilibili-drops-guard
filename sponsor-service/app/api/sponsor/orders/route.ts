@@ -194,9 +194,13 @@ function normalizeAmounts(payload: SponsorOrderRequest): {
 function normalizeAmount(
   value: unknown,
 ): { amount: string; amountCents: number } | null {
-  const amount = Number(value);
-  if (!Number.isFinite(amount)) return null;
-  const amountCents = Math.round(amount * 100);
+  if (typeof value !== "string") return null;
+  const match = /^([0-9]+)(?:\.([0-9]{1,2}))?$/.exec(value.trim());
+  if (!match) return null;
+  const wholePart = match[1].replace(/^0+(?=\d)/, "");
+  if (wholePart.length > 4) return null;
+  const amountCents =
+    Number(wholePart) * 100 + Number((match[2] ?? "").padEnd(2, "0"));
   if (amountCents < MIN_AMOUNT_CENTS || amountCents > MAX_AMOUNT_CENTS) {
     return null;
   }

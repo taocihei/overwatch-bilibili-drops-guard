@@ -84,5 +84,59 @@ if ($qrSelfTest.ExitCode -ne 0) {
   throw "Packaged sponsor QR self-test failed with exit code $($qrSelfTest.ExitCode)."
 }
 
+# The command-line checks above deliberately return before Tk starts. Launch the
+# actual frozen application as well so a release cannot pass while missing the
+# Tcl/Tk runtime. PyInstaller one-file mode creates a child process for the GUI,
+# therefore the check watches every newly-created process with this EXE name.
+$guiProcessName = [System.IO.Path]::GetFileNameWithoutExtension($versionedArtifact)
+$existingGuiProcessIds = @(
+  Get-Process -Name $guiProcessName -ErrorAction SilentlyContinue |
+    Select-Object -ExpandProperty Id
+)
+$guiSmokeProcess = $null
+$guiReady = $false
+$guiWindowTitle = $null
+try {
+  $guiSmokeProcess = Start-Process -FilePath $versionedArtifact -PassThru
+  $guiDeadline = [DateTime]::UtcNow.AddSeconds(30)
+  while ([DateTime]::UtcNow -lt $guiDeadline) {
+    Start-Sleep -Milliseconds 100
+    $guiWindow = Get-Process -Name $guiProcessName -ErrorAction SilentlyContinue |
+      Where-Object {
+        $existingGuiProcessIds -notcontains $_.Id -and
+        $_.MainWindowHandle -ne 0 -and
+        $_.Responding -and
+        $_.MainWindowTitle -like "*v$version"
+      } |
+      Select-Object -First 1
+    if ($null -ne $guiWindow) {
+      $guiReady = $true
+      $guiWindowTitle = $guiWindow.MainWindowTitle
+      break
+    }
+  }
+  if (-not $guiReady) {
+    throw "Packaged GUI smoke test failed: no responsive main window appeared within 30 seconds."
+  }
+  Write-Host "Packaged GUI smoke test OK: $guiWindowTitle"
+}
+finally {
+  # Stop only processes created by this smoke test. Repeat briefly because the
+  # one-file bootloader and its child can exit a fraction of a second apart.
+  for ($attempt = 0; $attempt -lt 5; $attempt++) {
+    $guiTestProcesses = @(
+      Get-Process -Name $guiProcessName -ErrorAction SilentlyContinue |
+        Where-Object { $existingGuiProcessIds -notcontains $_.Id }
+    )
+    if ($guiTestProcesses.Count -eq 0) {
+      break
+    }
+    $guiTestProcesses |
+      Sort-Object @{ Expression = { if ($_.MainWindowHandle -ne 0) { 0 } else { 1 } } } |
+      ForEach-Object { Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue }
+    Start-Sleep -Milliseconds 250
+  }
+}
+
 Write-Host "Build complete: $artifact"
 Write-Host "Release artifact: $versionedArtifact"

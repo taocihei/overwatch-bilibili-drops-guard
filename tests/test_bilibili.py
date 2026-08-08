@@ -58,6 +58,15 @@ class BilibiliRoomTest(unittest.TestCase):
     def test_normalize_room_id_rejects_unrelated_text(self) -> None:
         self.assertEqual(normalize_room_id("房间：123456"), "")
 
+    def test_normalize_room_id_rejects_non_ascii_and_non_positive_numbers(self) -> None:
+        self.assertEqual(normalize_room_id("１２３４５６"), "")
+        self.assertEqual(normalize_room_id("0"), "")
+        self.assertEqual(normalize_room_id("000123"), "")
+
+    def test_normalize_room_id_rejects_partial_numeric_url_segment(self) -> None:
+        self.assertEqual(normalize_room_id("https://live.bilibili.com/123abc"), "")
+        self.assertEqual(normalize_room_id("https://live.bilibili.com/0?from=test"), "")
+
     def test_decode_json_response_reports_html_response(self) -> None:
         response = requests.Response()
         response.status_code = 200

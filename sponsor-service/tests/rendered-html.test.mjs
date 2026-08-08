@@ -27,7 +27,9 @@ before(async () => {
     diagnostics += chunk.toString();
   });
 
-  for (let attempt = 0; attempt < 80; attempt += 1) {
+  // Windows 冷启动时 Vite/Cloudflare 插件的首次编译可超过 10 秒。
+  // 给真实的开发服务器 25 秒，避免将正常冷启动误判为回归失败。
+  for (let attempt = 0; attempt < 200; attempt += 1) {
     if (server.exitCode !== null) {
       throw new Error(`vinext start exited early:\n${diagnostics}`);
     }
@@ -40,7 +42,7 @@ before(async () => {
     await new Promise((resolve) => setTimeout(resolve, 125));
   }
 
-  throw new Error(`vinext start did not become ready:\n${diagnostics}`);
+  throw new Error(`vinext dev did not become ready:\n${diagnostics}`);
 });
 
 after(() => {
@@ -86,7 +88,7 @@ test("health endpoint reports the deployed service version", async () => {
   assert.deepEqual(await response.json(), {
     ok: true,
     service: "overwatch-bilibili-drops-sponsor",
-    version: "0.5.23",
+    version: "0.5.25",
     callback_circuit: {
       state: "closed",
       failure_count: 0,
@@ -107,4 +109,31 @@ test("order endpoint rejects unsupported amounts before touching secrets", async
   const payload = await response.json();
   assert.equal(payload.ok, false);
   assert.match(payload.error, /1–9999 元/);
+});
+
+test("order endpoint rejects precision and notation bypasses", async () => {
+  const invalidAmounts = [
+    "0.999",
+    "1.234",
+    "9999.001",
+    "1e2",
+    "1E+2",
+    "+5",
+    "-5",
+    "1.",
+    ".5",
+    100,
+  ];
+
+  for (const amount of invalidAmounts) {
+    const response = await request("/api/sponsor/orders", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ amount, provider: "yungouos" }),
+    });
+    assert.equal(response.status, 400, `amount=${String(amount)}`);
+    const payload = await response.json();
+    assert.equal(payload.ok, false);
+    assert.match(payload.error, /1–9999 元/);
+  }
 });

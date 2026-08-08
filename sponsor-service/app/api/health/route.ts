@@ -15,7 +15,7 @@ export async function GET(request: Request): Promise<Response> {
     return json({
       ok: true,
       service: "overwatch-bilibili-drops-sponsor",
-      version: "0.5.23",
+      version: "0.5.25",
       callback_circuit: {
         state: callbackCircuit.state,
         failure_count: callbackCircuit.failureCount,

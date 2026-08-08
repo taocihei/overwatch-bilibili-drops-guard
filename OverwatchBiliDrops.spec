@@ -22,6 +22,22 @@ tkinter_pyd = python_root / 'DLLs' / '_tkinter.pyd'
 tcl_dll = python_root / 'DLLs' / 'tcl86t.dll'
 tk_dll = python_root / 'DLLs' / 'tk86t.dll'
 
+required_tk_resources = (
+    tcl_library,
+    tk_library,
+    tkinter_lib,
+    tkinter_pyd,
+    tcl_dll,
+    tk_dll,
+)
+missing_tk_resources = [str(path) for path in required_tk_resources if not path.exists()]
+if missing_tk_resources:
+    raise RuntimeError(
+        'Missing required Tcl/Tk packaging resources: '
+        + ', '.join(missing_tk_resources)
+        + '. Install a complete Python distribution with Tcl/Tk support.'
+    )
+
 datas = [
     ('assets/app.ico', 'assets'),
     ('assets/live_watch_skynet.wasm', 'assets'),
@@ -33,15 +49,13 @@ for source, target in (
     (tk_library, '_tk_data'),
     (tkinter_lib, 'tkinter'),
 ):
-    if source.exists():
-        datas.append((str(source), target))
+    datas.append((str(source), target))
 for source, target in (
     (tkinter_pyd, '.'),
     (tcl_dll, '.'),
     (tk_dll, '.'),
 ):
-    if source.exists():
-        binaries.append((str(source), target))
+    binaries.append((str(source), target))
 tmp_ret = collect_all('selenium')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 tmp_ret = collect_all('PIL')

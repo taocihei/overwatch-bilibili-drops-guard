@@ -544,15 +544,22 @@ class LiveWatcher:
             self._rediscover_thread,
         ]
         seen: set[int] = set()
+        unique_candidates: list[threading.Thread] = []
         for thread in candidates:
-            if thread is None or thread is current or id(thread) in seen:
+            if thread is None or id(thread) in seen:
                 continue
             seen.add(id(thread))
+            unique_candidates.append(thread)
+            if thread is current:
+                continue
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 break
             thread.join(timeout=remaining)
-        return not self.running
+        # running 属性只表示“挂宝主流程”，不包含领取、手动刷新和重新识别
+        # 线程。因此这里必须直接检查全部候选线程，否则超时时会误报已停止，
+        # 快速重启后旧领取线程可能与新实例并发提交。
+        return not any(thread.is_alive() for thread in unique_candidates)
 
     def get_local_watch_estimate_minutes(self) -> float:
         """Actual local wall-clock time since the first successful watch heartbeat."""
