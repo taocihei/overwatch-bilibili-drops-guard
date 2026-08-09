@@ -244,6 +244,7 @@ class GuiMessageRoutingTest(unittest.TestCase):
         self.assertTrue(app._is_progress_message("[默认账号] 房间 23612045：直播中"))
         self.assertTrue(app._is_progress_message("[小号] 后台计时状态：40/40 正常"))
         self.assertTrue(app._is_progress_message("掉宝任务：x"))
+        self.assertTrue(app._is_progress_message("任务与领奖检查暂不可用；观看计时仍在独立运行"))
         self.assertFalse(app._is_progress_message("[默认账号] 上报进入直播间累计失败 1 次"))
 
     def test_notification_message_recognized_with_account_prefix(self) -> None:
@@ -360,6 +361,19 @@ class ProgressVisualRoutingTest(unittest.TestCase):
         self.assertEqual(app.reward_title_var.get(), "未到领取条件")
         self.assertEqual(app.reward_status_var.get(), "领奖：未到条件")
         self.assertNotEqual(app.reward_status_var.get(), "领奖：失败")
+
+    def test_task_monitor_failure_keeps_watch_running_and_requests_manual_claim(self) -> None:
+        app = self._app()
+
+        gui.App._sync_progress_visual(
+            app,
+            "任务与领奖检查暂不可用；观看计时仍在独立运行，"
+            "请在 B 站活动页面手动查看进度并领取奖励",
+        )
+
+        self.assertEqual(app.progress_title_var.get(), "观看计时中")
+        self.assertEqual(app.reward_title_var.get(), "请手动领取")
+        self.assertEqual(app.reward_status_var.get(), "领奖：需手动")
 
     def test_claim_failure_sets_claim_failure(self) -> None:
         app = self._app()

@@ -1117,16 +1117,16 @@ class LiveWatcherTest(unittest.TestCase):
     def test_wait_for_stop_reports_auxiliary_thread_timeout(self) -> None:
         live_watcher = LiveWatcher(WatchOptions(cookie="a=b", room_id="1"), lambda _m: None)
         release = threading.Event()
-        claim_thread = threading.Thread(target=lambda: release.wait(1), daemon=True)
-        live_watcher._claim_thread = claim_thread
-        claim_thread.start()
+        task_monitor_thread = threading.Thread(target=lambda: release.wait(1), daemon=True)
+        live_watcher._task_monitor_thread = task_monitor_thread
+        task_monitor_thread.start()
 
         try:
             self.assertFalse(live_watcher.wait_for_stop(timeout=0.01))
-            self.assertTrue(claim_thread.is_alive())
+            self.assertTrue(task_monitor_thread.is_alive())
         finally:
             release.set()
-            claim_thread.join(timeout=1)
+            task_monitor_thread.join(timeout=1)
 
         self.assertTrue(live_watcher.wait_for_stop(timeout=0.1))
 
@@ -1148,6 +1148,49 @@ class LiveWatcherTest(unittest.TestCase):
         )
         calls: list[str] = []
 
+        live_watcher._check_activity_task_progress = lambda _client: calls.append("activity") or False  # type: ignore[method-assign]
+        live_watcher._check_and_claim_task = lambda _client, _up_id: calls.append("generic") or False  # type: ignore[method-assign]
+        live_watcher._check_explicit_task_ids = lambda _up_id: calls.append("explicit") or False  # type: ignore[method-assign]
+        live_watcher._start_auto_claim_thread = lambda: calls.append("claim")  # type: ignore[method-assign]
+
+        live_watcher._poll_task_features(object(), 2)  # type: ignore[arg-type]
+
+        self.assertEqual(calls, ["activity", "generic", "explicit"])
+
+    def test_task_monitor_failure_does_not_stop_watching_and_recovers(self) -> None:
+        logs: list[str] = []
+        live_watcher = LiveWatcher(
+            WatchOptions(cookie="a=b", room_id="1", auto_claim=True),
+            logs.append,
+        )
+        live_watcher._check_activity_task_progress = lambda _client: False  # type: ignore[method-assign]
+        live_watcher._check_and_claim_task = lambda _client, _up_id: False  # type: ignore[method-assign]
+        live_watcher._check_explicit_task_ids = lambda _up_id: False  # type: ignore[method-assign]
+
+        live_watcher._poll_task_features(object(), 2)  # type: ignore[arg-type]
+        live_watcher._poll_task_features(object(), 2)  # type: ignore[arg-type]
+
+        self.assertTrue(live_watcher.task_monitor_degraded)
+        self.assertFalse(live_watcher._stop.is_set())
+        self.assertTrue(any("观看计时仍在独立运行" in message for message in logs))
+
+        def recovered_generic(_client, _up_id):
+            live_watcher._last_generic_progress_available = True
+            return False
+
+        live_watcher._check_and_claim_task = recovered_generic  # type: ignore[method-assign]
+        live_watcher._poll_task_features(object(), 2)  # type: ignore[arg-type]
+
+        self.assertFalse(live_watcher.task_monitor_degraded)
+        self.assertTrue(any("任务与领奖检查已恢复" in message for message in logs))
+
+    def test_main_watch_loop_only_starts_optional_task_monitor(self) -> None:
+        live_watcher = LiveWatcher(
+            WatchOptions(cookie="a=b", room_id="1"),
+            lambda _message: None,
+        )
+        calls: list[str] = []
+
         class FakeClient:
             def check_login(self):
                 return LoginInfo(True, uname="tester", mid=1)
@@ -1159,16 +1202,14 @@ class LiveWatcherTest(unittest.TestCase):
             def close(self):
                 pass
 
-        live_watcher._start_watch_threads = lambda _room: None  # type: ignore[method-assign]
-        live_watcher._check_activity_task_progress = lambda _client: calls.append("activity") or False  # type: ignore[method-assign]
-        live_watcher._check_and_claim_task = lambda _client, _up_id: calls.append("generic") or False  # type: ignore[method-assign]
-        live_watcher._check_explicit_task_ids = lambda _up_id: calls.append("explicit") or False  # type: ignore[method-assign]
-        live_watcher._start_auto_claim_thread = lambda: calls.append("claim")  # type: ignore[method-assign]
+        live_watcher._start_watch_threads = lambda _room: calls.append("watch")  # type: ignore[method-assign]
+        live_watcher._ensure_task_monitor_started = lambda: calls.append("task-monitor")  # type: ignore[method-assign]
+        live_watcher._check_activity_task_progress = lambda _client: (_ for _ in ()).throw(AssertionError("synchronous task poll"))  # type: ignore[method-assign]
 
         with patch("bili_drop_guard.watcher.BilibiliClient", return_value=FakeClient()):
             live_watcher._run()
 
-        self.assertEqual(calls, ["activity", "generic", "explicit"])
+        self.assertEqual(calls, ["watch", "task-monitor"])
 
     def test_server_progress_rollback_keeps_last_confirmed_minutes(self) -> None:
         logs: list[str] = []

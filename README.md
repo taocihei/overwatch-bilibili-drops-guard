@@ -1,6 +1,6 @@
 # 守望先锋 B 站直播挂宝 / Overwatch Bilibili Live Drops Guard
 
-当前版本：`v0.5.26`
+当前版本：`v0.5.27`
 
 开源地址：<https://github.com/taocihei/overwatch-bilibili-drops-guard>
 
@@ -24,7 +24,7 @@
 
 1. 打开项目页面：<https://github.com/taocihei/overwatch-bilibili-drops-guard>
 2. 进入右侧或页面中的 `Releases`。
-3. 下载 `OverwatchBiliDrops-v0.5.26.exe`。
+3. 下载 `OverwatchBiliDrops-v0.5.27.exe`。
 4. 双击运行。
 5. 如果 Windows 提示“未知发布者”或“Windows 已保护你的电脑”，点击“更多信息”，再点“仍要运行”。这是个人开源软件常见提示，不代表一定有病毒。
 6. 第一次使用先点“自动获取 Cookie”，在弹出的独立 Edge/Chrome 窗口里登录 B 站。
@@ -47,6 +47,14 @@
 - `通知 URL`：可留空。填写后，启动、检测到可领取、领取成功、领取失败、Cookie 获取成功等关键事件会向该地址发送 JSON POST。
 - `观看进度`：优先显示本次观看进度，比如“还差 48 分钟”“已完成，待领取”“已领取”。
 - `运行日志`：保留登录、计时、任务识别和领取记录，适合排查异常。
+
+## v0.5.27 新增与修复
+
+- **观看计时与任务领奖彻底解耦**：直播观看会话由独立主流程持续运行，活动任务页、进度接口或领奖逻辑异常都不会停止挂时长。
+- **任务监控独立线程**：任务识别、`totalv2` 进度读取和自动领奖迁移到独立客户端与线程，接口阻塞或结构变化不会拖住直播间检查和观看心跳。
+- **自动降级为手动领奖**：任务接口连续不可用时，界面明确显示“观看计时中 / 请手动领取”，用户可直接前往 B 站活动页操作，后台观看连接继续保持。
+- **保留独立运行反馈**：无法读取 B 站任务分钟数时，观看进度卡显示本地实际运行时长，不再把任务页故障误报为挂宝停止。
+- **恢复自动同步**：B 站任务接口恢复后自动退出降级状态，继续同步真实任务进度和自动领奖，期间无需重启挂宝。
 
 ## v0.5.26 新增与修复
 
@@ -419,7 +427,7 @@ dist\OverwatchBiliDrops.exe
 发布时会同时生成带版本号的文件，例如：
 
 ```text
-dist\OverwatchBiliDrops-v0.5.26.exe
+dist\OverwatchBiliDrops-v0.5.27.exe
 ```
 ## 赞助
 
@@ -435,7 +443,7 @@ dist\OverwatchBiliDrops-v0.5.26.exe
 
 Project name: **守望先锋 B 站直播挂宝 / Overwatch Bilibili Live Drops Guard**
 
-Version: `v0.5.26`
+Version: `v0.5.27`
 
 Repository: <https://github.com/taocihei/overwatch-bilibili-drops-guard>
 
@@ -455,7 +463,7 @@ Default room: `23612045`.
 
 1. Open the repository page: <https://github.com/taocihei/overwatch-bilibili-drops-guard>
 2. Open `Releases`.
-3. Download `OverwatchBiliDrops-v0.5.26.exe`.
+3. Download `OverwatchBiliDrops-v0.5.27.exe`.
 4. Double-click to run it.
 5. If Windows shows an unknown-publisher warning, click `More info`, then `Run anyway`.
 6. Click `自动获取 Cookie`, then sign in to Bilibili in the independent Edge/Chrome window opened by the app.
@@ -499,5 +507,5 @@ dist\OverwatchBiliDrops.exe
 Release builds are also copied with a versioned file name, for example:
 
 ```text
-dist\OverwatchBiliDrops-v0.5.26.exe
+dist\OverwatchBiliDrops-v0.5.27.exe
 ```

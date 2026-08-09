@@ -25,6 +25,7 @@ SERVER_PROGRESS_RECONNECT_COOLDOWN_SECONDS = 150.0
 WATCH_RECONNECT_STAGGER_SECONDS = 0.12
 ACTIVITY_DISCOVERY_SUCCESS_TTL_SECONDS = 300.0
 ACTIVITY_DISCOVERY_RETRY_TTL_SECONDS = 60.0
+TASK_MONITOR_FAILURE_THRESHOLD = 2
 BILIBILI_TIMEZONE = timezone(timedelta(hours=8))
 WATCH_TASK_NAME_HINTS = (
     "观看",
@@ -141,7 +142,12 @@ class LiveWatcher:
         self._last_task_waiting_log_at = 0.0
         self._manual_refresh_thread: Optional[threading.Thread] = None
         self._rediscover_thread: Optional[threading.Thread] = None
+        self._task_monitor_thread: Optional[threading.Thread] = None
         self._next_activity_discovery_at = 0.0
+        self._last_activity_progress_available = False
+        self._last_generic_progress_available = False
+        self._task_monitor_failure_count = 0
+        self._task_monitor_degraded = False
 
     @property
     def running(self) -> bool:
@@ -167,6 +173,8 @@ class LiveWatcher:
             self._last_watch_reconnect_at = 0.0
             self._watch_started_monotonic = 0.0
             self._last_route_scale_at = 0.0
+            self._task_monitor_failure_count = 0
+            self._task_monitor_degraded = False
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
 
@@ -258,22 +266,9 @@ class LiveWatcher:
                     if room.room_id and not watch_started:
                         self._start_watch_threads(room)
                         watch_started = True
-
-                    if room.anchor_uid:
-                        # 任务发现和 B 站真实分钟数必须始终刷新；auto_claim 只控制是否提交领取。
-                        found_activity_claimable = self._check_activity_task_progress(client)
-                        with self._claim_lock:
-                            has_activity_tasks = bool(self._activity_task_ids)
-                        found_live_claimable = (
-                            False
-                            if has_activity_tasks
-                            else self._check_and_claim_task(client, room.anchor_uid)
-                        )
-                        found_explicit_claimable = self._check_explicit_task_ids(room.anchor_uid)
-                        if self.options.auto_claim and (
-                            found_live_claimable or found_activity_claimable or found_explicit_claimable
-                        ):
-                            self._start_auto_claim_thread()
+                        self.log("观看计时已独立启动；任务识别或领奖接口异常不会停止观看")
+                    if watch_started:
+                        self._ensure_task_monitor_started()
                 except Exception as exc:
                     self.log(f"守护循环异常：{exc}")
 
@@ -284,6 +279,92 @@ class LiveWatcher:
             if client is not None:
                 self._close_client(client)
             self.log("守护已停止")
+
+    def _ensure_task_monitor_started(self) -> None:
+        """Start the optional task/reward monitor without coupling it to watching."""
+
+        if self._task_monitor_thread and self._task_monitor_thread.is_alive():
+            return
+        self._task_monitor_thread = threading.Thread(
+            target=self._task_monitor_worker,
+            daemon=True,
+        )
+        self._task_monitor_thread.start()
+
+    def _task_monitor_worker(self) -> None:
+        """Poll progress/claim state on its own client and failure boundary.
+
+        The watch workers never depend on this thread. Bilibili can change the
+        activity page, totalv2 response, or reward endpoint without tearing down
+        already-running watch sessions.
+        """
+
+        client: BilibiliClient | None = None
+        try:
+            client = BilibiliClient(self.options.cookie)
+            while not self._stop.is_set():
+                up_id = self._last_up_id
+                if up_id:
+                    try:
+                        self._poll_task_features(client, up_id)
+                    except Exception as exc:
+                        self.log(f"任务监控异常：{self._friendly_error(exc)}")
+                        self._record_task_monitor_health(False)
+                self._stop.wait(max(10, int(self.options.check_interval or 10)))
+        except Exception as exc:
+            if not self._stop.is_set():
+                self.log(f"任务监控启动失败：{self._friendly_error(exc)}")
+                self._record_task_monitor_health(False)
+        finally:
+            if client is not None:
+                self._close_client(client)
+
+    def _poll_task_features(self, client: BilibiliClient, up_id: int) -> None:
+        found_activity_claimable = self._check_activity_task_progress(client)
+        activity_available = self._last_activity_progress_available
+        with self._claim_lock:
+            has_activity_tasks = bool(self._activity_task_ids)
+
+        # 活动页/totalv2 失效时仍尝试直播通用任务接口；只有活动进度已
+        # 正常返回时才跳过它，避免页面结构变化把整个任务监控一起拖死。
+        should_check_generic = not has_activity_tasks or not activity_available
+        found_live_claimable = (
+            self._check_and_claim_task(client, up_id)
+            if should_check_generic
+            else False
+        )
+        generic_available = self._last_generic_progress_available if should_check_generic else False
+        found_explicit_claimable = self._check_explicit_task_ids(up_id)
+        self._record_task_monitor_health(activity_available or generic_available)
+
+        if self.options.auto_claim and (
+            found_live_claimable or found_activity_claimable or found_explicit_claimable
+        ):
+            self._start_auto_claim_thread()
+
+    def _record_task_monitor_health(self, available: bool) -> None:
+        if available:
+            was_degraded = self._task_monitor_degraded
+            self._task_monitor_failure_count = 0
+            self._task_monitor_degraded = False
+            if was_degraded:
+                self.log("任务与领奖检查已恢复；观看计时期间始终未中断")
+            return
+
+        self._task_monitor_failure_count += 1
+        if (
+            self._task_monitor_failure_count >= TASK_MONITOR_FAILURE_THRESHOLD
+            and not self._task_monitor_degraded
+        ):
+            self._task_monitor_degraded = True
+            self.log(
+                "任务与领奖检查暂不可用；观看计时仍在独立运行，"
+                "请在 B 站活动页面手动查看进度并领取奖励"
+            )
+
+    @property
+    def task_monitor_degraded(self) -> bool:
+        return self._task_monitor_degraded
 
     def _start_watch_threads(self, room: RoomInfo | None = None) -> None:
         worker_count = self._configured_watch_threads
@@ -539,6 +620,7 @@ class LiveWatcher:
         candidates = [
             self._thread,
             *self._watch_threads,
+            self._task_monitor_thread,
             self._claim_thread,
             self._manual_refresh_thread,
             self._rediscover_thread,
@@ -842,12 +924,14 @@ class LiveWatcher:
             return True
 
     def _check_and_claim_task(self, client: BilibiliClient, up_id: int) -> bool:
+        self._last_generic_progress_available = False
         try:
             progress = client.get_user_task_progress(up_id)
         except Exception as exc:
             self.log(f"掉宝任务进度检查失败：{exc}")
             return False
 
+        self._last_generic_progress_available = True
         return self._record_task_progress(progress, announce_claimable=True)
 
     def _check_activity_task_progress(
@@ -856,6 +940,7 @@ class LiveWatcher:
         *,
         announce_claimable: bool = True,
     ) -> bool:
+        self._last_activity_progress_available = False
         self._discover_activity_task_ids_if_due(client, announce_progress=False)
         with self._claim_lock:
             if self._activity_task_ids:
@@ -869,6 +954,7 @@ class LiveWatcher:
         except Exception as exc:
             self.log(f"活动任务进度检查失败：{exc}")
             return False
+        self._last_activity_progress_available = True
         self._enrich_activity_progress(progress)
         self._remember_activity_progress_source(progress, task_ids)
         return self._record_task_progress(progress, announce_claimable=announce_claimable)
@@ -1368,7 +1454,7 @@ class LiveWatcher:
         if not up_id:
             self.log("缺少主播 UID，暂时无法领取")
             return
-        self._refresh_claimable_tasks(up_id)
+        task_progress_available = self._refresh_claimable_tasks(up_id)
         attempted_task_ids: set[str] = set()
         general_attempted = False
         started = False
@@ -1458,6 +1544,12 @@ class LiveWatcher:
                     break
 
         if not started:
+            if not task_progress_available:
+                self.log(
+                    "自动识别领奖暂不可用；观看计时不受影响，"
+                    "请打开 B 站活动页面手动领取"
+                )
+                return
             self.log("已刷新任务进度，但仍未检测到可领取任务；如果 B 站页面显示已完成，请稍后再点领取")
             return
         if self._stop.is_set():
@@ -1584,16 +1676,20 @@ class LiveWatcher:
         *,
         announce_claimable: bool = False,
         log_refresh: bool = True,
-    ) -> None:
+    ) -> bool:
         if log_refresh:
             self.log("领取前刷新任务进度")
         client = BilibiliClient(self.options.cookie)
+        generic_available = False
+        self._last_generic_progress_available = False
         try:
             try:
                 progress = client.get_user_task_progress(up_id)
             except Exception as exc:
                 self.log(f"领取前刷新任务进度失败：{exc}")
             else:
+                generic_available = True
+                self._last_generic_progress_available = True
                 self._record_task_progress(
                     progress,
                     announce_claimable=False,
@@ -1613,6 +1709,9 @@ class LiveWatcher:
                 self._check_one_explicit_task(up_id, task_id, threading.Event())
             except Exception as exc:
                 self.log(f"领取前检查手动任务失败：{self._friendly_error(exc)}")
+        available = generic_available or self._last_activity_progress_available
+        self._record_task_monitor_health(available)
+        return available
 
     def _summarize_task(self, progress: dict[str, Any]) -> str:
         text_parts: list[str] = []

@@ -255,6 +255,16 @@ class MultiAccountWatcher:
                 continue
         return max(estimates, default=0.0)
 
+    @property
+    def task_monitor_degraded(self) -> bool:
+        """Whether any account needs manual task/reward handling.
+
+        This flag deliberately does not affect ``running``: every child keeps
+        its watch sessions alive even when Bilibili changes the task page.
+        """
+
+        return any(bool(getattr(child, "task_monitor_degraded", False)) for _name, child in self._children)
+
     def get_server_credit_rate(self) -> float | None:
         """返回各账号 totalv2 实绩倍率之和，供主界面展示整体有效速度。"""
 

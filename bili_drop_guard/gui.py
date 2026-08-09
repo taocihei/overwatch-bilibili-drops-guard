@@ -5296,6 +5296,21 @@ class App(tk.Tk):
                 self.reward_detail_var.set("当前直播页没有可自动跟踪的掉宝任务")
                 self.reward_status_var.set("领奖：无任务")
             return
+        if "任务与领奖检查暂不可用" in text or "自动识别领奖暂不可用" in text:
+            self._progress_terminal = False
+            self.progress_ring.set_state(text="计时", caption="独立运行", value=0.36, color=ACCENT)
+            self.progress_title_var.set("观看计时中")
+            self.progress_detail_var.set("任务页接口异常，不影响观看会话继续运行。")
+            self.reward_title_var.set("请手动领取")
+            self.reward_detail_var.set("请打开 B 站活动页面查看并领取")
+            self.reward_status_var.set("领奖：需手动")
+            return
+        if "任务与领奖检查已恢复" in text:
+            self._progress_terminal = False
+            self.progress_ring.set_state(text="计时", caption="已恢复", value=0.38, color=ACCENT)
+            self.progress_title_var.set("任务检查已恢复")
+            self.progress_detail_var.set("观看计时期间未中断，已继续同步 B 站进度。")
+            return
         if (
             "暂时没有读到可跟踪的掉宝任务" in text
             or "没有读到活动任务列表" in text
@@ -5429,6 +5444,10 @@ class App(tk.Tk):
             "领取前刷新任务进度",
             "已刷新任务进度",
             "B站实绩连续",
+            "观看计时已独立启动",
+            "任务与领奖检查暂不可用",
+            "任务与领奖检查已恢复",
+            "自动识别领奖暂不可用",
         ))
 
     def _drain_logs(self) -> None:
@@ -5488,6 +5507,21 @@ class App(tk.Tk):
                 snapshot, summary = self.watcher.get_watch_status_snapshot()
                 self.watch_status_card.update_snapshot(snapshot, summary)
                 self._refresh_backend_summary(snapshot)
+                if bool(getattr(self.watcher, "task_monitor_degraded", False)):
+                    estimate_getter = getattr(self.watcher, "get_local_watch_estimate_minutes", None)
+                    local_minutes = 0.0
+                    if callable(estimate_getter):
+                        try:
+                            local_minutes = max(0.0, float(estimate_getter()))
+                        except (TypeError, ValueError):
+                            local_minutes = 0.0
+                    self._progress_terminal = False
+                    self.progress_ring.set_state(text="计时", caption="独立运行", value=0.36, color=ACCENT)
+                    self.progress_title_var.set(f"本地已运行 {self._format_progress_number(local_minutes)} 分钟")
+                    self.progress_detail_var.set("任务页接口异常，观看会话仍在持续。")
+                    self.reward_title_var.set("请手动领取")
+                    self.reward_detail_var.set("请打开 B 站活动页面查看并领取")
+                    self.reward_status_var.set("领奖：需手动")
             else:
                 self.watch_status_card.update_snapshot([], "观看连接：未启动")
                 self._refresh_backend_summary([])
