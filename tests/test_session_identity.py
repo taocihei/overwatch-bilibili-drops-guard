@@ -132,6 +132,7 @@ class WatcherHeartbeatWorkerUsesUniqueSessionIdentityTest(unittest.TestCase):
                 *,
                 session_buvid: str | None = None,
                 session_device_uuid: str | None = None,
+                use_httpx: bool = False,
             ) -> None:
                 self.cookie_header = cookie_header
                 self._buvid = session_buvid or "fallback"

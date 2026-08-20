@@ -5,7 +5,6 @@ import hmac
 import json
 import random
 import re
-import threading
 import time
 import urllib.parse
 from collections.abc import Iterator
@@ -17,6 +16,7 @@ from typing import Any, Dict, List
 from uuid import uuid4
 
 import json5
+import httpx
 import requests
 
 from .skynet_signer import sign_live_watch_payload
@@ -29,9 +29,6 @@ USER_AGENT = (
 )
 
 BILIBILI_TIMEZONE = timezone(timedelta(hours=8))
-WBI_KEY_CACHE_TTL_SECONDS = 30 * 60
-_WBI_KEY_CACHE_LOCK = threading.Lock()
-_WBI_KEY_CACHE: tuple[tuple[str, str], float] | None = None
 
 MIXIN_KEY_ENC_TAB = [
     46, 47, 18, 2, 53, 8, 23, 32,
@@ -146,6 +143,35 @@ def make_session_device_uuid() -> str:
     return str(uuid4())
 
 
+class _HttpxSessionAdapter:
+    """Expose the small requests.Session surface used by BilibiliClient.
+
+    Watch routes use httpx so their HTTP framing, header serialization and
+    connection lifecycle match the independently verified implementation.
+    """
+
+    def __init__(self) -> None:
+        self._client = httpx.Client(timeout=20.0)
+        self.headers = self._client.headers
+        self.cookies = self._client.cookies
+
+    def get(self, url: str, **kwargs: Any) -> httpx.Response:
+        return self._client.get(url, **self._translate(kwargs))
+
+    def post(self, url: str, **kwargs: Any) -> httpx.Response:
+        return self._client.post(url, **self._translate(kwargs))
+
+    def close(self) -> None:
+        self._client.close()
+
+    @staticmethod
+    def _translate(kwargs: Dict[str, Any]) -> Dict[str, Any]:
+        translated = dict(kwargs)
+        if "allow_redirects" in translated:
+            translated["follow_redirects"] = translated.pop("allow_redirects")
+        return translated
+
+
 class BilibiliClient:
     def __init__(
         self,
@@ -153,24 +179,30 @@ class BilibiliClient:
         *,
         session_buvid: str | None = None,
         session_device_uuid: str | None = None,
+        use_httpx: bool = False,
     ) -> None:
-        self.cookie_header = cookie_header
         self.cookies = parse_cookie_header(cookie_header)
         # 登录 Cookie 必须完整保留浏览器的原始设备身份。每条路由
         # x25Kn 请求体中的 LIVE_BUVID/page UUID 区分，不得把路由身份
         # 反写到账号 Cookie；否则同一账号会被识别成频繁换设备并合并计时。
         if "buvid3" not in self.cookies:
             self.cookies["buvid3"] = f"{uuid4()}infoc"
+        # 与真实浏览器/已验证实现保持一致：每个独立 HTTP 会话都显式
+        # 携带完整 Cookie 指纹，而不依赖客户端对跨子域 Cookie 的隐式选择。
+        self.cookie_header = "; ".join(
+            f"{key}={value}" for key, value in self.cookies.items()
+        )
         self._buvid = session_buvid or make_session_buvid()
         self._device_uuid = session_device_uuid or make_session_device_uuid()
         self._visit_id = uuid4().hex[:16]
-        self.session = requests.Session()
+        self.session = _HttpxSessionAdapter() if use_httpx else requests.Session()
         self._wbi_keys: tuple[str, str] | None = None
         self.session.headers.update(
             {
                 "User-Agent": USER_AGENT,
-                "Referer": "https://live.bilibili.com/",
-                "Origin": "https://live.bilibili.com",
+                "Referer": "https://www.bilibili.com/",
+                "Origin": "https://www.bilibili.com",
+                "Cookie": self.cookie_header,
             }
         )
         for key, value in self.cookies.items():
@@ -252,7 +284,8 @@ class BilibiliClient:
             live_status=int(room.get("live_status") or 0),
             online=int(room.get("online") or 0),
             anchor=str(anchor.get("uname") or ""),
-            anchor_uid=int(anchor.get("uid") or room.get("uid") or 0),
+            # x25Kn 使用 room_info.uid；anchor_info 只作界面展示补充。
+            anchor_uid=int(room.get("uid") or anchor.get("uid") or 0),
             parent_area_id=int(room.get("parent_area_id") or 0),
             area_id=int(room.get("area_id") or 0),
             message="直播中" if int(room.get("live_status") or 0) == 1 else "未开播",
@@ -650,6 +683,7 @@ class BilibiliClient:
             "Referer": referer,
             "Origin": "https://live.bilibili.com",
             "User-Agent": USER_AGENT,
+            "Cookie": self.cookie_header,
         }
 
     def _get_data(self, url: str, params: Dict[str, Any] | None = None) -> Dict[str, Any]:
@@ -735,41 +769,37 @@ class BilibiliClient:
         img_key, sub_key = self._get_wbi_keys()
         raw_key = img_key + sub_key
         mixin_key = "".join(raw_key[index] for index in MIXIN_KEY_ENC_TAB if index < len(raw_key))[:32]
-        signed = {key: "" if value is None else str(value) for key, value in params.items()}
-        signed["wts"] = str(int(time.time()))
-        signed = dict(sorted(signed.items()))
-        filtered = {
-            key: "".join(char for char in value if char not in "!'()*")
-            for key, value in signed.items()
-        }
-        query = urllib.parse.urlencode(filtered)
-        filtered["w_rid"] = hashlib.md5((query + mixin_key).encode("utf-8")).hexdigest()
-        return filtered
+        signed = dict(params)
+        signed["wts"] = int(time.time())
+        sorted_items = dict(sorted(signed.items(), key=lambda item: item[0]))
+        encoded_items: list[str] = []
+        for key, value in sorted_items.items():
+            filtered = "".join(char for char in str(value) if char not in "!'()*")
+            encoded_items.append(
+                f"{urllib.parse.quote(str(key), safe='')}="
+                f"{urllib.parse.quote(filtered, safe='')}"
+            )
+        query = "&".join(encoded_items)
+        signed["w_rid"] = hashlib.md5((query + mixin_key).encode("utf-8")).hexdigest()
+        return signed
 
     def _get_wbi_keys(self) -> tuple[str, str]:
         if self._wbi_keys:
             return self._wbi_keys
-        global _WBI_KEY_CACHE
-        now = time.time()
-        with _WBI_KEY_CACHE_LOCK:
-            if _WBI_KEY_CACHE is not None:
-                keys, expires_at = _WBI_KEY_CACHE
-                if now < expires_at:
-                    self._wbi_keys = keys
-                    return keys
-            response = self.session.get("https://api.bilibili.com/x/web-interface/nav", timeout=12)
-            payload = _decode_json_response(response)
-            data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
-            wbi_img = data.get("wbi_img") if isinstance(data.get("wbi_img"), dict) else {}
-            img_url = str(wbi_img.get("img_url") or "")
-            sub_url = str(wbi_img.get("sub_url") or "")
-            img_key = img_url.rsplit("/", 1)[-1].split(".", 1)[0]
-            sub_key = sub_url.rsplit("/", 1)[-1].split(".", 1)[0]
-            if not img_key or not sub_key:
-                raise RuntimeError("获取 WBI 签名密钥失败")
-            self._wbi_keys = (img_key, sub_key)
-            _WBI_KEY_CACHE = (self._wbi_keys, now + WBI_KEY_CACHE_TTL_SECONDS)
-            return self._wbi_keys
+        # 每条路由自己的 HTTP 会话完成 nav/WBI 初始化，避免一条
+        # 共享缓存跳过其他浏览器式会话的初始请求。
+        response = self.session.get("https://api.bilibili.com/x/web-interface/nav", timeout=12)
+        payload = _decode_json_response(response)
+        data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+        wbi_img = data.get("wbi_img") if isinstance(data.get("wbi_img"), dict) else {}
+        img_url = str(wbi_img.get("img_url") or "")
+        sub_url = str(wbi_img.get("sub_url") or "")
+        img_key = img_url.rsplit("/", 1)[-1].split(".", 1)[0]
+        sub_key = sub_url.rsplit("/", 1)[-1].split(".", 1)[0]
+        if not img_key or not sub_key:
+            raise RuntimeError("获取 WBI 签名密钥失败")
+        self._wbi_keys = (img_key, sub_key)
+        return self._wbi_keys
 
 
 def _decode_json_response(response: requests.Response) -> Dict[str, Any]:

@@ -99,13 +99,23 @@ class LiveWatchProtocolTest(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "hbil/sid/stky"):
             client.start_live_watch_session(RoomInfo(room_id=23612045, live_status=1), "https://example.com/live.flv")
 
-    def test_watcher_uses_both_credit_protocols_and_increments_sequences(self) -> None:
+    def test_watcher_uses_x25kn_only_and_increments_sequence(self) -> None:
         calls: list[tuple] = []
 
         class FakeClient:
             def room_entry_action(self, room: RoomInfo) -> dict:
                 calls.append(("entry", room.room_id))
                 return {}
+
+            def get_room_info(self, room_id: str) -> RoomInfo:
+                calls.append(("room-info", int(room_id)))
+                return RoomInfo(
+                    room_id=int(room_id),
+                    live_status=1,
+                    anchor_uid=9,
+                    parent_area_id=1,
+                    area_id=2,
+                )
 
             def enter_room_heartbeat(self, room: RoomInfo) -> dict:
                 calls.append(("legacy-start", room.room_id))
@@ -149,16 +159,15 @@ class LiveWatchProtocolTest(unittest.TestCase):
         state.official_next_due = 0
         state = live_watcher._continue_heartbeat_session(FakeClient(), room, state.qid, state)  # type: ignore[arg-type]
 
-        self.assertEqual(state.interval, 45)
-        self.assertEqual(state.qid, 2)
+        self.assertEqual(state.interval, 60)
+        self.assertEqual(state.qid, 1)
         self.assertEqual(state.legacy_sequence, 2)
         self.assertEqual(state.legacy_ets, 200)
         self.assertEqual(
             [call[0] for call in calls],
-            ["entry", "legacy-start", "play", "start", "legacy-heartbeat", "heartbeat"],
+            ["entry", "room-info", "legacy-start", "legacy-heartbeat"],
         )
-        self.assertEqual(calls[-2][2], 1)
-        self.assertEqual(calls[-1][3], 1)
+        self.assertEqual(calls[-1][2], 1)
 
 
 class SkynetSignerTest(unittest.TestCase):

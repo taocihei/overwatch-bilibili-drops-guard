@@ -38,6 +38,8 @@ class FakeClient:
             online=100,
             anchor="测试主播",
             anchor_uid=12345,
+            parent_area_id=1,
+            area_id=2,
             message="直播中",
         )
 
@@ -107,7 +109,13 @@ class WatcherEndToEndTest(unittest.TestCase):
         watcher_module.CLAIM_RATE_LIMIT_DELAY_SECONDS = 0
         self._client_holder: dict[str, FakeClient] = {}
 
-        def factory(cookie: str, *, session_buvid: str | None = None, session_device_uuid: str | None = None) -> FakeClient:
+        def factory(
+            cookie: str,
+            *,
+            session_buvid: str | None = None,
+            session_device_uuid: str | None = None,
+            use_httpx: bool = False,
+        ) -> FakeClient:
             client = self._client_holder.get("instance")
             if client is None:
                 client = FakeClient(cookie, session_buvid=session_buvid, session_device_uuid=session_device_uuid)
@@ -145,7 +153,7 @@ class WatcherEndToEndTest(unittest.TestCase):
         client = self._client_holder["instance"]
         self.assertTrue(any(call.startswith("entry-action:") for call in client.heartbeat_calls))
         self.assertTrue(any(call.startswith("enter:") for call in client.heartbeat_calls))
-        self.assertTrue(any(call.startswith("watch-start:") for call in client.heartbeat_calls))
+        self.assertFalse(any(call.startswith("watch-start:") for call in client.heartbeat_calls))
 
     def test_claim_flow_submits_to_bilibili_when_task_completed(self) -> None:
         logs: list[str] = []

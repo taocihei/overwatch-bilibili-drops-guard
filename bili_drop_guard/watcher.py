@@ -21,9 +21,6 @@ CLAIM_UNLOCK_REFRESH_ATTEMPTS = 3
 WATCH_START_INTERVAL_SECONDS = 1.0
 WATCH_SESSION_RECONNECT_SECONDS = 8.0
 SERVER_RATE_WINDOW_SECONDS = 180.0
-SERVER_PROGRESS_STALL_SECONDS = 150.0
-SERVER_PROGRESS_RECONNECT_COOLDOWN_SECONDS = 150.0
-WATCH_RECONNECT_STAGGER_SECONDS = 0.12
 ACTIVITY_DISCOVERY_SUCCESS_TTL_SECONDS = 300.0
 ACTIVITY_DISCOVERY_RETRY_TTL_SECONDS = 60.0
 TASK_MONITOR_FAILURE_THRESHOLD = 2
@@ -138,8 +135,6 @@ class LiveWatcher:
         self._server_progress_value: float | None = None
         self._server_progress_advanced_at = 0.0
         self._server_progress_observed_at = 0.0
-        self._watch_reconnect_generation = 0
-        self._last_watch_reconnect_at = 0.0
         self._last_task_waiting_log_at = 0.0
         self._manual_refresh_thread: Optional[threading.Thread] = None
         self._rediscover_thread: Optional[threading.Thread] = None
@@ -174,8 +169,6 @@ class LiveWatcher:
             self._server_progress_value = None
             self._server_progress_advanced_at = 0.0
             self._server_progress_observed_at = 0.0
-            self._watch_reconnect_generation = 0
-            self._last_watch_reconnect_at = 0.0
             self._watch_started_monotonic = 0.0
             self._last_route_scale_at = 0.0
             self._task_monitor_failure_count = 0
@@ -482,11 +475,15 @@ class LiveWatcher:
                 interval_text = f"，下一次约 {min_interval}-{max_interval} 秒后"
         heartbeat_text = f"，请求成功 {heartbeat_count} 次" if heartbeat_count else ""
         server_rate = self._server_credit_rate()
-        server_text = (
-            f"，设置 {self._configured_watch_threads} 路 / B 站实绩约 {server_rate:.1f}x"
-            if server_rate is not None
-            else f"，设置 {self._configured_watch_threads} 路 / 等待 B 站实绩样本"
-        )
+        if server_rate is None:
+            server_text = f"，设置 {self._configured_watch_threads} 路 / 等待 B 站实绩样本"
+        elif self._server_progress_is_live_time_limited(server_rate):
+            server_text = (
+                f"，设置 {self._configured_watch_threads} 路 / B 站实绩约 {server_rate:.1f}x"
+                "（已追平当前直播时长上限，连接保持中）"
+            )
+        else:
+            server_text = f"，设置 {self._configured_watch_threads} 路 / B 站实绩约 {server_rate:.1f}x"
         return (
             f"观看连接：{'，'.join(parts)}{interval_text}{heartbeat_text}{server_text}",
             normal_count,
@@ -557,11 +554,15 @@ class LiveWatcher:
             self._heartbeat_count += 1
 
     def _record_server_progress(self, score: float, now: float, *, expect_progress: bool = False) -> None:
-        """记录 totalv2 分钟数；入账停滞时让所有观看会话自动重建。"""
+        """记录 totalv2 分钟数，仅用于显示服务端实绩。
+
+        totalv2 是延迟、整分钟聚合值，不能用它判定底层长会话已断开。
+        曾经的停滞重连会在高路数下约 90 秒拆毁全部有效长会话，
+        正是“前几分钟快、后续不计”的关键差异。
+        """
 
         if score < 0:
             return
-        reconnect = False
         with self._watch_status_lock:
             samples = self._server_progress_samples
             previous = self._server_progress_value
@@ -580,33 +581,6 @@ class LiveWatcher:
                 self._server_progress_advanced_at = now
             elif not self._server_progress_advanced_at:
                 self._server_progress_advanced_at = now
-            elif (
-                expect_progress
-                and self._heartbeat_count > 0
-                and not self._stop.is_set()
-                and self._room is not None
-                and self._room.live_status == 1
-                and now - self._server_progress_advanced_at >= self._server_progress_stall_seconds()
-                and now - self._last_watch_reconnect_at >= SERVER_PROGRESS_RECONNECT_COOLDOWN_SECONDS
-            ):
-                self._watch_reconnect_generation += 1
-                self._last_watch_reconnect_at = now
-                self._server_progress_advanced_at = now
-                self._server_progress_samples = []
-                reconnect = True
-        if reconnect:
-            stall_seconds = self._server_progress_stall_seconds()
-            self.log(
-                f"B站实绩连续 {int(stall_seconds)} 秒未增加"
-                f"（当前 {self._format_progress_value(score)} 分钟），正在自动重建观看会话"
-            )
-
-    def _server_progress_stall_seconds(self) -> float:
-        """高倍率配置必须更快按 totalv2 反馈重建，低倍率则保留完整观察窗口。"""
-
-        target_rate = max(1, int(self._configured_watch_threads or 1))
-        adaptive_seconds = max(90.0, 6000.0 / target_rate)
-        return min(float(SERVER_PROGRESS_STALL_SECONDS), adaptive_seconds)
 
     def _reset_server_progress_tracking(self) -> None:
         with self._watch_status_lock:
@@ -615,22 +589,28 @@ class LiveWatcher:
             self._server_progress_advanced_at = 0.0
             self._server_progress_observed_at = 0.0
 
-    def _watch_session_generation(self) -> int:
-        with self._watch_status_lock:
-            return self._watch_reconnect_generation
-
-    def _watch_session_needs_reconnect(self, generation: int) -> bool:
-        return generation != self._watch_session_generation()
-
-    def _stagger_watch_reconnect(self, worker_id: int) -> None:
-        delay = min(max(worker_id - 1, 0) * WATCH_RECONNECT_STAGGER_SECONDS, 12.0)
-        if delay > 0:
-            self._stop.wait(delay)
-
     def _server_credit_rate(self) -> float | None:
         with self._watch_status_lock:
             samples = list(self._server_progress_samples)
         return self._credit_rate_from_samples(samples)
+
+    def _server_progress_is_live_time_limited(self, server_rate: float | None = None) -> bool:
+        """识别“路由健康，但服务端只释放实时分钟”的账号级上限。"""
+
+        rate = self._server_credit_rate() if server_rate is None else server_rate
+        if rate is None or self._configured_watch_threads <= 1:
+            return False
+        with self._watch_status_lock:
+            worker_count = self._watch_worker_count
+            normal_count = sum(
+                1
+                for worker_id in range(1, worker_count + 1)
+                if self._watch_statuses.get(worker_id, {}).get("state") == "正常"
+            )
+        healthy_ratio = normal_count / max(1, worker_count)
+        # totalv2 是整数分钟聚合值；低于 1.5x 且至少 80% 路由健康时，
+        # 表示多路已追平 B 站当前可释放的直播时长，而不是连接已经断开。
+        return healthy_ratio >= 0.8 and rate <= 1.5
 
     @staticmethod
     def _credit_rate_from_samples(samples: list[tuple[float, float]]) -> float | None:
@@ -728,27 +708,20 @@ class LiveWatcher:
                     if self._watch_detail_enabled():
                         self.log(f"后台计时 {worker_id} 已进入房间 {current_room.room_id}，正在提交观看计时")
 
-                    session_generation = self._watch_session_generation()
                     state = self._start_heartbeat_session(client, current_room, state)
                     self._set_watch_status(
                         worker_id,
                         "正常",
                         interval=state.interval,
-                        message="双计时会话已验证，等待 B 站实绩增长",
+                        message="x25Kn 长会话已验证，等待 B 站实绩增长",
                     )
                     self._record_heartbeat(state.interval)
                     if self._watch_detail_enabled():
                         self.log(f"后台计时 {worker_id} 首次计时请求成功，下一次约 {state.interval} 秒后")
                     self._log_watch_status_summary()
-                    self._wait_for_watch_interval(state.interval, session_generation)
+                    self._wait_for_watch_interval(state.interval)
 
                     while not self._stop.is_set():
-                        if self._watch_session_needs_reconnect(session_generation):
-                            self._set_watch_status(worker_id, "重连中", message="B站实绩停滞，正在重建观看会话")
-                            self._stagger_watch_reconnect(worker_id)
-                            self._close_client(client)
-                            client = None
-                            break
                         latest_room = self._latest_room_snapshot(current_room)
                         if latest_room.live_status != 1:
                             current_room = latest_room
@@ -760,7 +733,7 @@ class LiveWatcher:
                                 worker_id,
                                 "正常",
                                 interval=state.interval,
-                                message="双计时心跳已接受，等待 B 站实绩增长",
+                                message="x25Kn 心跳已接受，等待 B 站实绩增长",
                             )
                             self._record_heartbeat(state.interval)
                             if self._watch_detail_enabled():
@@ -773,7 +746,7 @@ class LiveWatcher:
                                 message=f"观看心跳暂未接受，约 {state.interval} 秒后原会话重试",
                             )
                         self._log_watch_status_summary()
-                        self._wait_for_watch_interval(state.interval, session_generation)
+                        self._wait_for_watch_interval(state.interval)
                 except Exception as exc:
                     self._set_watch_status(worker_id, "暂时失败", message=self._friendly_error(exc))
                     if self._watch_detail_enabled():
@@ -795,11 +768,12 @@ class LiveWatcher:
             self.options.cookie,
             session_buvid=make_session_buvid(),
             session_device_uuid=make_session_device_uuid(),
+            use_httpx=True,
         )
 
-    def _wait_for_watch_interval(self, interval: int, generation: int) -> None:
+    def _wait_for_watch_interval(self, interval: int, generation: int | None = None) -> None:
         deadline = time.monotonic() + max(1, int(interval))
-        while not self._stop.is_set() and not self._watch_session_needs_reconnect(generation):
+        while not self._stop.is_set():
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 return
@@ -893,16 +867,12 @@ class LiveWatcher:
 
     @staticmethod
     def _next_heartbeat_wait(state: HeartbeatState, now: float | None = None) -> int:
-        """双协议有各自的心跳截止时间，每次只等待最先到期的一条。"""
+        """等待 x25Kn 服务端下发的下一次心跳时间。"""
 
         current = time.monotonic() if now is None else now
-        deadlines = [
-            value
-            for value in (state.official_next_due, state.legacy_next_due)
-            if value > 0
-        ]
+        deadlines = [value for value in (state.legacy_next_due,) if value > 0]
         if not deadlines:
-            return max(1, min(state.official_interval, state.legacy_interval))
+            return max(1, state.legacy_interval)
         return max(1, int(math.ceil(min(deadlines) - current)))
 
     def _start_heartbeat_session(
@@ -911,25 +881,26 @@ class LiveWatcher:
         room: RoomInfo,
         fallback: HeartbeatState,
     ) -> HeartbeatState:
-        """建立 x25Kn 累计链与 te9Kl 官方播放链，两条都验证后才标记正常。"""
+        """按已验证实现的顺序建立单一 x25Kn 长会话。"""
 
         client.room_entry_action(room)
-        legacy_data = client.enter_room_heartbeat(room)
+        # 每条路由自己的 HTTP 客户端获取一次房间元数据。
+        # 这与多开浏览器窗口的加载顺序一致：entry -> getInfo -> x25Kn/E。
+        trace_room = client.get_room_info(str(room.room_id))
+        if not trace_room.room_id:
+            raise RuntimeError(trace_room.message or "获取直播间信息失败")
+        if trace_room.live_status != 1:
+            raise RuntimeError(f"房间 {trace_room.room_id} 当前未开播")
+        if trace_room.anchor_uid <= 0 or trace_room.parent_area_id <= 0 or trace_room.area_id <= 0:
+            raise RuntimeError(f"房间 {trace_room.room_id} 累计心跳元数据不完整")
+        legacy_data = client.enter_room_heartbeat(trace_room)
         legacy_interval, legacy_ets, legacy_secret_key, legacy_secret_rule = (
             self._legacy_heartbeat_values(legacy_data)
         )
-        play_url = client.get_live_play_url(room)
-        official_data = client.start_live_watch_session(room, play_url)
-        official_interval = max(10, int(official_data.get("hbil") or 60))
         now = time.monotonic()
         state = self._extract_heartbeat_state(
             {
-                **official_data,
-                "hbil": min(official_interval, legacy_interval),
-                "official_interval": official_interval,
-                "official_next_due": now + official_interval,
-                "play_url": play_url,
-                "qid": 1,
+                "hbil": legacy_interval,
                 "legacy_interval": legacy_interval,
                 "legacy_ets": legacy_ets,
                 "legacy_secret_key": legacy_secret_key,
@@ -950,10 +921,8 @@ class LiveWatcher:
         sequence: int,
         state: HeartbeatState,
     ) -> HeartbeatState:
-        """只发送已到期的心跳；任一链路失败则整路重建。"""
+        """续期原 x25Kn 长会话；只有心跳本身失败才重建该路。"""
 
-        if not state.session_id or not state.stky or not state.play_url:
-            raise RuntimeError("官方观看会话缺少 sid/stky/play_url")
         if not state.legacy_ets or not state.legacy_secret_key or not state.legacy_secret_rule:
             raise RuntimeError("x25Kn 会话缺少 timestamp/secret_key/secret_rule")
 
@@ -979,29 +948,9 @@ class LiveWatcher:
             legacy_sequence += 1
             legacy_next_due = time.monotonic() + legacy_interval
 
-        official_data: dict[str, Any] = {}
-        official_interval = state.official_interval
-        official_qid = state.qid
-        official_next_due = state.official_next_due
-        if official_next_due <= 0 or now >= official_next_due:
-            official_data = client.continue_live_watch_session(
-                room,
-                state.play_url,
-                qid=sequence,
-                session_id=state.session_id,
-                stky=state.stky,
-            )
-            official_interval = max(10, int(official_data.get("hbil") or 60))
-            official_qid = sequence + 1
-            official_next_due = time.monotonic() + official_interval
-
         next_state = self._extract_heartbeat_state(
             {
-                **official_data,
-                "hbil": min(official_interval, legacy_interval),
-                "official_interval": official_interval,
-                "official_next_due": official_next_due,
-                "qid": official_qid,
+                "hbil": legacy_interval,
                 "legacy_interval": legacy_interval,
                 "legacy_ets": legacy_ets,
                 "legacy_secret_key": legacy_secret_key,

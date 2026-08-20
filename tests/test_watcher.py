@@ -82,13 +82,23 @@ class LiveWatcherTest(unittest.TestCase):
         self.assertEqual(next_state.play_url, "https://example.com/live.flv")
         self.assertEqual(next_state.qid, 4)
 
-    def test_live_watch_uses_x25kn_and_official_player_lifecycle(self) -> None:
+    def test_live_watch_matches_x25kn_only_long_session_lifecycle(self) -> None:
         calls: list[str] = []
 
         class FakeClient:
             def room_entry_action(self, room: RoomInfo) -> dict[str, object]:
                 calls.append("ENTRY")
                 return {}
+
+            def get_room_info(self, room_id: str) -> RoomInfo:
+                calls.append("ROOM_INFO")
+                return RoomInfo(
+                    room_id=int(room_id),
+                    live_status=1,
+                    anchor_uid=9,
+                    parent_area_id=1,
+                    area_id=2,
+                )
 
             def enter_room_heartbeat(self, room: RoomInfo) -> dict[str, object]:
                 calls.append("X25_E")
@@ -108,18 +118,6 @@ class LiveWatcherTest(unittest.TestCase):
                     "secret_rule": [1],
                 }
 
-            def get_live_play_url(self, _room):
-                calls.append("PLAY_URL")
-                return "https://example.com/live.flv"
-
-            def start_live_watch_session(self, *_args, **_kwargs):
-                calls.append("TE9_START")
-                return {"hbil": 30, "sid": "sid-1", "stky": "key-1"}
-
-            def continue_live_watch_session(self, *_args, **_kwargs):
-                calls.append("S82_CONTINUE")
-                return {"hbil": 45, "sid": "sid-2", "stky": "key-2"}
-
         live_watcher = LiveWatcher(WatchOptions(cookie="a=b", room_id="1"), lambda _message: None)
         room = RoomInfo(room_id=23612045, live_status=1)
 
@@ -130,7 +128,7 @@ class LiveWatcherTest(unittest.TestCase):
 
         self.assertEqual(
             calls,
-            ["ENTRY", "X25_E", "PLAY_URL", "TE9_START", "X25_X", "S82_CONTINUE"],
+            ["ENTRY", "ROOM_INFO", "X25_E", "X25_X"],
         )
         self.assertEqual(state.legacy_sequence, 1)
         self.assertEqual(next_state.legacy_sequence, 2)
@@ -869,6 +867,31 @@ class LiveWatcherTest(unittest.TestCase):
         self.assertIn("40/40 心跳已接受", summary)
         self.assertIn("设置 40 路", summary)
         self.assertIn("B 站实绩约 1.0x", summary)
+        self.assertIn("已追平当前直播时长上限", summary)
+
+    def test_single_route_never_reports_live_time_limit(self) -> None:
+        live_watcher = LiveWatcher(WatchOptions(cookie="a=b", room_id="1", watch_threads=1), lambda _m: None)
+        live_watcher._set_watch_status(1, "正常", interval=60)
+        live_watcher._record_server_progress(100, 1_000.0)
+        live_watcher._record_server_progress(102, 1_120.0)
+
+        summary, _normal, _problem = live_watcher._watch_status_summary_info()
+
+        self.assertIn("B 站实绩约 1.0x", summary)
+        self.assertNotIn("已追平当前直播时长上限", summary)
+
+    def test_unhealthy_routes_do_not_misreport_live_time_limit(self) -> None:
+        live_watcher = LiveWatcher(WatchOptions(cookie="a=b", room_id="1", watch_threads=10), lambda _m: None)
+        for worker_id in range(1, 8):
+            live_watcher._set_watch_status(worker_id, "正常", interval=60)
+        for worker_id in range(8, 11):
+            live_watcher._set_watch_status(worker_id, "暂时失败", interval=60)
+        live_watcher._record_server_progress(100, 1_000.0)
+        live_watcher._record_server_progress(102, 1_120.0)
+
+        summary, _normal, _problem = live_watcher._watch_status_summary_info()
+
+        self.assertNotIn("已追平当前直播时长上限", summary)
 
     def test_high_multiplier_totalv2_rate_is_available_after_twenty_seconds(self) -> None:
         live_watcher = LiveWatcher(WatchOptions(cookie="a=b", room_id="1", watch_threads=100), lambda _m: None)
@@ -894,98 +917,27 @@ class LiveWatcherTest(unittest.TestCase):
         self.assertEqual(live_watcher._watch_worker_count, 2)
         self.assertEqual(len(live_watcher._watch_threads), 2)
 
-    def test_high_route_count_uses_faster_totalv2_stall_detection(self) -> None:
-        hundred = LiveWatcher(WatchOptions(cookie="a=b", room_id="1", watch_threads=100), lambda _m: None)
-        ten = LiveWatcher(WatchOptions(cookie="a=b", room_id="1", watch_threads=10), lambda _m: None)
-
-        self.assertEqual(hundred._server_progress_stall_seconds(), 90.0)
-        self.assertEqual(ten._server_progress_stall_seconds(), 150.0)
-
-    def test_stalled_totalv2_requests_a_single_session_rebuild(self) -> None:
+    def test_stalled_totalv2_never_rebuilds_long_sessions(self) -> None:
         logs: list[str] = []
         live_watcher = LiveWatcher(WatchOptions(cookie="a=b", room_id="1", watch_threads=10), logs.append)
         live_watcher._room = RoomInfo(room_id=1, live_status=1)
         live_watcher._heartbeat_count = 10
 
-        with (
-            patch.object(watcher, "SERVER_PROGRESS_STALL_SECONDS", 120.0),
-            patch.object(watcher, "SERVER_PROGRESS_RECONNECT_COOLDOWN_SECONDS", 120.0),
-        ):
-            generation = live_watcher._watch_session_generation()
-            live_watcher._record_server_progress(140, 1_000.0, expect_progress=True)
-            live_watcher._record_server_progress(140, 1_121.0, expect_progress=True)
-            live_watcher._record_server_progress(140, 1_180.0, expect_progress=True)
+        live_watcher._record_server_progress(140, 1_000.0, expect_progress=True)
+        live_watcher._record_server_progress(140, 1_121.0, expect_progress=True)
+        live_watcher._record_server_progress(140, 1_500.0, expect_progress=True)
 
-        self.assertTrue(live_watcher._watch_session_needs_reconnect(generation))
-        self.assertEqual(live_watcher._watch_reconnect_generation, generation + 1)
-        self.assertEqual(sum("正在自动重建观看会话" in message for message in logs), 1)
-
-    def test_generation_rebuild_replaces_the_underlying_http_session(self) -> None:
-        created: list[object] = []
-        closed: list[int] = []
-        started: list[int] = []
-
-        class FakeClient:
-            def __init__(self, number: int) -> None:
-                self.number = number
-
-            def get_live_play_url(self, room: RoomInfo) -> str:
-                return "https://example.com/live.flv"
-
-            def room_entry_action(self, room: RoomInfo) -> dict[str, object]:
-                return {}
-
-            def enter_room_heartbeat(self, room: RoomInfo) -> dict[str, object]:
-                started.append(self.number)
-                return {"heartbeat_interval": 30, "timestamp": 100, "secret_key": "legacy", "secret_rule": [0]}
-
-            def start_live_watch_session(self, room: RoomInfo, play_url: str) -> dict[str, object]:
-                return {"hbil": 30, "sid": f"sid-{self.number}", "stky": "key"}
-
-            def close(self) -> None:
-                closed.append(self.number)
-
-        live_watcher = LiveWatcher(WatchOptions(cookie="a=b", room_id="1"), lambda _message: None)
-        room = RoomInfo(room_id=1, live_status=1)
-        live_watcher._room = room
-
-        def new_client() -> FakeClient:
-            client = FakeClient(len(created) + 1)
-            created.append(client)
-            return client
-
-        waits = 0
-
-        def wait_once(_interval: int, _generation: int) -> None:
-            nonlocal waits
-            waits += 1
-            if waits == 1:
-                live_watcher._watch_reconnect_generation += 1
-            else:
-                live_watcher._stop.set()
-
-        live_watcher._new_watch_client = new_client  # type: ignore[method-assign]
-        live_watcher._watch_start_delay = lambda _worker_id: 0.0  # type: ignore[method-assign]
-        live_watcher._stagger_watch_reconnect = lambda _worker_id: None  # type: ignore[method-assign]
-        live_watcher._wait_for_watch_interval = wait_once  # type: ignore[method-assign]
-
-        live_watcher._heartbeat_watch_worker(1, room)
-
-        self.assertEqual(len(created), 2)
-        self.assertEqual(started, [1, 2])
-        self.assertEqual(closed, [1, 2])
+        self.assertFalse(any("重建观看会话" in message for message in logs))
 
     def test_totalv2_advance_resets_stall_timer(self) -> None:
         live_watcher = LiveWatcher(WatchOptions(cookie="a=b", room_id="1"), lambda _message: None)
         live_watcher._room = RoomInfo(room_id=1, live_status=1)
         live_watcher._heartbeat_count = 1
 
-        with patch.object(watcher, "SERVER_PROGRESS_STALL_SECONDS", 120.0):
-            live_watcher._record_server_progress(140, 1_000.0, expect_progress=True)
-            live_watcher._record_server_progress(141, 1_100.0, expect_progress=True)
-            live_watcher._record_server_progress(141, 1_190.0, expect_progress=True)
+        live_watcher._record_server_progress(140, 1_000.0, expect_progress=True)
+        live_watcher._record_server_progress(141, 1_100.0, expect_progress=True)
+        live_watcher._record_server_progress(141, 1_190.0, expect_progress=True)
 
-        self.assertEqual(live_watcher._watch_reconnect_generation, 0)
         self.assertEqual(live_watcher._server_progress_advanced_at, 1_100.0)
 
     def test_totalv2_temporary_rollback_does_not_fake_a_new_advance(self) -> None:
@@ -1005,11 +957,10 @@ class LiveWatcherTest(unittest.TestCase):
         live_watcher._room = RoomInfo(room_id=1, live_status=1)
         live_watcher._heartbeat_count = 1
 
-        with patch.object(watcher, "SERVER_PROGRESS_STALL_SECONDS", 120.0):
-            live_watcher._record_server_progress(300, 1_000.0, expect_progress=False)
-            live_watcher._record_server_progress(300, 1_500.0, expect_progress=False)
+        live_watcher._record_server_progress(300, 1_000.0, expect_progress=False)
+        live_watcher._record_server_progress(300, 1_500.0, expect_progress=False)
 
-        self.assertEqual(live_watcher._watch_reconnect_generation, 0)
+        self.assertEqual(live_watcher._server_progress_value, 300)
 
     def test_pending_watch_progress_ignores_non_watch_tasks(self) -> None:
         live_watcher = LiveWatcher(WatchOptions(cookie="a=b", room_id="1"), lambda _message: None)
@@ -1160,7 +1111,7 @@ class LiveWatcherTest(unittest.TestCase):
         live_watcher._log_watch_status_summary(force=False)
         self.assertTrue(any("观看连接" in message for message in logs))
 
-    def test_dual_protocol_waits_for_the_first_due_heartbeat(self) -> None:
+    def test_x25kn_wait_ignores_dormant_official_deadline(self) -> None:
         state = watcher.HeartbeatState(
             official_interval=60,
             legacy_interval=45,

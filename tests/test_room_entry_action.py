@@ -14,17 +14,19 @@ class _CompleteHeartbeatClient:
         self.calls.append("entry")
         return {}
 
+    def get_room_info(self, room_id: str) -> RoomInfo:
+        self.calls.append("room-info")
+        return RoomInfo(
+            room_id=int(room_id),
+            live_status=1,
+            anchor_uid=9,
+            parent_area_id=1,
+            area_id=2,
+        )
+
     def enter_room_heartbeat(self, room: RoomInfo) -> dict:
         self.calls.append("legacy")
         return {"heartbeat_interval": 60, "timestamp": 100, "secret_key": "legacy", "secret_rule": [0]}
-
-    def get_live_play_url(self, room: RoomInfo) -> str:
-        self.calls.append("play")
-        return "https://example.com/live.flv"
-
-    def start_live_watch_session(self, room: RoomInfo, play_url: str) -> dict:
-        self.calls.append("official")
-        return {"hbil": 60, "sid": "sid-1", "stky": "key-1"}
 
 
 class RoomEntryActionTest(unittest.TestCase):
@@ -38,7 +40,7 @@ class RoomEntryActionTest(unittest.TestCase):
             HeartbeatState(),
         )
 
-        self.assertEqual(calls, ["entry", "legacy", "play", "official"])
+        self.assertEqual(calls, ["entry", "room-info", "legacy"])
 
     def test_room_entry_action_failure_blocks_invalid_x25kn_session(self) -> None:
         calls: list[str] = []

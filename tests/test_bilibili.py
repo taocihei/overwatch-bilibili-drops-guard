@@ -5,7 +5,6 @@ from datetime import datetime, timedelta, timezone
 
 import requests
 
-import bili_drop_guard.bilibili as bilibili_module
 from bili_drop_guard.bilibili import (
     BilibiliClient,
     _activity_period_from_panel,
@@ -97,8 +96,7 @@ class BilibiliRoomTest(unittest.TestCase):
             datetime(2026, 7, 30, 16, 53, tzinfo=timezone.utc).timestamp(),
         )
 
-    def test_wbi_keys_are_shared_between_clients(self) -> None:
-        bilibili_module._WBI_KEY_CACHE = None
+    def test_wbi_keys_are_initialized_per_independent_client(self) -> None:
         response = requests.Response()
         response.status_code = 200
         response.headers["Content-Type"] = "application/json"
@@ -120,8 +118,19 @@ class BilibiliRoomTest(unittest.TestCase):
 
         self.assertEqual(first._get_wbi_keys(), ("img_key", "sub_key"))
         self.assertEqual(second._get_wbi_keys(), ("img_key", "sub_key"))
-        self.assertEqual(calls["count"], 1)
-        bilibili_module._WBI_KEY_CACHE = None
+        self.assertEqual(calls["count"], 2)
+
+    def test_live_headers_explicitly_preserve_full_account_cookie(self) -> None:
+        client = BilibiliClient("DedeUserID=9; SESSDATA=a; bili_jct=b")
+        self.addCleanup(client.close)
+
+        headers = client._live_headers(23612045, lite=True)
+
+        self.assertEqual(headers["Cookie"], client.cookie_header)
+        self.assertIn("DedeUserID=9", headers["Cookie"])
+        self.assertIn("SESSDATA=a", headers["Cookie"])
+        self.assertIn("bili_jct=b", headers["Cookie"])
+        self.assertIn("buvid3=", headers["Cookie"])
 
     def test_extract_tab_labels_and_maps_extra_groups_to_last_date(self) -> None:
         state = {
