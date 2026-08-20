@@ -1144,6 +1144,34 @@ class SponsorDialogFlowTest(unittest.TestCase):
         app._show_sponsor_retry.assert_not_called()
         self.assertEqual(app._sponsor_auto_refresh_attempts, 1)
 
+    def test_paid_provider_status_returns_success_and_reveals_group(self) -> None:
+        app = SimpleNamespace(
+            _sponsor_generation=4,
+            _sponsor_dialog_exists=MagicMock(return_value=True),
+            _cancel_sponsor_poll=MagicMock(),
+            _forget_current_sponsor_order=MagicMock(),
+            _rotate_sponsor_checkout_intent=MagicMock(),
+            _sponsor_status_var=MagicMock(),
+            _sponsor_qr_label=MagicMock(),
+            _sponsor_group_prompt=MagicMock(),
+            _sponsor_success_frame=MagicMock(),
+            _hide_sponsor_retry=MagicMock(),
+            _sponsor_group_revealed=False,
+            _sponsor_success_shown=False,
+        )
+
+        gui.App._apply_sponsor_status(app, 4, gui.SponsorOrderStatus(state="paid"))
+
+        app._cancel_sponsor_poll.assert_called_once_with()
+        app._sponsor_status_var.set.assert_called_once_with("付款成功，感谢支持")
+        app._sponsor_qr_label.configure.assert_called_once_with(
+            image="", text="✓\n支付成功", fg=gui.SUCCESS, width=28, height=12
+        )
+        app._sponsor_group_prompt.pack_forget.assert_called_once_with()
+        app._sponsor_success_frame.pack.assert_called_once_with(fill="x", pady=(12, 0))
+        self.assertTrue(app._sponsor_group_revealed)
+        self.assertTrue(app._sponsor_success_shown)
+
     def test_sponsor_order_cache_survives_application_restart(self) -> None:
         client = MagicMock()
         client.base_url = "https://sponsor.example/api/sponsor"

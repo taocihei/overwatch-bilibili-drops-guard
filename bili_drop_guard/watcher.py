@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import re
 import threading
 import time
@@ -148,6 +149,10 @@ class LiveWatcher:
         self._last_generic_progress_available = False
         self._task_monitor_failure_count = 0
         self._task_monitor_degraded = False
+        # None 表示还没有拿到能判断观看任务是否全部完成的进度快照。
+        # 自动领取只在明确没有未完成观看任务时启动；未知状态保持旧兼容行为。
+        self._auto_claim_has_pending_tasks: bool | None = None
+        self._auto_claim_wait_notice_shown = False
 
     @property
     def running(self) -> bool:
@@ -188,6 +193,33 @@ class LiveWatcher:
     def claim_completed_tasks(self) -> None:
         if not self._start_claim_thread(log_if_running=True):
             return
+
+    def set_auto_claim(self, enabled: bool) -> None:
+        """立即更新运行中的自动领取设置，而不是等下次重新开始挂宝。"""
+
+        enabled = bool(enabled)
+        previous = bool(self.options.auto_claim)
+        self.options.auto_claim = enabled
+        if previous == enabled:
+            return
+
+        if not enabled:
+            self._auto_claim_wait_notice_shown = False
+            self.log("自动领取已关闭；已完成奖励将等待手动领取")
+            return
+
+        with self._claim_lock:
+            has_claimable = bool(self._claimable_task_ids or self._claimable_general)
+            has_pending_tasks = self._auto_claim_has_pending_tasks
+        if has_pending_tasks:
+            self._auto_claim_wait_notice_shown = True
+            self.log("自动领取已开启：将等待当前所有观看任务完成后统一领取")
+            return
+
+        self._auto_claim_wait_notice_shown = False
+        self.log("自动领取已开启：检测到全部任务完成后会自动领取")
+        if has_claimable:
+            self._start_auto_claim_thread()
 
     def refresh_progress_once(self) -> None:
         if self._manual_refresh_thread and self._manual_refresh_thread.is_alive():
@@ -340,7 +372,15 @@ class LiveWatcher:
         if self.options.auto_claim and (
             found_live_claimable or found_activity_claimable or found_explicit_claimable
         ):
-            self._start_auto_claim_thread()
+            with self._claim_lock:
+                has_pending_tasks = self._auto_claim_has_pending_tasks
+            if has_pending_tasks:
+                if not self._auto_claim_wait_notice_shown:
+                    self._auto_claim_wait_notice_shown = True
+                    self.log("已有奖励完成，自动领取将等待所有观看任务完成后统一进行")
+            else:
+                self._auto_claim_wait_notice_shown = False
+                self._start_auto_claim_thread()
 
     def _record_task_monitor_health(self, available: bool) -> None:
         if available:
@@ -694,7 +734,7 @@ class LiveWatcher:
                         worker_id,
                         "正常",
                         interval=state.interval,
-                        message="x25Kn 独立计时会话已建立，等待 B 站实绩增长",
+                        message="双计时会话已验证，等待 B 站实绩增长",
                     )
                     self._record_heartbeat(state.interval)
                     if self._watch_detail_enabled():
@@ -720,7 +760,7 @@ class LiveWatcher:
                                 worker_id,
                                 "正常",
                                 interval=state.interval,
-                                message="x25Kn 计时心跳已接受，等待 B 站实绩增长",
+                                message="双计时心跳已接受，等待 B 站实绩增长",
                             )
                             self._record_heartbeat(state.interval)
                             if self._watch_detail_enabled():
@@ -851,30 +891,57 @@ class LiveWatcher:
             )
         return max(10, interval), ets, secret_key, secret_rule
 
+    @staticmethod
+    def _next_heartbeat_wait(state: HeartbeatState, now: float | None = None) -> int:
+        """双协议有各自的心跳截止时间，每次只等待最先到期的一条。"""
+
+        current = time.monotonic() if now is None else now
+        deadlines = [
+            value
+            for value in (state.official_next_due, state.legacy_next_due)
+            if value > 0
+        ]
+        if not deadlines:
+            return max(1, min(state.official_interval, state.legacy_interval))
+        return max(1, int(math.ceil(min(deadlines) - current)))
+
     def _start_heartbeat_session(
         self,
         client: BilibiliClient,
         room: RoomInfo,
         fallback: HeartbeatState,
     ) -> HeartbeatState:
-        """按竞品顺序建立一条独立路由：roomEntryAction -> x25Kn/E。"""
+        """建立 x25Kn 累计链与 te9Kl 官方播放链，两条都验证后才标记正常。"""
 
-        del fallback
         client.room_entry_action(room)
-        data = client.enter_room_heartbeat(room)
-        interval, ets, secret_key, secret_rule = self._legacy_heartbeat_values(data)
-        now = time.monotonic()
-        return HeartbeatState(
-            interval=interval,
-            qid=1,
-            legacy_interval=interval,
-            legacy_ets=ets,
-            legacy_secret_key=secret_key,
-            legacy_secret_rule=secret_rule,
-            legacy_sequence=1,
-            legacy_next_due=now + interval,
-            last_cycle_success=True,
+        legacy_data = client.enter_room_heartbeat(room)
+        legacy_interval, legacy_ets, legacy_secret_key, legacy_secret_rule = (
+            self._legacy_heartbeat_values(legacy_data)
         )
+        play_url = client.get_live_play_url(room)
+        official_data = client.start_live_watch_session(room, play_url)
+        official_interval = max(10, int(official_data.get("hbil") or 60))
+        now = time.monotonic()
+        state = self._extract_heartbeat_state(
+            {
+                **official_data,
+                "hbil": min(official_interval, legacy_interval),
+                "official_interval": official_interval,
+                "official_next_due": now + official_interval,
+                "play_url": play_url,
+                "qid": 1,
+                "legacy_interval": legacy_interval,
+                "legacy_ets": legacy_ets,
+                "legacy_secret_key": legacy_secret_key,
+                "legacy_secret_rule": legacy_secret_rule,
+                "legacy_sequence": 1,
+                "legacy_next_due": now + legacy_interval,
+                "last_cycle_success": True,
+            },
+            fallback,
+        )
+        state.interval = self._next_heartbeat_wait(state, now)
+        return state
 
     def _continue_heartbeat_session(
         self,
@@ -883,32 +950,70 @@ class LiveWatcher:
         sequence: int,
         state: HeartbeatState,
     ) -> HeartbeatState:
-        """发送一次 x25Kn/X；失败立即交给外层销毁并重建该路由。"""
+        """只发送已到期的心跳；任一链路失败则整路重建。"""
 
-        del sequence
+        if not state.session_id or not state.stky or not state.play_url:
+            raise RuntimeError("官方观看会话缺少 sid/stky/play_url")
         if not state.legacy_ets or not state.legacy_secret_key or not state.legacy_secret_rule:
             raise RuntimeError("x25Kn 会话缺少 timestamp/secret_key/secret_rule")
-        data = client.in_room_heartbeat(
-            room,
-            state.legacy_sequence,
-            state.legacy_interval,
-            state.legacy_ets,
-            state.legacy_secret_key,
-            state.legacy_secret_rule,
-        )
-        interval, ets, secret_key, secret_rule = self._legacy_heartbeat_values(data, state)
+
         now = time.monotonic()
-        return HeartbeatState(
-            interval=interval,
-            qid=state.qid + 1,
-            legacy_interval=interval,
-            legacy_ets=ets,
-            legacy_secret_key=secret_key,
-            legacy_secret_rule=secret_rule,
-            legacy_sequence=state.legacy_sequence + 1,
-            legacy_next_due=now + interval,
-            last_cycle_success=True,
+        legacy_interval = state.legacy_interval
+        legacy_ets = state.legacy_ets
+        legacy_secret_key = state.legacy_secret_key
+        legacy_secret_rule = list(state.legacy_secret_rule or [])
+        legacy_sequence = state.legacy_sequence
+        legacy_next_due = state.legacy_next_due
+        if legacy_next_due <= 0 or now >= legacy_next_due:
+            legacy_data = client.in_room_heartbeat(
+                room,
+                legacy_sequence,
+                legacy_interval,
+                legacy_ets,
+                legacy_secret_key,
+                legacy_secret_rule,
+            )
+            legacy_interval, legacy_ets, legacy_secret_key, legacy_secret_rule = (
+                self._legacy_heartbeat_values(legacy_data, state)
+            )
+            legacy_sequence += 1
+            legacy_next_due = time.monotonic() + legacy_interval
+
+        official_data: dict[str, Any] = {}
+        official_interval = state.official_interval
+        official_qid = state.qid
+        official_next_due = state.official_next_due
+        if official_next_due <= 0 or now >= official_next_due:
+            official_data = client.continue_live_watch_session(
+                room,
+                state.play_url,
+                qid=sequence,
+                session_id=state.session_id,
+                stky=state.stky,
+            )
+            official_interval = max(10, int(official_data.get("hbil") or 60))
+            official_qid = sequence + 1
+            official_next_due = time.monotonic() + official_interval
+
+        next_state = self._extract_heartbeat_state(
+            {
+                **official_data,
+                "hbil": min(official_interval, legacy_interval),
+                "official_interval": official_interval,
+                "official_next_due": official_next_due,
+                "qid": official_qid,
+                "legacy_interval": legacy_interval,
+                "legacy_ets": legacy_ets,
+                "legacy_secret_key": legacy_secret_key,
+                "legacy_secret_rule": legacy_secret_rule,
+                "legacy_sequence": legacy_sequence,
+                "legacy_next_due": legacy_next_due,
+                "last_cycle_success": True,
+            },
+            state,
         )
+        next_state.interval = self._next_heartbeat_wait(next_state)
+        return next_state
 
     def _start_auto_claim_thread(self) -> None:
         self._start_claim_thread(log_if_running=False)
@@ -1142,6 +1247,12 @@ class LiveWatcher:
         progress_score = self._task_summary_progress_score(progress)
         progress_signature = self._task_progress_signature(progress)
         has_watch_progress = bool(self._watch_progress_nodes(progress))
+        if has_watch_progress:
+            has_pending_watch_progress = self._has_pending_watch_progress(progress)
+            with self._claim_lock:
+                self._auto_claim_has_pending_tasks = has_pending_watch_progress
+                if not self._auto_claim_has_pending_tasks:
+                    self._auto_claim_wait_notice_shown = False
         if track_server_progress and has_watch_progress:
             if progress_signature != self._last_task_progress_signature:
                 self._last_task_progress_signature = progress_signature
@@ -1226,7 +1337,15 @@ class LiveWatcher:
         if announce_claimable and newly_claimable_names:
             count = len(newly_claimable_names)
             if self.options.auto_claim:
-                self.log(f"检测到 {count} 个奖励可以领取，正在排队领取")
+                with self._claim_lock:
+                    has_pending_tasks = self._auto_claim_has_pending_tasks
+                if has_pending_tasks:
+                    self.log(
+                        f"检测到 {count} 个奖励可以领取；"
+                        "自动领取将等待所有观看任务完成后统一进行"
+                    )
+                else:
+                    self.log(f"检测到 {count} 个奖励可以领取，正在排队领取")
             else:
                 self.log(f"检测到 {count} 个奖励可以领取；自动领取已关闭，请点击“领取奖励”")
         return True

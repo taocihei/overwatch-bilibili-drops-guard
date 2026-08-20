@@ -289,6 +289,18 @@ class MultiAccountWatcher:
             self._claim_thread = threading.Thread(target=self._staggered_claim, daemon=True)
             self._claim_thread.start()
 
+    def set_auto_claim(self, enabled: bool) -> None:
+        """把运行时开关立即同步给每个账号。"""
+
+        for name, child in self._children:
+            fn = getattr(child, "set_auto_claim", None)
+            if not callable(fn):
+                continue
+            try:
+                fn(bool(enabled))
+            except Exception as exc:
+                self._log(f"[{name}] 更新自动领取失败：{exc}")
+
     def _staggered_claim(self) -> None:
         for index, (name, child) in enumerate(self._children):
             if self._stop.is_set():

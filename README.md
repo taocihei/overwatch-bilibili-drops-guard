@@ -1,6 +1,6 @@
 # 守望先锋 B 站直播挂宝 / Overwatch Bilibili Live Drops Guard
 
-当前版本：`v0.5.27`
+当前版本：`v0.5.29`
 
 开源地址：<https://github.com/taocihei/overwatch-bilibili-drops-guard>
 
@@ -9,6 +9,8 @@
 本软件完全免费。如果你是购买得到的，请立即联系商家退款。
 
 赞助没有任何功能效果，不会解锁功能、不会提高成功率、不会获得优先支持，也不会影响掉宝或领奖结果。赞助只相当于给作者点了一次赞。
+
+**QQ 交流群：`1012969672`**（群号公开，支付成功页未显示时也可以直接搜索加入。）
 
 本工具只是本机辅助观看和检查任务状态。请自行遵守 B 站活动规则和账号使用规则。掉宝是否到账取决于 B 站活动规则、账号资格、直播间活动状态和平台接口变化。
 
@@ -24,7 +26,7 @@
 
 1. 打开项目页面：<https://github.com/taocihei/overwatch-bilibili-drops-guard>
 2. 进入右侧或页面中的 `Releases`。
-3. 下载 `OverwatchBiliDrops-v0.5.27.exe`。
+3. 下载 `OverwatchBiliDrops-v0.5.29.exe`。
 4. 双击运行。
 5. 如果 Windows 提示“未知发布者”或“Windows 已保护你的电脑”，点击“更多信息”，再点“仍要运行”。这是个人开源软件常见提示，不代表一定有病毒。
 6. 第一次使用先点“自动获取 Cookie”，在弹出的独立 Edge/Chrome 窗口里登录 B 站。
@@ -41,12 +43,26 @@
 - `自动获取 Cookie`：推荐使用。程序会打开独立 Edge/Chrome 自动获取窗口；请在这个窗口登录 B 站，成功后自动回填 Cookie。
 - `挂机账号`：点击账号行切换当前资料；自绘勾选框只控制是否参与挂机。手动修改名称或 Cookie 后需明确点击“保存修改”，不会在切换账号时静默保存。
 - `直播间房号`：默认 `23612045`。也可以粘贴完整直播间链接，保存后会自动变成数字房间号。
-- `观看线程`：用户填写多少就严格建立多少条独立 x25Kn 会话，不会在后台增加线程；当前最多支持 `100` 路。界面同时使用 `totalv2` 的 `indicators[0].cur_value` 显示 B 站真实入账倍率。
+- `观看线程`：用户填写多少就严格建立多少条独立双协议观看会话，同时维持 `x25Kn` 累计链和 `te9Kl/s82Tq` 官方播放链；当前最多支持 `100` 路。界面仍以 `totalv2` 的 `indicators[0].cur_value` 作为 B 站真实入账口径。
 - `自动领奖`：开启后，任务满足条件会自动领取。领奖固定只用 1 个线程，避免请求太快失败。
 - `任务 ID`：通常留空。程序会自动从活动页读取任务，不需要用户手填。自动识别失败时，可以按下面“手动获取直播间号和任务 ID”填写。
 - `通知 URL`：可留空。填写后，启动、检测到可领取、领取成功、领取失败、Cookie 获取成功等关键事件会向该地址发送 JSON POST。
 - `观看进度`：优先显示本次观看进度，比如“还差 48 分钟”“已完成，待领取”“已领取”。
 - `运行日志`：保留登录、计时、任务识别和领取记录，适合排查异常。
+
+## v0.5.29 新增与修复
+
+- **确认不叠加的真实原因**：同一账号、同一任务下完成 5 路实时 A/B；纯 `x25Kn` 在 3.25 分钟内只增加 5 分钟，说明 `code=0` 不等于独立入账。
+- **恢复当前双计时链路**：每路同时建立 `roomEntryAction → x25Kn/E/X` 和签名的 `te9Kl/s82Tq`，实测同样 5 路、3.25 分钟增加 12 分钟，已恢复明显并发入账。
+- **保留原账号设备指纹**：独立替换 `buvid3/buvid4` 的对照组同期只增加 6 分钟，证明频繁换设备会被 B 站更严格合并；新版只隔离会话负载身份。
+- **移除无效的定时轮换**：10 分钟错峰换新经实时对照不能改善入账，反而会丢失已验证的播放会话，现改为只在协议失败或 `totalv2` 停滞时重建。
+
+## v0.5.28 新增与修复
+
+- **实验性长会话轮换**：引入过 10 分钟错峰换新；后续实时 A/B 确认它不能解决入账合并，已在 v0.5.29 移除。
+- **明确区分本地连接与真实入账**：`心跳已接受`只表示请求成功，最终速度继续以 `B 站实绩约 Nx` 和 `totalv2` 分钟数为准。
+- **修复运行中切换自动领奖**：开关立即同步到所有账号；自动领奖会等待当前所有观看任务完成后统一领取，并给出明确提示。
+- **公开交流群**：README 直接显示 QQ 群 `1012969672`，支付结果页偶发未展示时也能直接加入。
 
 ## v0.5.27 新增与修复
 
@@ -427,11 +443,13 @@ dist\OverwatchBiliDrops.exe
 发布时会同时生成带版本号的文件，例如：
 
 ```text
-dist\OverwatchBiliDrops-v0.5.27.exe
+dist\OverwatchBiliDrops-v0.5.29.exe
 ```
 ## 赞助
 
-如果这个工具帮到了你，可以点击软件页脚的“支持作者”，选择金额后生成 YunGouOS 微信支付二维码。付款成功后，界面会显示 QQ 群 `1012969672`。
+**QQ 交流群：`1012969672`**（群号直接公开；即使支付成功页没有显示，也可以直接搜索加入。）
+
+如果这个工具帮到了你，可以点击软件页脚的“支持作者”，选择金额后生成 YunGouOS 微信支付二维码。付款成功后，客户端会返回“支付成功”；交流群无需等待支付结果即可查看。
 
 赞助完全自愿，不解锁功能、不提高成功率、不提供优先支持，也不影响挂宝或领奖结果。
 
@@ -443,7 +461,7 @@ dist\OverwatchBiliDrops-v0.5.27.exe
 
 Project name: **守望先锋 B 站直播挂宝 / Overwatch Bilibili Live Drops Guard**
 
-Version: `v0.5.27`
+Version: `v0.5.29`
 
 Repository: <https://github.com/taocihei/overwatch-bilibili-drops-guard>
 
@@ -463,7 +481,7 @@ Default room: `23612045`.
 
 1. Open the repository page: <https://github.com/taocihei/overwatch-bilibili-drops-guard>
 2. Open `Releases`.
-3. Download `OverwatchBiliDrops-v0.5.27.exe`.
+3. Download `OverwatchBiliDrops-v0.5.29.exe`.
 4. Double-click to run it.
 5. If Windows shows an unknown-publisher warning, click `More info`, then `Run anyway`.
 6. Click `自动获取 Cookie`, then sign in to Bilibili in the independent Edge/Chrome window opened by the app.
@@ -507,5 +525,5 @@ dist\OverwatchBiliDrops.exe
 Release builds are also copied with a versioned file name, for example:
 
 ```text
-dist\OverwatchBiliDrops-v0.5.27.exe
+dist\OverwatchBiliDrops-v0.5.29.exe
 ```

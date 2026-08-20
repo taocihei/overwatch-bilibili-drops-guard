@@ -145,6 +145,24 @@ class BackendNetworkLabelTest(unittest.TestCase):
 
 
 class GuiNotificationTest(unittest.TestCase):
+    def test_toggle_auto_claim_updates_running_watcher_and_explains_wait(self) -> None:
+        app = object.__new__(gui.App)
+        app.auto_claim_var = FakeBoolVar(False)
+        app._refresh_auto_claim_button = lambda: None  # type: ignore[method-assign]
+        updates: list[bool] = []
+        app.watcher = SimpleNamespace(running=True, set_auto_claim=updates.append)
+        notices: list[tuple[str, str]] = []
+        app._show_notice = (  # type: ignore[method-assign]
+            lambda title, body, **_kwargs: notices.append((title, body))
+        )
+
+        gui.App._toggle_auto_claim(app)
+
+        self.assertTrue(app.auto_claim_var.get())
+        self.assertEqual(updates, [True])
+        self.assertEqual(notices[0][0], "自动领取已开启")
+        self.assertIn("等待当前所有任务完成后再统一领取", notices[0][1])
+
     def _new_app(self) -> gui.App:
         app = object.__new__(gui.App)
         app.notify_url_var = FakeVar("https://example.com/hook")

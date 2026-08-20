@@ -145,7 +145,7 @@ class WatcherEndToEndTest(unittest.TestCase):
         client = self._client_holder["instance"]
         self.assertTrue(any(call.startswith("entry-action:") for call in client.heartbeat_calls))
         self.assertTrue(any(call.startswith("enter:") for call in client.heartbeat_calls))
-        self.assertFalse(any(call.startswith("watch-start:") for call in client.heartbeat_calls))
+        self.assertTrue(any(call.startswith("watch-start:") for call in client.heartbeat_calls))
 
     def test_claim_flow_submits_to_bilibili_when_task_completed(self) -> None:
         logs: list[str] = []

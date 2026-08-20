@@ -38,7 +38,7 @@ class RoomEntryActionTest(unittest.TestCase):
             HeartbeatState(),
         )
 
-        self.assertEqual(calls, ["entry", "legacy"])
+        self.assertEqual(calls, ["entry", "legacy", "play", "official"])
 
     def test_room_entry_action_failure_blocks_invalid_x25kn_session(self) -> None:
         calls: list[str] = []

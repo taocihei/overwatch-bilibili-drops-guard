@@ -82,7 +82,7 @@ class LiveWatcherTest(unittest.TestCase):
         self.assertEqual(next_state.play_url, "https://example.com/live.flv")
         self.assertEqual(next_state.qid, 4)
 
-    def test_live_watch_matches_competitor_x25kn_lifecycle(self) -> None:
+    def test_live_watch_uses_x25kn_and_official_player_lifecycle(self) -> None:
         calls: list[str] = []
 
         class FakeClient:
@@ -109,21 +109,29 @@ class LiveWatcherTest(unittest.TestCase):
                 }
 
             def get_live_play_url(self, _room):
-                raise AssertionError("competitor route must not start the player protocol")
+                calls.append("PLAY_URL")
+                return "https://example.com/live.flv"
 
             def start_live_watch_session(self, *_args, **_kwargs):
-                raise AssertionError("competitor route must not call te9Kl")
+                calls.append("TE9_START")
+                return {"hbil": 30, "sid": "sid-1", "stky": "key-1"}
 
             def continue_live_watch_session(self, *_args, **_kwargs):
-                raise AssertionError("competitor route must not call s82Tq")
+                calls.append("S82_CONTINUE")
+                return {"hbil": 45, "sid": "sid-2", "stky": "key-2"}
 
         live_watcher = LiveWatcher(WatchOptions(cookie="a=b", room_id="1"), lambda _message: None)
         room = RoomInfo(room_id=23612045, live_status=1)
 
         state = live_watcher._start_heartbeat_session(FakeClient(), room, watcher.HeartbeatState())
+        state.legacy_next_due = 0
+        state.official_next_due = 0
         next_state = live_watcher._continue_heartbeat_session(FakeClient(), room, state.qid, state)
 
-        self.assertEqual(calls, ["ENTRY", "X25_E", "X25_X"])
+        self.assertEqual(
+            calls,
+            ["ENTRY", "X25_E", "PLAY_URL", "TE9_START", "X25_X", "S82_CONTINUE"],
+        )
         self.assertEqual(state.legacy_sequence, 1)
         self.assertEqual(next_state.legacy_sequence, 2)
         self.assertEqual(next_state.interval, 45)
@@ -155,6 +163,10 @@ class LiveWatcherTest(unittest.TestCase):
                 raise RuntimeError("x25 rejected")
 
         state = watcher.HeartbeatState(
+            session_id="sid-1",
+            stky="key-1",
+            play_url="https://example.com/live.flv",
+            official_next_due=float("inf"),
             legacy_interval=60,
             legacy_ets=100,
             legacy_secret_key="legacy",
@@ -174,6 +186,10 @@ class LiveWatcherTest(unittest.TestCase):
                 return {"heartbeat_interval": 45}
 
         state = watcher.HeartbeatState(
+            session_id="sid-1",
+            stky="key-1",
+            play_url="https://example.com/live.flv",
+            official_next_due=float("inf"),
             legacy_interval=60,
             legacy_ets=100,
             legacy_secret_key="legacy",
@@ -923,6 +939,9 @@ class LiveWatcherTest(unittest.TestCase):
                 started.append(self.number)
                 return {"heartbeat_interval": 30, "timestamp": 100, "secret_key": "legacy", "secret_rule": [0]}
 
+            def start_live_watch_session(self, room: RoomInfo, play_url: str) -> dict[str, object]:
+                return {"hbil": 30, "sid": f"sid-{self.number}", "stky": "key"}
+
             def close(self) -> None:
                 closed.append(self.number)
 
@@ -1141,6 +1160,16 @@ class LiveWatcherTest(unittest.TestCase):
         live_watcher._log_watch_status_summary(force=False)
         self.assertTrue(any("观看连接" in message for message in logs))
 
+    def test_dual_protocol_waits_for_the_first_due_heartbeat(self) -> None:
+        state = watcher.HeartbeatState(
+            official_interval=60,
+            legacy_interval=45,
+            official_next_due=160.0,
+            legacy_next_due=145.0,
+        )
+
+        self.assertEqual(LiveWatcher._next_heartbeat_wait(state, now=100.0), 45)
+
     def test_progress_polling_runs_when_auto_claim_is_disabled(self) -> None:
         live_watcher = LiveWatcher(
             WatchOptions(cookie="a=b", room_id="1", auto_claim=False),
@@ -1156,6 +1185,68 @@ class LiveWatcherTest(unittest.TestCase):
         live_watcher._poll_task_features(object(), 2)  # type: ignore[arg-type]
 
         self.assertEqual(calls, ["activity", "generic", "explicit"])
+
+    def test_auto_claim_waits_until_all_watch_tasks_are_complete(self) -> None:
+        logs: list[str] = []
+        live_watcher = LiveWatcher(
+            WatchOptions(cookie="a=b", room_id="1", auto_claim=True),
+            logs.append,
+        )
+        started: list[str] = []
+        live_watcher._start_auto_claim_thread = lambda: started.append("claim")  # type: ignore[method-assign]
+        live_watcher._last_activity_progress_available = True
+        live_watcher._activity_task_ids.add("activity")
+
+        pending = {
+            "list": [
+                {"task_id": "reward-10", "task_name": "观看 10 分钟", "current": 10, "target": 10},
+                {"task_id": "reward-30", "task_name": "观看 30 分钟", "current": 10, "target": 30},
+            ]
+        }
+        completed = {
+            "list": [
+                {"task_id": "reward-10", "task_name": "观看 10 分钟", "current": 30, "target": 10},
+                {"task_id": "reward-30", "task_name": "观看 30 分钟", "current": 30, "target": 30},
+            ]
+        }
+
+        live_watcher._check_activity_task_progress = (  # type: ignore[method-assign]
+            lambda _client: live_watcher._record_task_progress(pending, announce_claimable=True)
+        )
+        live_watcher._check_explicit_task_ids = lambda _up_id: False  # type: ignore[method-assign]
+        live_watcher._poll_task_features(object(), 2)  # type: ignore[arg-type]
+
+        self.assertEqual(started, [])
+        self.assertTrue(any("等待所有观看任务完成" in message for message in logs))
+
+        live_watcher._check_activity_task_progress = (  # type: ignore[method-assign]
+            lambda _client: live_watcher._record_task_progress(completed, announce_claimable=True)
+        )
+        live_watcher._poll_task_features(object(), 2)  # type: ignore[arg-type]
+
+        self.assertEqual(started, ["claim"])
+
+    def test_enabling_auto_claim_updates_running_watcher_immediately(self) -> None:
+        logs: list[str] = []
+        live_watcher = LiveWatcher(
+            WatchOptions(cookie="a=b", room_id="1", auto_claim=False),
+            logs.append,
+        )
+        started: list[str] = []
+        live_watcher._start_auto_claim_thread = lambda: started.append("claim")  # type: ignore[method-assign]
+        live_watcher._claimable_task_ids.add("reward-10")
+        live_watcher._auto_claim_has_pending_tasks = True
+
+        live_watcher.set_auto_claim(True)
+
+        self.assertTrue(live_watcher.options.auto_claim)
+        self.assertEqual(started, [])
+        self.assertIn("自动领取已开启：将等待当前所有观看任务完成后统一领取", logs)
+
+        live_watcher._auto_claim_has_pending_tasks = False
+        live_watcher.set_auto_claim(False)
+        live_watcher.set_auto_claim(True)
+        self.assertEqual(started, ["claim"])
 
     def test_task_monitor_failure_does_not_stop_watching_and_recovers(self) -> None:
         logs: list[str] = []

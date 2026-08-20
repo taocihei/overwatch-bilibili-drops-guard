@@ -319,6 +319,29 @@ class MultiAccountStatusTest(unittest.TestCase):
 
 
 class MultiAccountDelegationTest(unittest.TestCase):
+    def test_auto_claim_setting_is_forwarded_to_all_children(self) -> None:
+        updates: list[tuple[str, bool]] = []
+
+        def make(name):
+            class W:
+                def __init__(self, options, log):
+                    self.running = True
+                def set_auto_claim(self, enabled): updates.append((name, enabled))
+            return W
+
+        names = iter(["主号", "小号"])
+        pairs = [("主号", WatchOptions(cookie="a", room_id="1")),
+                 ("小号", WatchOptions(cookie="b", room_id="1"))]
+        mw = MultiAccountWatcher(
+            pairs, log=lambda _m: None,
+            watcher_factory=lambda options, log: make(next(names))(options, log),
+            stagger_seconds=0,
+        )
+
+        mw.set_auto_claim(True)
+
+        self.assertEqual(updates, [("主号", True), ("小号", True)])
+
     def test_claim_triggers_all_children(self) -> None:
         claimed: list[str] = []
         refreshed: list[str] = []

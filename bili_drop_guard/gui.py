@@ -2949,8 +2949,25 @@ class App(tk.Tk):
                 self.advanced_button.set_appearance(text="展开", fill=SECONDARY, foreground=TEXT, active_fill=SECONDARY_ACTIVE)
 
     def _toggle_auto_claim(self) -> None:
-        self.auto_claim_var.set(not bool(self.auto_claim_var.get()))
+        enabled = not bool(self.auto_claim_var.get())
+        self.auto_claim_var.set(enabled)
         self._refresh_auto_claim_button()
+        watcher = getattr(self, "watcher", None)
+        if watcher is not None:
+            setter = getattr(watcher, "set_auto_claim", None)
+            if callable(setter):
+                setter(enabled)
+        if watcher is not None and bool(getattr(watcher, "running", False)):
+            if enabled:
+                self._show_notice(
+                    "自动领取已开启",
+                    "挂宝会继续累计观看进度，等待当前所有任务完成后再统一领取。",
+                )
+            else:
+                self._show_notice(
+                    "自动领取已关闭",
+                    "挂宝继续运行；已完成奖励需要点击“领取奖励”手动领取。",
+                )
 
     def _toggle_auto_scroll(self) -> None:
         if hasattr(self, "auto_scroll_button"):
@@ -5150,6 +5167,8 @@ class App(tk.Tk):
             self.progress_title_var.set(f"{count} 个奖励可领取")
             if "自动领取已关闭" in text:
                 detail = "自动领取已关闭，请点击上方“领取奖励”"
+            elif "等待所有观看任务完成" in text:
+                detail = "自动领取已开启，将等待所有观看任务完成"
             elif "正在排队领取" in text:
                 detail = "已进入自动领取队列，请等待领取结果"
             else:
