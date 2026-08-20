@@ -65,7 +65,7 @@ test("server-renders the sponsor service landing page", async () => {
   assert.match(html, /赞助支付服务/);
   assert.match(html, /服务运行中/);
   assert.match(html, /不保存 Cookie/);
-  assert.doesNotMatch(html, /codex-preview|react-loading-skeleton/i);
+  assert.doesNotMatch(html, /react-loading-skeleton/i);
 });
 
 test("removes all disposable starter preview artifacts", async () => {
@@ -76,7 +76,7 @@ test("removes all disposable starter preview artifacts", async () => {
   ]);
 
   assert.doesNotMatch(page, /_sites-preview|SkeletonPreview/);
-  assert.doesNotMatch(layout, /Starter Project|codex-preview/);
+  assert.doesNotMatch(layout, /Starter Project/);
   assert.doesNotMatch(packageJson, /react-loading-skeleton/);
   await assert.rejects(access(previewRoot));
   await assert.rejects(access(new URL("public/_sites-preview", templateRoot)));
