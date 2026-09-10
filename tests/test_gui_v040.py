@@ -13,7 +13,7 @@ import tkinter as tk
 from tkinter import ttk
 
 from bili_drop_guard import gui
-from bili_drop_guard.sponsor import SponsorOrderBatch, SponsorError
+from bili_drop_guard.sponsor import SponsorError
 from bili_drop_guard.watcher import WatchWorkerStatus
 
 
@@ -911,24 +911,12 @@ class SponsorDialogFlowTest(unittest.TestCase):
             cache_result=False,
         )
 
-    def test_startup_prioritizes_default_then_batches_remaining_presets(self) -> None:
-        priority_client = MagicMock()
-        priority_client.create_order.return_value = gui.SponsorOrder(
-            order_id="order-10.00",
-            amount="10.00",
-        )
-        priority_client.download_order_qr.return_value = b"qr"
-        client = MagicMock()
+    def test_startup_prefetches_presets_independently_default_first(self) -> None:
         amounts = ["10.00", "5.00", "20.00", "50.00", "100.00"]
-        remaining_amounts = ["5.00", "20.00", "50.00", "100.00"]
-        client.reserve_orders.return_value = SponsorOrderBatch(
-            checkout_intent_id="checkout-0123456789abcdef",
-            orders=tuple(
-                gui.SponsorOrder(order_id=f"order-{amount}", amount=amount)
-                for amount in remaining_amounts
-            ),
-        )
-        client.download_order_qr.return_value = b"qr"
+        clients = [MagicMock() for _ in amounts]
+        for amount, client in zip(amounts, clients):
+            client.create_order.return_value = gui.SponsorOrder(order_id=f"order-{amount}", amount=amount)
+            client.download_order_qr.return_value = b"qr"
 
         class ImmediateThread:
             def __init__(self, *, target, **_kwargs) -> None:
@@ -957,34 +945,29 @@ class SponsorDialogFlowTest(unittest.TestCase):
             patch.object(
                 gui.SponsorClient,
                 "from_environment",
-                side_effect=[priority_client, client],
+                side_effect=clients,
             ),
             patch.object(gui.threading, "Thread", ImmediateThread),
         ):
             gui.App._warm_sponsor_service(app)
 
-        priority_client.create_order.assert_called_once_with(
-            "10.00",
-            app_version=gui.__version__,
-            install_id=app._sponsor_install_id,
-            checkout_intent_id=app._sponsor_checkout_intent_id,
-        )
-        client.reserve_orders.assert_called_once_with(
-            tuple(remaining_amounts),
-            app_version=gui.__version__,
-            install_id=app._sponsor_install_id,
-            checkout_intent_id=app._sponsor_checkout_intent_id,
-        )
+        for amount, client in zip(amounts, clients):
+            client.create_order.assert_called_once_with(
+                amount, app_version=gui.__version__, install_id=app._sponsor_install_id,
+                checkout_intent_id=app._sponsor_checkout_intent_id,
+            )
+            client.reserve_orders.assert_not_called()
+            client.close.assert_called_once()
         self.assertEqual(set(app._sponsor_order_cache), set(amounts))
         self.assertTrue(app._sponsor_warm_ready.is_set())
         self.assertTrue(app._sponsor_prefetch_ready.is_set())
         self.assertFalse(app._sponsor_warm_started)
 
-    def test_batch_failure_falls_back_to_independent_single_order_clients(self) -> None:
+    def test_failed_amount_does_not_prevent_other_presets(self) -> None:
         priority_client = MagicMock(name="priority")
         batch_client = MagicMock()
-        batch_client.reserve_orders.side_effect = SponsorError("old service")
-        fallback_clients = [MagicMock(name=f"fallback-{index}") for index in range(4)]
+        batch_client.create_order.side_effect = SponsorError("amount unavailable")
+        fallback_clients = [MagicMock(name=f"fallback-{index}") for index in range(3)]
         created_amounts: list[str] = []
         for client in [priority_client, *fallback_clients]:
             client.create_order.side_effect = lambda amount, **_kwargs: (
@@ -1028,7 +1011,7 @@ class SponsorDialogFlowTest(unittest.TestCase):
 
         self.assertEqual(
             created_amounts,
-            ["10.00", "5.00", "20.00", "50.00", "100.00"],
+            ["10.00", "20.00", "50.00", "100.00"],
         )
         self.assertTrue(all(client.create_order.call_count == 1 for client in fallback_clients))
         self.assertEqual(set(app._sponsor_order_cache), set(created_amounts))
@@ -1211,7 +1194,7 @@ class SponsorDialogFlowTest(unittest.TestCase):
             cached = reader._sponsor_order_cache["10.00"]
             self.assertEqual(cached[2].order_id, order.order_id)
             self.assertEqual(cached[3], qr_data)
-            self.assertIs(reader._sponsor_http_client, client)
+            client.close.assert_called_once()
 
 
 if __name__ == "__main__":

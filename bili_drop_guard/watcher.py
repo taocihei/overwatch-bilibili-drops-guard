@@ -271,15 +271,18 @@ class LiveWatcher:
         client: BilibiliClient | None = None
         try:
             client = BilibiliClient(self.options.cookie)
-            try:
-                login = client.check_login()
-            except Exception as exc:
-                self.log(f"登录状态检查失败：{self._friendly_error(exc)}")
-            else:
+            while not self._stop.is_set():
+                try:
+                    login = client.check_login()
+                except Exception as exc:
+                    self.log(f"登录检查暂不可用，稍后自动重试：{self._friendly_error(exc)}")
+                    self._stop.wait(10)
+                    continue
                 if not login.logged_in:
                     self.log(login.message)
                     return
                 self.log(f"账号登录正常：{login.uname}（{login.mid}）")
+                break
 
             watch_started = False
             while not self._stop.is_set():
@@ -360,7 +363,7 @@ class LiveWatcher:
         )
         generic_available = self._last_generic_progress_available if should_check_generic else False
         found_explicit_claimable = self._check_explicit_task_ids(up_id)
-        self._record_task_monitor_health(activity_available or generic_available)
+        self._record_task_monitor_health(activity_available or (not has_activity_tasks and generic_available))
 
         if self.options.auto_claim and (
             found_live_claimable or found_activity_claimable or found_explicit_claimable
@@ -477,10 +480,10 @@ class LiveWatcher:
         server_rate = self._server_credit_rate()
         if server_rate is None:
             server_text = f"，设置 {self._configured_watch_threads} 路 / 等待 B 站实绩样本"
-        elif self._server_progress_is_live_time_limited(server_rate):
+        elif server_rate <= 0:
             server_text = (
                 f"，设置 {self._configured_watch_threads} 路 / B 站实绩约 {server_rate:.1f}x"
-                "（已追平当前直播时长上限，连接保持中）"
+                "（当前观察窗口未见新增时长，连接保持中）"
             )
         else:
             server_text = f"，设置 {self._configured_watch_threads} 路 / B 站实绩约 {server_rate:.1f}x"
@@ -594,24 +597,6 @@ class LiveWatcher:
             samples = list(self._server_progress_samples)
         return self._credit_rate_from_samples(samples)
 
-    def _server_progress_is_live_time_limited(self, server_rate: float | None = None) -> bool:
-        """识别“路由健康，但服务端只释放实时分钟”的账号级上限。"""
-
-        rate = self._server_credit_rate() if server_rate is None else server_rate
-        if rate is None or self._configured_watch_threads <= 1:
-            return False
-        with self._watch_status_lock:
-            worker_count = self._watch_worker_count
-            normal_count = sum(
-                1
-                for worker_id in range(1, worker_count + 1)
-                if self._watch_statuses.get(worker_id, {}).get("state") == "正常"
-            )
-        healthy_ratio = normal_count / max(1, worker_count)
-        # totalv2 是整数分钟聚合值；低于 1.5x 且至少 80% 路由健康时，
-        # 表示多路已追平 B 站当前可释放的直播时长，而不是连接已经断开。
-        return healthy_ratio >= 0.8 and rate <= 1.5
-
     @staticmethod
     def _credit_rate_from_samples(samples: list[tuple[float, float]]) -> float | None:
         if len(samples) < 2:
@@ -652,6 +637,7 @@ class LiveWatcher:
                 continue
             seen.add(id(thread))
             unique_candidates.append(thread)
+        for thread in unique_candidates:
             if thread is current:
                 continue
             remaining = deadline - time.monotonic()
@@ -985,7 +971,7 @@ class LiveWatcher:
             self.log(f"掉宝任务进度检查失败：{exc}")
             return False
 
-        self._last_generic_progress_available = True
+        self._last_generic_progress_available = bool(self._watch_progress_nodes(progress))
         return self._record_task_progress(progress, announce_claimable=True)
 
     def _check_activity_task_progress(
@@ -1008,8 +994,8 @@ class LiveWatcher:
         except Exception as exc:
             self.log(f"活动任务进度检查失败：{exc}")
             return False
-        self._last_activity_progress_available = True
         self._enrich_activity_progress(progress)
+        self._last_activity_progress_available = bool(self._watch_progress_nodes(progress))
         self._remember_activity_progress_source(progress, task_ids)
         return self._record_task_progress(progress, announce_claimable=announce_claimable)
 
@@ -1756,8 +1742,8 @@ class LiveWatcher:
             except Exception as exc:
                 self.log(f"领取前刷新任务进度失败：{exc}")
             else:
-                generic_available = True
-                self._last_generic_progress_available = True
+                generic_available = bool(self._watch_progress_nodes(progress))
+                self._last_generic_progress_available = generic_available
                 self._record_task_progress(
                     progress,
                     announce_claimable=False,
@@ -1777,7 +1763,9 @@ class LiveWatcher:
                 self._check_one_explicit_task(up_id, task_id, threading.Event())
             except Exception as exc:
                 self.log(f"领取前检查手动任务失败：{self._friendly_error(exc)}")
-        available = generic_available or self._last_activity_progress_available
+        with self._claim_lock:
+            has_activity_tasks = bool(self._activity_task_ids)
+        available = self._last_activity_progress_available or (not has_activity_tasks and generic_available)
         self._record_task_monitor_health(available)
         return available
 

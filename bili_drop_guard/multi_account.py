@@ -143,7 +143,7 @@ class MultiAccountWatcher:
         if self._start_thread is not None:
             self._start_thread.join(timeout=5)
 
-    def stop(self) -> None:
+    def stop(self) -> bool:
         # 持锁设置停止标志并停掉所有子账号，与 _staggered_start 的「检查+启动」互斥，
         # 确保停止后不会再有账号被启动，已启动的也都会被停掉。
         with self._lifecycle_lock:
@@ -153,18 +153,26 @@ class MultiAccountWatcher:
         # 所有 child 已同时收到停止信号，再共享一个总等待预算回收线程，避免账号数越多
         # 停止越慢，也避免快速重启时遗留上一轮连接。
         deadline = time.monotonic() + STOP_WAIT_TIMEOUT_SECONDS
+        stopped = True
         for _name, child in self._children:
             waiter = getattr(child, "wait_for_stop", None)
             if not callable(waiter):
                 continue
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                break
+            remaining = max(0.0, deadline - time.monotonic())
             try:
-                waiter(timeout=remaining)
+                result = waiter(timeout=remaining)
             except TypeError:
-                waiter(remaining)
-        self._log("已请求停止全部账号")
+                result = waiter(remaining)
+            if result is False:
+                stopped = False
+        current = threading.current_thread()
+        for thread in (self._start_thread, self._claim_thread):
+            if thread is not None:
+                if thread is not current:
+                    thread.join(timeout=max(0.0, deadline - time.monotonic()))
+                stopped = not thread.is_alive() and stopped
+        self._log("已请求停止全部账号" if stopped else "已请求停止全部账号，正在等待未结束的网络请求退出")
+        return stopped
 
     @property
     def running(self) -> bool:

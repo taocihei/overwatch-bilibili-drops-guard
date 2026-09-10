@@ -867,7 +867,7 @@ class LiveWatcherTest(unittest.TestCase):
         self.assertIn("40/40 心跳已接受", summary)
         self.assertIn("设置 40 路", summary)
         self.assertIn("B 站实绩约 1.0x", summary)
-        self.assertIn("已追平当前直播时长上限", summary)
+        self.assertNotIn("已追平当前直播时长上限", summary)
 
     def test_single_route_never_reports_live_time_limit(self) -> None:
         live_watcher = LiveWatcher(WatchOptions(cookie="a=b", room_id="1", watch_threads=1), lambda _m: None)

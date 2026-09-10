@@ -21,6 +21,9 @@ class FakeDriver:
         self.current_url = ""
         self.cdp_cookies = cdp_cookies or []
 
+    def set_page_load_timeout(self, timeout: int) -> None:
+        self.page_load_timeout = timeout
+
     def get(self, url: str) -> None:
         self.opened_url = url
         self.current_url = url
@@ -129,7 +132,7 @@ class CookieCaptureTest(unittest.TestCase):
             try:
                 cookie_capture._find_local_browser = lambda preferred="": r"C:\Edge\msedge.exe"
                 cookie_capture._find_free_port = lambda: 45678
-                cookie_capture._wait_for_debugger_port = lambda port, timeout_seconds=15.0: True
+                cookie_capture._wait_for_debugger_port = lambda port, timeout_seconds=15.0, cancel_event=None: True
                 cookie_capture.subprocess.Popen = lambda args, **_kwargs: calls.append(args)
                 cookie_capture.APP_DIR = Path(temp_dir)
                 options = FakeOptions()

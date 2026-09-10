@@ -1,6 +1,6 @@
 # 守望先锋 B 站直播挂宝 / Overwatch Bilibili Live Drops Guard
 
-当前版本：`v0.5.30`
+当前版本：`v0.5.31`
 
 开源地址：<https://github.com/taocihei/overwatch-bilibili-drops-guard>
 
@@ -26,7 +26,7 @@
 
 1. 打开项目页面：<https://github.com/taocihei/overwatch-bilibili-drops-guard>
 2. 进入右侧或页面中的 `Releases`。
-3. 下载 `OverwatchBiliDrops-v0.5.30.exe`。
+3. 下载 `OverwatchBiliDrops-v0.5.31.exe`。
 4. 双击运行。
 5. 如果 Windows 提示“未知发布者”或“Windows 已保护你的电脑”，点击“更多信息”，再点“仍要运行”。这是个人开源软件常见提示，不代表一定有病毒。
 6. 第一次使用先点“自动获取 Cookie”，在弹出的独立 Edge/Chrome 窗口里登录 B 站。
@@ -49,6 +49,16 @@
 - `通知 URL`：可留空。填写后，启动、检测到可领取、领取成功、领取失败、Cookie 获取成功等关键事件会向该地址发送 JSON POST。
 - `观看进度`：优先显示本次观看进度，比如“还差 48 分钟”“已完成，待领取”“已领取”。
 - `运行日志`：保留登录、计时、任务识别和领取记录，适合排查异常。
+
+## v0.5.31 新增与修复
+
+- **账号异步结果隔离**：自动登录只更新发起时的账号；切换、删除或修改账号后，不会覆盖另一个账号的 Cookie。关闭软件会取消获取并清理自动登录浏览器。
+- **故障降级与重试**：网络超时不再误报 Cookie 失效；活动接口异常或空响应会正确降级为手动领奖，观看连接继续运行。
+- **完整检查停止状态**：等待预算耗尽后仍检查全部后台线程，上一轮网络请求未退出时不启动重叠的观看或领奖流程。
+- **减少日志重绘**：隐藏日志不再重绘当前视图，新增日志增量追加，队列分批处理，让出界面事件循环。
+- **赞助金额独立就绪**：各金额独立预取、独立返回；缓存限制为 16 项并回收过期项，网络连接及时关闭，失败信息不再持有异常堆栈。
+- **实绩提示纠正**：只展示实际观测倍率；零增长显示“未见新增时长”，不再据此推断“已追平直播时长上限”。保留有效观看会话。
+- **服务端订单池清理**：清理超过一天、未分配给用户的失败/过期预建订单，保留用户订单和支付记录；此项需要更新北京赞助服务后生效。
 
 ## v0.5.30 新增与修复
 
@@ -450,7 +460,7 @@ dist\OverwatchBiliDrops.exe
 发布时会同时生成带版本号的文件，例如：
 
 ```text
-dist\OverwatchBiliDrops-v0.5.30.exe
+dist\OverwatchBiliDrops-v0.5.31.exe
 ```
 ## 赞助
 
@@ -468,7 +478,7 @@ dist\OverwatchBiliDrops-v0.5.30.exe
 
 Project name: **守望先锋 B 站直播挂宝 / Overwatch Bilibili Live Drops Guard**
 
-Version: `v0.5.30`
+Version: `v0.5.31`
 
 Repository: <https://github.com/taocihei/overwatch-bilibili-drops-guard>
 
@@ -488,7 +498,7 @@ Default room: `23612045`.
 
 1. Open the repository page: <https://github.com/taocihei/overwatch-bilibili-drops-guard>
 2. Open `Releases`.
-3. Download `OverwatchBiliDrops-v0.5.30.exe`.
+3. Download `OverwatchBiliDrops-v0.5.31.exe`.
 4. Double-click to run it.
 5. If Windows shows an unknown-publisher warning, click `More info`, then `Run anyway`.
 6. Click `自动获取 Cookie`, then sign in to Bilibili in the independent Edge/Chrome window opened by the app.
@@ -532,5 +542,5 @@ dist\OverwatchBiliDrops.exe
 Release builds are also copied with a versioned file name, for example:
 
 ```text
-dist\OverwatchBiliDrops-v0.5.30.exe
+dist\OverwatchBiliDrops-v0.5.31.exe
 ```

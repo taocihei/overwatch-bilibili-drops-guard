@@ -12,7 +12,6 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from decimal import Decimal
 
 from .config import Config
 from .database import Database
@@ -254,7 +253,17 @@ class SponsorService:
 
     def expire_pending(self) -> int:
         with self.database.transaction(immediate=True) as connection:
-            return self._expire_orders(connection, self._now_ms())
+            now = self._now_ms()
+            expired = self._expire_orders(connection, now)
+            # Keep one day of unallocated failures for diagnosis. Customer orders
+            # and payment history are not pool garbage and must remain untouched.
+            connection.execute(
+                """DELETE FROM sponsor_orders
+                   WHERE install_id IS NULL AND checkout_intent_id IS NULL
+                     AND status IN ('failed', 'expired') AND created_at < ?""",
+                (now - 86400 * 1000,),
+            )
+            return expired
 
     def status_token(self, order_id: str) -> str:
         secret = self.config.status_token_secret

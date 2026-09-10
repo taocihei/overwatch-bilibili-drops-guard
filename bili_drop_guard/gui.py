@@ -13,6 +13,7 @@ import traceback
 import tkinter as tk
 import tkinter.font as tkfont
 import webbrowser
+from dataclasses import replace
 from datetime import datetime
 from io import BytesIO
 from pathlib import Path
@@ -27,7 +28,7 @@ except Exception:  # Pillow 是界面抗锯齿增强；缺失时回退到 Tk 原
 from . import __version__
 from .bilibili import BilibiliClient, normalize_room_id
 from .config import APP_DIR, DEFAULT_ROOM_ID, MAX_CHECK_INTERVAL, MAX_WATCH_THREADS, MIN_CHECK_INTERVAL, AccountProfile, AppConfig, load_config, parse_task_ids, sanitize_config, save_config
-from .cookie_capture import capture_bilibili_cookie, open_bilibili_login_page
+from .cookie_capture import CaptureCancelled, capture_bilibili_cookie, open_bilibili_login_page
 from .notifier import send_notification
 from .sponsor import (
     SPONSOR_PRESET_AMOUNTS,
@@ -50,6 +51,7 @@ SPONSOR_ORDER_CACHE_TTL_SECONDS = 100 * 60
 SPONSOR_ORDER_CACHE_PATH = APP_DIR / "sponsor-orders.json"
 SPONSOR_INSTALL_ID_PATH = APP_DIR / "sponsor-install-id"
 SPONSOR_ORDER_CACHE_MAX_BYTES = 1024 * 1024
+SPONSOR_ORDER_CACHE_MAX_ENTRIES = 16
 SPONSOR_ORDER_CACHE_EXPIRY_GUARD_SECONDS = 30
 APP_BG = "#eef3f9"
 SURFACE = "#ffffff"
@@ -1429,6 +1431,8 @@ class App(tk.Tk):
         self.log_queue: "queue.Queue[str]" = queue.Queue()
         self.watcher: LiveWatcher | MultiAccountWatcher | None = None
         self.cookie_capture_thread: threading.Thread | None = None
+        self._cookie_capture_cancel = threading.Event()
+        self._closing = False
         self.progress_events: list[str] = []
         self.progress_snapshot = ""
         self.log_entries: list[tuple[str, str]] = []
@@ -1449,7 +1453,7 @@ class App(tk.Tk):
         ] = {}
         self._sponsor_cache_lock = threading.RLock()
         self._sponsor_order_inflight: dict[str, threading.Event] = {}
-        self._sponsor_order_errors: dict[str, SponsorError] = {}
+        self._sponsor_order_errors: dict[str, str] = {}
         self._sponsor_install_id = (
             "desktop-preview-install"
             if self.preview_mode
@@ -1520,6 +1524,7 @@ class App(tk.Tk):
             # 控件构建前就启动网络、二维码和缓存写入，会与 Tk 首次绘制
             # 争用 CPU / I/O，造成窗口刚出现时拖动、点击都有顿挫感。
             self.after(700, self._warm_sponsor_service)
+            self.after(60000, self._cleanup_sponsor_cache)
         self.after(1000, self._poll_watch_status)
         self.after(100, self._clear_initial_focus)
         self.after(200, self._drain_logs)
@@ -3328,10 +3333,43 @@ class App(tk.Tk):
 
         with self._sponsor_cache_lock:
             self._sponsor_order_cache.update(loaded)
-        if loaded:
-            self._sponsor_http_client = client
+        client.close()
+        self._prune_sponsor_order_cache()
+
+    def _prune_sponsor_order_cache(self) -> bool:
+        now = time.time()
+        with self._sponsor_cache_lock:
+            removed = []
+            total_bytes = 0
+            kept = 0
+            for amount, cached in sorted(self._sponsor_order_cache.items(), key=lambda item: item[1][0], reverse=True):
+                saved_at, client, order, qr_data = cached
+                age = now - saved_at
+                if (age < 0 or age >= self._sponsor_cache_lifetime_seconds(order)
+                        or self._sponsor_order_has_expired(order, now)
+                        or kept >= SPONSOR_ORDER_CACHE_MAX_ENTRIES
+                        or total_bytes + len(qr_data) > SPONSOR_ORDER_CACHE_MAX_BYTES // 2):
+                    removed.append(self._sponsor_order_cache.pop(amount))
+                else:
+                    kept += 1
+                    total_bytes += len(qr_data)
+            retained_clients = {id(item[1]) for item in self._sponsor_order_cache.values()}
+            closed = set()
+            for _saved_at, client, _order, _qr in removed:
+                if id(client) not in retained_clients and id(client) not in closed:
+                    client.close()
+                    closed.add(id(client))
+            return bool(removed)
+
+    def _cleanup_sponsor_cache(self) -> None:
+        if self._closing:
+            return
+        if self._prune_sponsor_order_cache():
+            self._persist_sponsor_order_cache()
+        self.after(60000, self._cleanup_sponsor_cache)
 
     def _persist_sponsor_order_cache(self) -> None:
+        self._prune_sponsor_order_cache()
         now = time.time()
         records: dict[str, dict[str, object]] = {}
         with self._sponsor_cache_lock:
@@ -3373,17 +3411,26 @@ class App(tk.Tk):
         qr_data: bytes,
     ) -> None:
         with self._sponsor_cache_lock:
+            if self.__dict__.get("_closing", False):
+                client.close()
+                return
+            old = self._sponsor_order_cache.pop(amount, None)
             self._sponsor_order_cache[amount] = (
                 time.time(),
                 client,
                 order,
                 qr_data,
             )
+            if old is not None and all(item[1] is not old[1] for item in self._sponsor_order_cache.values()):
+                old[1].close()
+            self._prune_sponsor_order_cache()
         self._persist_sponsor_order_cache()
 
     def _remove_cached_sponsor_order(self, amount: str) -> None:
         with self._sponsor_cache_lock:
-            self._sponsor_order_cache.pop(amount, None)
+            old = self._sponsor_order_cache.pop(amount, None)
+            if old is not None and all(item[1] is not old[1] for item in self._sponsor_order_cache.values()):
+                old[1].close()
         self._persist_sponsor_order_cache()
 
     def _warm_sponsor_service(self) -> None:
@@ -3448,52 +3495,15 @@ class App(tk.Tk):
             elif self._cached_sponsor_order("10.00") is not None:
                 self._sponsor_warm_ready.set()
 
-            def prefetch_remaining() -> None:
-                if not claimed:
-                    return
-                batch_error: SponsorError | None = None
-                try:
-                    client = SponsorClient.from_environment()
-                    batch = client.reserve_orders(
-                        tuple(claimed),
-                        app_version=__version__,
-                        install_id=self._sponsor_install_id,
-                        checkout_intent_id=intent_id,
-                    )
-                    orders = {order.amount: order for order in batch.orders}
-                    for amount, inflight in claimed.items():
-                        order = orders[amount]
-                        qr_data = client.download_order_qr(order)
-                        self._cache_sponsor_order(amount, client, order, qr_data)
-                        self._complete_sponsor_order_inflight(amount, inflight)
-                except SponsorError as exc:
-                    batch_error = exc
-                except Exception:
-                    batch_error = SponsorUnavailable("批量预留失败")
-
-                if batch_error is None:
-                    return
-                # 老服务或批量接口临时失败：其余金额各用独立 Session 并行回退。
-                fallback_threads: list[threading.Thread] = []
-                for amount, inflight in claimed.items():
-                    thread = threading.Thread(
-                        target=lambda value=amount, event=inflight: prefetch_one(value, event),
-                        name=f"SponsorPrefetch-{amount}",
-                        daemon=True,
-                    )
-                    fallback_threads.append(thread)
-                    thread.start()
-                for thread in fallback_threads:
-                    thread.join()
-
-            if claimed:
-                remaining_worker = threading.Thread(
-                    target=prefetch_remaining,
-                    name="SponsorPrefetch-Presets",
+            # Each amount publishes its own result immediately; slow providers cannot block other QR codes.
+            for amount, inflight in claimed.items():
+                worker = threading.Thread(
+                    target=lambda value=amount, event=inflight: prefetch_one(value, event),
+                    name=f"SponsorPrefetch-{amount}",
                     daemon=True,
                 )
-                workers.append(remaining_worker)
-                remaining_worker.start()
+                workers.append(worker)
+                worker.start()
 
             for worker in workers:
                 worker.join()
@@ -3524,7 +3534,9 @@ class App(tk.Tk):
     ) -> None:
         with self._sponsor_cache_lock:
             if error is not None:
-                self._sponsor_order_errors[amount] = error
+                self._sponsor_order_errors[amount] = str(error)
+                while len(self._sponsor_order_errors) > SPONSOR_ORDER_CACHE_MAX_ENTRIES:
+                    self._sponsor_order_errors.pop(next(iter(self._sponsor_order_errors)))
             if self._sponsor_order_inflight.get(amount) is inflight:
                 self._sponsor_order_inflight.pop(amount, None)
             inflight.set()
@@ -3536,23 +3548,27 @@ class App(tk.Tk):
         intent_id: str,
     ) -> tuple[SponsorClient, SponsorOrder, bytes]:
         client = SponsorClient.from_environment()
-        for attempt in range(3):
-            try:
-                order = client.create_order(
-                    amount,
-                    app_version=__version__,
-                    install_id=self._sponsor_install_id,
-                    checkout_intent_id=intent_id,
-                )
-                qr_data = client.download_order_qr(order)
-                self._cache_sponsor_order(amount, client, order, qr_data)
-                return client, order, qr_data
-            except SponsorUnavailable:
-                if attempt < 2:
-                    time.sleep(0.6 * (attempt + 1))
-                    continue
-                raise
-        raise SponsorUnavailable("支付订单生成失败，请稍后重试")
+        try:
+            for attempt in range(3):
+                try:
+                    order = client.create_order(
+                        amount,
+                        app_version=__version__,
+                        install_id=self._sponsor_install_id,
+                        checkout_intent_id=intent_id,
+                    )
+                    qr_data = client.download_order_qr(order)
+                    self._cache_sponsor_order(amount, client, order, qr_data)
+                    return client, order, qr_data
+                except SponsorUnavailable:
+                    if attempt < 2:
+                        time.sleep(0.6 * (attempt + 1))
+                        continue
+                    raise
+            raise SponsorUnavailable("支付订单生成失败，请稍后重试")
+        finally:
+            # Cached clients only supply configuration; status polling creates its own Session.
+            client.close()
 
     def _get_or_create_sponsor_order(
         self,
@@ -3583,7 +3599,7 @@ class App(tk.Tk):
             with self._sponsor_cache_lock:
                 error = self._sponsor_order_errors.get(amount)
             if error is not None:
-                raise error
+                raise SponsorUnavailable(error)
             raise SponsorUnavailable("支付订单生成失败，请稍后重试")
 
         error: SponsorError | None = None
@@ -4855,7 +4871,10 @@ class App(tk.Tk):
             return
         if self.watcher:
             # 停掉上一个协调器（例如此前只点过“领取”而临时建的那个），避免线程泄漏
-            self.watcher.stop()
+            if self.watcher.stop() is False:
+                self._log("上一轮请求仍在退出，请稍后再启动")
+                return
+        self._stop_pending = False
         self.watcher = MultiAccountWatcher(account_options, self._thread_log)
         self.watcher.start()
         self.started_at = datetime.now()
@@ -4882,9 +4901,10 @@ class App(tk.Tk):
 
     def _stop(self) -> None:
         if self.watcher:
-            self.watcher.stop()
+            self._stop_pending = self.watcher.stop() is False
             # 置空，避免之后“领取”复用已停止的协调器（其停止标志已置位会导致领取空转）
-            self.watcher = None
+            if not self._stop_pending:
+                self.watcher = None
         self._set_status("未运行")
         self.started_at = None
         self._progress_terminal = True
@@ -4901,7 +4921,16 @@ class App(tk.Tk):
             return
         self._set_status("正在获取 Cookie")
         self._log("正在准备打开 Edge/Chrome 登录 B 站，请稍等")
-        self.cookie_capture_thread = threading.Thread(target=self._capture_cookie_worker, daemon=True)
+        origin = {
+            "account": self.editing_account_name,
+            "draft_name": self.account_name_var.get(),
+            "previous_cookie": self.cookie_text.get("1.0", "end").strip(),
+            "saved_cookie": self._saved_cookie_for(self.editing_account_name),
+        }
+        self._cookie_capture_cancel.clear()
+        self.cookie_capture_thread = threading.Thread(
+            target=self._capture_cookie_worker, args=(origin,), name="CookieCapture", daemon=False,
+        )
         self.cookie_capture_thread.start()
 
     def _open_cookie_login_page(self) -> None:
@@ -4913,18 +4942,64 @@ class App(tk.Tk):
             return
         self._log(f"已打开 {browser_name} 登录页。手动模式不会自动读取 Cookie；需要自动读取请点击“自动获取 Cookie”。")
 
-    def _capture_cookie_worker(self) -> None:
+    def _capture_cookie_worker(self, origin: dict) -> None:
         try:
-            result = capture_bilibili_cookie(log=self._thread_log)
+            result = capture_bilibili_cookie(log=self._thread_log, cancel_event=self._cookie_capture_cancel)
+        except CaptureCancelled:
+            return
         except Exception as exc:
             self.log_queue.put(f"__ERROR__:自动获取 Cookie 失败：{exc}")
             self.log_queue.put("__STATUS__:未运行")
             return
-        self.log_queue.put(f"__COOKIE__:{result.cookie_header}")
+        if self._cookie_capture_cancel.is_set():
+            return
+        self.log_queue.put("__COOKIE__:" + json.dumps({**origin, "cookie": result.cookie_header}))
         self.log_queue.put("__STATUS__:未运行")
         self._thread_log(f"{result.browser} Cookie 获取成功")
 
+    def _apply_captured_cookie(self, payload: dict) -> None:
+        target = payload.get("account")
+        cookie = str(payload.get("cookie") or "")
+        previous_cookie = payload.get("previous_cookie", "")
+        editor_matches = (self.editing_account_name == target
+                          and self.cookie_text.get("1.0", "end").strip() == previous_cookie
+                          and self.account_name_var.get() == payload.get("draft_name", target))
+        if not cookie:
+            return
+        if target is None:
+            if not editor_matches:
+                self._log("自动登录结果已忽略：新账号编辑内容已改变，请重新获取")
+                return
+            self.cookie_text.delete("1.0", "end")
+            self.cookie_text.insert("1.0", cookie)
+            self._save_account()
+            return
+        accounts = self.config_data.accounts
+        origin = next((account for account in accounts if account.name == target), None)
+        if origin is None or origin.cookie != payload.get("saved_cookie", previous_cookie):
+            self._log("自动登录结果已忽略：原账号已删除或修改，请重新获取")
+            return
+        if editor_matches:
+            self.cookie_text.delete("1.0", "end")
+            self.cookie_text.insert("1.0", cookie)
+            self._refresh_cookie_placeholder()
+            self._save_account()
+            return
+        config = replace(self.config_data,
+                         accounts=[replace(account, cookie=cookie) if account is origin else account for account in accounts],
+                         cookie=cookie if self.config_data.account_name == target else self.config_data.cookie)
+        save_config(config)
+        self.config_data = config
+        self._refresh_account_selector()
+        self._log(f"自动登录凭据已保存到原账号：{target}")
+
     def _claim(self) -> None:
+        if self.__dict__.get("_stop_pending", False) and self.watcher:
+            if self.watcher.stop() is False:
+                self._log("上一轮请求仍在退出，请稍后再领取")
+                return
+            self.watcher = None
+            self._stop_pending = False
         # 还没开始挂宝时，也允许单独点击领取：临时构造一个协调器，对勾选账号各领一次
         # （不会启动心跳 worker，因为没调用 .start()）。
         if not self.watcher:
@@ -5006,6 +5081,9 @@ class App(tk.Tk):
         if "log_text" not in self.__dict__:
             return
         content = self._current_log_content()
+        previous = self.__dict__.get("_last_log_content")
+        if content == previous:
+            return
         has_content = bool(content.strip())
         for attr in ("log_empty_canvas", "log_empty_label", "log_empty_detail_label"):
             widget = self.__dict__.get(attr)
@@ -5020,8 +5098,12 @@ class App(tk.Tk):
             else:
                 widget.place(x=24, y=52, anchor="nw")
         self.log_text.configure(state="normal")
-        self.log_text.delete("1.0", "end")
-        self.log_text.insert("end", content)
+        if previous is not None and content.startswith(previous):
+            self.log_text.insert("end", content[len(previous):])
+        else:
+            self.log_text.delete("1.0", "end")
+            self.log_text.insert("end", content)
+        self._last_log_content = content
         if not hasattr(self, "auto_scroll_var") or bool(self.auto_scroll_var.get()):
             self.log_text.see("end")
         self.log_text.configure(state="disabled")
@@ -5030,9 +5112,17 @@ class App(tk.Tk):
         entry = self._format_log_entry(message)
         if not hasattr(self, "log_entries"):
             self.log_entries = []
-        self.log_entries.append((self._log_kind(message), entry))
+        kind = self._log_kind(message)
+        self.log_entries.append((kind, entry))
+        removed = self.log_entries[:-2000]
         self.log_entries = self.log_entries[-2000:]
-        self._render_log_text()
+        view_var = self.__dict__.get("log_view_var")
+        view = view_var.get() if view_var is not None else "all"
+        if view == "all" or view == kind or any(old_kind == view for old_kind, _entry in removed):
+            if self.__dict__.get("_draining_logs", False):
+                self._log_render_pending = True
+            else:
+                self._render_log_text()
 
     def _format_log_entry(self, message: str) -> str:
         timestamp = datetime.now().strftime("%H:%M:%S")
@@ -5470,55 +5560,65 @@ class App(tk.Tk):
         ))
 
     def _drain_logs(self) -> None:
-        while True:
-            try:
-                message = self.log_queue.get_nowait()
-            except queue.Empty:
-                break
-            if message.startswith("__COOKIE_VERIFY__:"):
+        started = time.perf_counter()
+        self._draining_logs = True
+        try:
+            for _ in range(100):
+                if time.perf_counter() - started >= 0.008:
+                    break
                 try:
-                    payload = json.loads(message.removeprefix("__COOKIE_VERIFY__:"))
-                except (TypeError, ValueError, json.JSONDecodeError):
-                    self.cookie_validation_var.set("B站验证失败")
-                    self._log("B 站验证失败：返回结果无法解析")
-                else:
-                    if isinstance(payload, dict):
-                        self._apply_cookie_validation_result(payload)
-                continue
-            if message.startswith("__COOKIE__:"):
-                self.cookie_text.delete("1.0", "end")
-                self.cookie_text.insert("1.0", message.removeprefix("__COOKIE__:"))
-                self._refresh_cookie_placeholder()
-                self.cookie_validation_var.set("Cookie 已登录")
-                self._save_account()
-                continue
-            if message.startswith("__STATUS__:"):
-                self._set_status(message.removeprefix("__STATUS__:"))
-                continue
-            if message.startswith("__ERROR__:"):
-                detail = message.removeprefix("__ERROR__:")
-                self._notify_from_message(detail)
-                self._log(detail)
-                self._show_notice("Cookie 获取失败", detail, kind="error")
-                continue
-            self._notify_from_message(message)
-            account_prefix, body = self._split_account_prefix(message)
-            if body.startswith("掉宝任务："):
-                snapshot = body.removeprefix("掉宝任务：").strip()
-                if account_prefix:
-                    snapshot = f"{account_prefix}\n{snapshot}"
-                self._progress_snapshot_log(snapshot)
+                    message = self.log_queue.get_nowait()
+                except queue.Empty:
+                    break
+                if message.startswith("__COOKIE_VERIFY__:"):
+                    try:
+                        payload = json.loads(message.removeprefix("__COOKIE_VERIFY__:"))
+                    except (TypeError, ValueError, json.JSONDecodeError):
+                        self.cookie_validation_var.set("B站验证失败")
+                        self._log("B 站验证失败：返回结果无法解析")
+                    else:
+                        if isinstance(payload, dict):
+                            self._apply_cookie_validation_result(payload)
+                    continue
+                if message.startswith("__COOKIE__:"):
+                    try:
+                        payload = json.loads(message.removeprefix("__COOKIE__:"))
+                        if isinstance(payload, dict):
+                            self._apply_captured_cookie(payload)
+                    except (ValueError, OSError):
+                        self._log("自动登录凭据保存失败，请重新获取")
+                    continue
+                if message.startswith("__STATUS__:"):
+                    self._set_status(message.removeprefix("__STATUS__:"))
+                    continue
+                if message.startswith("__ERROR__:"):
+                    detail = message.removeprefix("__ERROR__:")
+                    self._notify_from_message(detail)
+                    self._log(detail)
+                    self._show_notice("Cookie 获取失败", detail, kind="error")
+                    continue
+                self._notify_from_message(message)
+                account_prefix, body = self._split_account_prefix(message)
+                if body.startswith("掉宝任务："):
+                    snapshot = body.removeprefix("掉宝任务：").strip()
+                    if account_prefix:
+                        snapshot = f"{account_prefix}\n{snapshot}"
+                    self._progress_snapshot_log(snapshot)
+                    self._log(message)
+                    continue
+                if self._log_kind(message) == "room":
+                    self._log(message)
+                    continue
+                if self._is_progress_message(message):
+                    self._progress_log(message)
+                    self._log(message)
+                    continue
                 self._log(message)
-                continue
-            if self._log_kind(message) == "room":
-                self._log(message)
-                continue
-            if self._is_progress_message(message):
-                self._progress_log(message)
-                self._log(message)
-                continue
-            self._log(message)
-        self.after(200, self._drain_logs)
+        finally:
+            self._draining_logs = False
+            if self.__dict__.pop("_log_render_pending", False):
+                self._render_log_text()
+        self.after(10 if not self.log_queue.empty() else 200, self._drain_logs)
 
     def _poll_watch_status(self) -> None:
         try:
@@ -5552,6 +5652,8 @@ class App(tk.Tk):
             self.after(1000, self._poll_watch_status)
 
     def destroy(self) -> None:
+        self._closing = True
+        self._cookie_capture_cancel.set()
         try:
             self._save_runtime_settings_on_close()
         except (OSError, tk.TclError, ValueError):

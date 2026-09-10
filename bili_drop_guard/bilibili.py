@@ -237,10 +237,12 @@ class BilibiliClient:
             )
             data = _decode_json_response(response)
         except Exception as exc:
-            return LoginInfo(False, message=f"登录状态检查失败：{exc}")
+            raise RuntimeError(f"登录状态检查失败：{exc}") from exc
 
         if data.get("code") != 0:
-            return LoginInfo(False, message=str(data.get("message", "接口返回异常")))
+            if data.get("code") == -101:
+                return LoginInfo(False, message="Cookie 未登录或已过期")
+            raise RuntimeError(f"登录状态检查失败：{data.get('message', '接口返回异常')}")
 
         payload = data.get("data") or {}
         if not payload.get("isLogin"):

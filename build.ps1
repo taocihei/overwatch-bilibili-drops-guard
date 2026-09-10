@@ -75,15 +75,15 @@ if ($LASTEXITCODE -ne 0) {
   throw "Packaged high-DPI manifest verification failed."
 }
 
-$selfTest = Start-Process -FilePath $versionedArtifact -ArgumentList "--self-test-skynet" -Wait -PassThru
+$selfTest = Start-Process -WindowStyle Hidden -FilePath $versionedArtifact -ArgumentList "--self-test-skynet" -Wait -PassThru
 if ($selfTest.ExitCode -ne 0) {
   throw "Packaged Skynet/WASM self-test failed with exit code $($selfTest.ExitCode)."
 }
-$qrSelfTest = Start-Process -FilePath $versionedArtifact -ArgumentList "--self-test-sponsor-qr" -Wait -PassThru
+$qrSelfTest = Start-Process -WindowStyle Hidden -FilePath $versionedArtifact -ArgumentList "--self-test-sponsor-qr" -Wait -PassThru
 if ($qrSelfTest.ExitCode -ne 0) {
   throw "Packaged sponsor QR self-test failed with exit code $($qrSelfTest.ExitCode)."
 }
-$browserSelfTest = Start-Process -FilePath $versionedArtifact -ArgumentList "--self-test-browser-drivers" -Wait -PassThru
+$browserSelfTest = Start-Process -WindowStyle Hidden -FilePath $versionedArtifact -ArgumentList "--self-test-browser-drivers" -Wait -PassThru
 if ($browserSelfTest.ExitCode -ne 0) {
   throw "Packaged browser driver self-test failed with exit code $($browserSelfTest.ExitCode)."
 }
@@ -101,7 +101,7 @@ $guiSmokeProcess = $null
 $guiReady = $false
 $guiWindowTitle = $null
 try {
-  $guiSmokeProcess = Start-Process -FilePath $versionedArtifact -PassThru
+  $guiSmokeProcess = Start-Process -WindowStyle Hidden -FilePath $versionedArtifact -PassThru
   $guiDeadline = [DateTime]::UtcNow.AddSeconds(30)
   while ([DateTime]::UtcNow -lt $guiDeadline) {
     Start-Sleep -Milliseconds 100

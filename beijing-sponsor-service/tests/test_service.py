@@ -4,11 +4,11 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest.mock import patch
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from sponsor_service.config import Config
-from sponsor_service.database import Database
 from sponsor_service.payment import ProviderOrder, payment_sign
 from sponsor_service.service import ServiceError, SponsorService
 
@@ -31,6 +31,21 @@ class FakePayment:
 
 
 class ServiceTests(unittest.TestCase):
+    def test_cleanup_only_removes_old_unassigned_failed_pool_orders(self) -> None:
+        with patch.object(self.payment, "create_native_payment", side_effect=RuntimeError("offline")):
+            with patch.object(self.service.log, "exception"):
+                for _ in range(10):
+                    self.service.fill_pool_once(target=1)
+        with self.service.database.read() as connection:
+            self.assertEqual(connection.execute("SELECT COUNT(*) FROM sponsor_orders").fetchone()[0], 50)
+        reserved = self.service.reserve(500, install_id="desktop-test-1234", checkout_intent_id="checkout-test-1234", app_version="test")
+        now = time.time()
+        with patch.object(self.service, "_clock", return_value=now + 2 * 86400):
+            self.service.expire_pending()
+        with self.service.database.read() as connection:
+            rows = connection.execute("SELECT id FROM sponsor_orders").fetchall()
+        self.assertEqual([row["id"] for row in rows], [reserved.order["id"]])
+
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
         self.config = Config(
