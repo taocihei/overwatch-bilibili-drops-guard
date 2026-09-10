@@ -1395,13 +1395,13 @@ def build_notice_dialog(
 
 class App(tk.Tk):
     def __init__(self, *, preview_mode: bool = False) -> None:
-        # Windows 上杀毒/索引服务偶尔会让 Tcl 在启动瞬间把实际存在的 *.tcl 文件
-        # 报成“no such file”。只重试这种引导阶段 I/O 错误，其他 Tcl 错误仍原样抛出。
+        # 只对 Tcl 引导阶段的文件读取错误做有限重试；每次先清理失败的根窗口。
         for attempt in range(3):
             try:
                 super().__init__()
                 break
             except tk.TclError as exc:
+                self._discard_failed_tk()
                 message = str(exc).lower()
                 transient_bootstrap_error = (
                     "can't find a usable" in message
@@ -1528,6 +1528,26 @@ class App(tk.Tk):
         self.after(1000, self._poll_watch_status)
         self.after(100, self._clear_initial_focus)
         self.after(200, self._drain_logs)
+
+    def _discard_failed_tk(self) -> None:
+        # Tk can allocate its root before initialization raises. Replacing self.tk
+        # without destroying it leaves a visible "tk" window and old Tcl commands.
+        interpreter = self.__dict__.get("tk")
+        if interpreter is not None:
+            try:
+                interpreter.call("destroy", ".")
+            except tk.TclError:
+                pass  # The failure may have happened before Tk created a window.
+            for name in set(self.__dict__.get("_tclCommands") or ()):
+                try:
+                    interpreter.deletecommand(name)
+                except tk.TclError:
+                    pass  # A partially initialized command may not exist yet.
+        if getattr(tk, "_default_root", None) is self:
+            tk._default_root = None
+        self._tclCommands = None
+        self._tkloaded = False
+        self.tk = None
 
     def _set_window_icon(self) -> None:
         icon_path = _resource_path("assets/app.ico")
