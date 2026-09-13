@@ -5,7 +5,7 @@ from pathlib import Path
 
 from PyInstaller.utils.hooks import collect_all
 
-required_packages = ('requests', 'selenium', 'PIL', 'qrcode', 'tkinter', '_tkinter', 'wasmtime')
+required_packages = ('requests', 'selenium', 'PIL', 'qrcode', 'tkinter', '_tkinter', 'wasmtime', 'websocket')
 missing_packages = [name for name in required_packages if find_spec(name) is None]
 if missing_packages:
     raise RuntimeError(
@@ -46,7 +46,7 @@ binaries = []
 hiddenimports = [
     '_tkinter',
     'qrcode.image.pil',
-    # cookie_capture 按浏览器类型动态加载这两个模块，静态分析无法发现。
+    # 保留旧浏览器驱动自检；自动获取 Cookie 已改用直接 CDP 连接。
     'selenium.webdriver.chrome.webdriver',
     'selenium.webdriver.edge.webdriver',
 ]

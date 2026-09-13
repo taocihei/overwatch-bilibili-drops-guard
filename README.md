@@ -1,6 +1,6 @@
 # 守望先锋 B 站直播挂宝 / Overwatch Bilibili Live Drops Guard
 
-当前版本：`v0.5.32`
+当前版本：`v0.5.33`
 
 开源地址：<https://github.com/taocihei/overwatch-bilibili-drops-guard>
 
@@ -26,7 +26,7 @@
 
 1. 打开项目页面：<https://github.com/taocihei/overwatch-bilibili-drops-guard>
 2. 进入右侧或页面中的 `Releases`。
-3. 下载 `OverwatchBiliDrops-v0.5.32.exe`。
+3. 下载 `OverwatchBiliDrops-v0.5.33.exe`。
 4. 双击运行。
 5. 如果 Windows 提示“未知发布者”或“Windows 已保护你的电脑”，点击“更多信息”，再点“仍要运行”。这是个人开源软件常见提示，不代表一定有病毒。
 6. 第一次使用先点“自动获取 Cookie”，在弹出的独立 Edge/Chrome 窗口里登录 B 站。
@@ -49,6 +49,13 @@
 - `通知 URL`：可留空。填写后，启动、检测到可领取、领取成功、领取失败、Cookie 获取成功等关键事件会向该地址发送 JSON POST。
 - `观看进度`：优先显示本次观看进度，比如“还差 48 分钟”“已完成，待领取”“已领取”。
 - `运行日志`：保留登录、计时、任务识别和领取记录，适合排查异常。
+
+## v0.5.33 新增与修复
+
+- **修复自动获取 Cookie 卡在浏览器连接阶段**：直接连接本次打开的 Edge/Chrome，不再等待 Selenium 驱动查询或下载。
+- **修复登录窗口启动方式**：明确显示独立窗口，继承当前桌面，不再切换工作线程的 Windows 桌面。
+- **避免重复获取冲突**：每次使用独立临时登录目录，结束后关闭本次浏览器并清理目录，不复用上次的登录态或调试端口。
+- **补齐 Cookie 与退出处理**：保留浏览器会话 Cookie；取消或关闭登录窗口后结束本次获取，不再自动弹出另一个浏览器。连接失败会输出具体错误。
 
 ## v0.5.32 新增与修复
 

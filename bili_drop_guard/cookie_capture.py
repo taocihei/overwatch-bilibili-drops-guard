@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import json
 import os
+import shutil
 import socket
 import subprocess
+import tempfile
 import threading
 import time
 import urllib.request
@@ -10,6 +13,9 @@ from dataclasses import dataclass
 from importlib import import_module
 from pathlib import Path
 from typing import Any, Callable
+from urllib.parse import urlsplit
+
+import websocket
 
 from .config import APP_DIR
 
@@ -36,110 +42,143 @@ class CapturedCookie:
 class AttachedBrowser:
     process: subprocess.Popen[Any]
     profile_dir: Path
+    debug_port: int = 0
 
 
 BILIBILI_LOGIN_URL = "https://passport.bilibili.com/login"
 
 
+def _browser_startupinfo() -> subprocess.STARTUPINFO | None:
+    if os.name != "nt":
+        return None
+    si = subprocess.STARTUPINFO()
+    si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    si.wShowWindow = 1  # SW_SHOWNORMAL; inherit the caller's interactive desktop.
+    return si
+
+
 def open_bilibili_login_page(log: CookieLog | None = None) -> str:
     browser = _find_local_browser()
     if browser:
-        subprocess.Popen([browser, BILIBILI_LOGIN_URL], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        browser_name = "Edge" if "edge" in browser.lower() else "Chrome"
-        _log(log, f"已打开 {browser_name} 的 B 站登录页")
-        return browser_name
+        try:
+            subprocess.Popen(
+                [browser, "--new-window", BILIBILI_LOGIN_URL],
+                startupinfo=_browser_startupinfo(),
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            browser_name = "Edge" if "edge" in browser.lower() else "Chrome"
+            _log(log, f"已打开 {browser_name} 的 B 站登录页")
+            return browser_name
+        except Exception:
+            pass
 
-    os.startfile(BILIBILI_LOGIN_URL)
-    _log(log, "已用系统默认浏览器打开 B 站登录页")
-    return "默认浏览器"
+    try:
+        import webbrowser
+        if webbrowser.open(BILIBILI_LOGIN_URL, new=1):
+            _log(log, "已用系统默认浏览器打开 B 站登录页")
+            return "默认浏览器"
+    except Exception:
+        pass
+
+    if os.name == "nt":
+        os.startfile(BILIBILI_LOGIN_URL)
+        _log(log, "已用系统默认浏览器打开 B 站登录页")
+        return "默认浏览器"
+    raise RuntimeError("未能启动浏览器打开登录页")
 
 
 def capture_bilibili_cookie(timeout_seconds: int = 180, log: CookieLog | None = None,
                             cancel_event: threading.Event | None = None) -> CapturedCookie:
     _check_cancelled(cancel_event)
-    try:
-        from selenium.common.exceptions import WebDriverException
-        from selenium.webdriver.chrome.options import Options as ChromeOptions
-        from selenium.webdriver.edge.options import Options as EdgeOptions
-    except ImportError as exc:
-        raise RuntimeError("缺少 Selenium 依赖，请先运行：python -m pip install -r requirements.txt") from exc
-
     errors: list[str] = []
-    candidates: list[tuple[str, str, Any]] = [
-        ("Edge", "selenium.webdriver.edge.webdriver", EdgeOptions),
-        ("Chrome", "selenium.webdriver.chrome.webdriver", ChromeOptions),
-    ]
-
-    for browser_name, driver_module, options_factory in candidates:
+    for browser_name in ("Edge", "Chrome"):
         _check_cancelled(cancel_event)
-        driver = None
-        attached_browser: AttachedBrowser | None = None
+        attached = None
+        connection = None
         try:
-            options = _new_browser_options(options_factory)
-            _log(log, f"正在拉起独立 {browser_name} 自动获取窗口")
-            attached_browser = _launch_browser_for_attach(browser_name, options, log, cancel_event)
-            if not attached_browser:
-                raise RuntimeError(f"未找到本机 {browser_name} 浏览器")
-            driver_factory = _load_webdriver_class(driver_module)
-            driver = driver_factory(options=options)
-            return _wait_for_cookie(driver, browser_name, timeout_seconds, log, cancel_event)
+            _log(log, f"正在打开 {browser_name} 登录窗口（无需下载驱动）")
+            attached = _launch_browser_for_attach(browser_name, log, cancel_event)
+            if attached is None:
+                continue
+            connection = _CookieBrowser(attached.debug_port, cancel_event)
         except CaptureCancelled:
+            if attached is not None:
+                _close_attached_browser(attached)
             raise
-        except WebDriverException as exc:
-            errors.append(f"{browser_name} 启动失败：{exc.msg or exc}")
         except Exception as exc:
-            errors.append(f"{browser_name} 获取失败：{exc}")
+            if attached is not None:
+                _close_attached_browser(attached)
+            errors.append(f"{browser_name}：{exc}")
+            _log(log, f"{browser_name} 自动获取连接失败：{exc}")
+            continue
+        try:
+            return _wait_for_cookie(connection, browser_name, timeout_seconds, log, cancel_event)
         finally:
-            if driver is not None:
-                try:
-                    driver.quit()
-                except Exception:
-                    pass
-            if attached_browser is not None:
-                _close_attached_browser(attached_browser)
+            try:
+                connection.close()
+            finally:
+                _close_attached_browser(attached)
+    raise RuntimeError("；".join(errors) or "未找到 Edge/Chrome，请先安装其中一种浏览器")
 
+
+class _CookieBrowser:
+    """Own one browser-level CDP connection; never invoke a WebDriver manager."""
+
+    def __init__(self, port: int, cancel_event: threading.Event | None = None) -> None:
+        self._cancel_event = cancel_event
+        self._next_id = 0
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        with opener.open(f"http://127.0.0.1:{port}/json/version", timeout=3) as response:
+            endpoint = json.load(response).get("webSocketDebuggerUrl", "")
+        parsed = urlsplit(endpoint)
+        if parsed.scheme != "ws" or parsed.hostname not in {"localhost", "127.0.0.1", "::1"} or parsed.port != port:
+            raise RuntimeError("浏览器返回的本机调试地址无效")
         _check_cancelled(cancel_event)
-        driver = None
-        try:
-            driver_factory = _load_webdriver_class(driver_module)
-            options = _new_browser_options(options_factory)
-            profile_dir = _capture_profile_dir(browser_name)
-            profile_dir.mkdir(parents=True, exist_ok=True)
-            options.add_argument(f"--user-data-dir={profile_dir}")
-            _log(log, f"正在使用 {browser_name} 备用自动获取模式")
-            driver = driver_factory(options=options)
-            return _wait_for_cookie(driver, browser_name, timeout_seconds, log, cancel_event)
-        except CaptureCancelled:
-            raise
-        except WebDriverException as exc:
-            errors.append(f"{browser_name} 备用模式启动失败：{exc.msg or exc}")
-        except Exception as exc:
-            errors.append(f"{browser_name} 备用模式获取失败：{exc}")
-        finally:
-            if driver is not None:
-                try:
-                    driver.quit()
-                except Exception:
-                    pass
+        self._socket = websocket.create_connection(
+            endpoint, timeout=0.5, suppress_origin=True,
+            http_no_proxy=["localhost", "127.0.0.1", "::1"],
+        )
 
-    _check_cancelled(cancel_event)
-    try:
-        browser_name = open_bilibili_login_page(log)
-        errors.append(f"已为你打开 {browser_name} 登录页；该手动页面不会自动读取 Cookie，请手动复制 Cookie 或重试自动获取")
-    except Exception as exc:
-        errors.append(f"兜底打开浏览器失败：{exc}")
-    raise RuntimeError("；".join(errors) or "未能启动 Edge/Chrome 自动获取 Cookie")
+    def call(self, method: str, params: dict | None = None) -> dict:
+        _check_cancelled(self._cancel_event)
+        self._next_id += 1
+        request_id = self._next_id
+        self._socket.send(json.dumps({"id": request_id, "method": method, "params": params or {}}))
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            _check_cancelled(self._cancel_event)
+            try:
+                raw = self._socket.recv()
+            except websocket.WebSocketTimeoutException:
+                continue
+            if not raw:
+                raise RuntimeError("登录浏览器已关闭，请重新点击自动获取")
+            message = json.loads(raw)
+            if message.get("id") != request_id:
+                continue
+            if "error" in message:
+                raise RuntimeError(f"浏览器命令 {method} 失败")
+            return message.get("result") or {}
+        raise RuntimeError("连接登录浏览器超时，请重试")
+
+    def close(self) -> None:
+        try:
+            # Closing our dedicated browser must also work after cancellation.
+            self._next_id += 1
+            self._socket.send(json.dumps({"id": self._next_id, "method": "Browser.close"}))
+        except (OSError, websocket.WebSocketException):
+            pass
+        finally:
+            self._socket.close()
 
 
 def _wait_for_cookie(driver: Any, browser_name: str, timeout_seconds: int, log: CookieLog | None,
                      cancel_event: threading.Event | None = None) -> CapturedCookie:
     _check_cancelled(cancel_event)
-    driver.set_page_load_timeout(15)
-    driver.get(BILIBILI_LOGIN_URL)
     _log(log, "浏览器已打开，请完成 B 站登录；检测到 SESSDATA 后会自动关闭浏览器")
     deadline = time.monotonic() + max(30, timeout_seconds)
     last_hint_at = 0.0
-    last_live_probe_at = 0.0
 
     while time.monotonic() < deadline:
         _check_cancelled(cancel_event)
@@ -150,9 +189,6 @@ def _wait_for_cookie(driver: Any, browser_name: str, timeout_seconds: int, log: 
             return CapturedCookie(browser=browser_name, cookie_header=cookie_header)
 
         now = time.monotonic()
-        if now - last_live_probe_at >= 20:
-            _open_live_probe(driver)
-            last_live_probe_at = now
         if now - last_hint_at >= 10:
             _log(log, "尚未检测到登录 Cookie，请确认已在打开的浏览器里完成登录")
             last_hint_at = now
@@ -165,17 +201,8 @@ def _wait_for_cookie(driver: Any, browser_name: str, timeout_seconds: int, log: 
 
 
 def _read_bilibili_cookies(driver: Any) -> list[dict[str, Any]]:
-    cookies: list[dict[str, Any]] = []
-    try:
-        result = driver.execute_cdp_cmd("Network.getAllCookies", {})
-        cookies.extend(result.get("cookies") or [])
-    except Exception:
-        pass
-
-    try:
-        cookies.extend(driver.get_cookies())
-    except Exception:
-        pass
+    # Storage.getCookies includes HttpOnly cookies in this isolated browser profile.
+    cookies = driver.call("Storage.getCookies").get("cookies") or []
 
     deduped: dict[tuple[str, str, str], dict[str, Any]] = {}
     for cookie in cookies:
@@ -189,7 +216,8 @@ def _read_bilibili_cookies(driver: Any) -> list[dict[str, Any]]:
             continue
         expires = cookie.get("expires") or cookie.get("expiry")
         try:
-            if expires and float(expires) <= time.time():
+            # CDP uses -1 for session cookies, not an expired Unix timestamp.
+            if expires and 0 < float(expires) <= time.time():
                 continue
         except (TypeError, ValueError):
             pass
@@ -234,17 +262,7 @@ def _cookie_specificity(cookie: dict[str, Any]) -> tuple[int, int, float]:
     return broad_domain, root_path, expiry
 
 
-def _open_live_probe(driver: Any) -> None:
-    try:
-        current_url = str(getattr(driver, "current_url", "") or "")
-        if "passport.bilibili.com" in current_url:
-            return
-        driver.get("https://live.bilibili.com")
-    except Exception:
-        pass
-
-
-def _launch_browser_for_attach(browser_name: str, options: Any, log: CookieLog | None,
+def _launch_browser_for_attach(browser_name: str, log: CookieLog | None = None,
                                cancel_event: threading.Event | None = None) -> AttachedBrowser | None:
     _check_cancelled(cancel_event)
     browser = _find_local_browser(browser_name)
@@ -253,25 +271,29 @@ def _launch_browser_for_attach(browser_name: str, options: Any, log: CookieLog |
 
     port = _find_free_port()
     profile_dir = _capture_profile_dir(browser_name)
-    profile_dir.mkdir(parents=True, exist_ok=True)
-    process = subprocess.Popen(
-        [
-            browser,
-            f"--remote-debugging-port={port}",
-            f"--user-data-dir={profile_dir}",
-            "--remote-allow-origins=*",
-            "--disable-blink-features=AutomationControlled",
-            "--disable-infobars",
-            "--no-first-run",
-            "--no-default-browser-check",
-            "--start-maximized",
-            BILIBILI_LOGIN_URL,
-        ],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
-    options.debugger_address = f"127.0.0.1:{port}"
-    attached = AttachedBrowser(process=process, profile_dir=profile_dir)
+    try:
+        process = subprocess.Popen(
+            [
+                browser,
+                "--new-window",
+                f"--remote-debugging-port={port}",
+                "--remote-debugging-address=127.0.0.1",
+                f"--user-data-dir={profile_dir}",
+                "--disable-blink-features=AutomationControlled",
+                "--disable-infobars",
+                "--no-first-run",
+                "--no-default-browser-check",
+                "--start-maximized",
+                BILIBILI_LOGIN_URL,
+            ],
+            startupinfo=_browser_startupinfo(),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except Exception:
+        _remove_capture_profile(profile_dir)
+        raise
+    attached = AttachedBrowser(process=process, profile_dir=profile_dir, debug_port=port)
     try:
         if not _wait_for_debugger_port(port, timeout_seconds=15, cancel_event=cancel_event):
             raise RuntimeError(f"{browser_name} 已启动但调试端口未就绪，请重试或使用“只打开登录页”")
@@ -282,41 +304,49 @@ def _launch_browser_for_attach(browser_name: str, options: Any, log: CookieLog |
     return attached
 
 
-def _new_browser_options(options_factory: Callable[[], Any]) -> Any:
-    options = options_factory()
-    options.add_argument("--disable-blink-features=AutomationControlled")
-    options.add_argument("--disable-infobars")
-    options.add_argument("--no-first-run")
-    options.add_argument("--no-default-browser-check")
-    options.add_argument("--remote-allow-origins=*")
-    options.add_argument("--start-maximized")
-    return options
-
-
 def _capture_profile_dir(browser_name: str) -> Path:
     safe_name = "".join(ch for ch in browser_name.lower() if ch.isalnum() or ch in {"-", "_"}) or "browser"
-    return APP_DIR / "cookie-browser-profile" / safe_name / "profile"
+    parent = APP_DIR / "cookie-browser-profile" / safe_name
+    parent.mkdir(parents=True, exist_ok=True)
+    return Path(tempfile.mkdtemp(prefix="capture-", dir=parent))
 
 
 def _close_attached_browser(attached_browser: AttachedBrowser) -> None:
     process = attached_browser.process
-    if process.poll() is not None:
-        return
     try:
-        process.terminate()
-        process.wait(timeout=3)
+        if process.poll() is None:
+            try:
+                process.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                process.terminate()
+                try:
+                    process.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    subprocess.run(
+                        ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                        creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+                        timeout=5, check=False,
+                    )
+    finally:
+        if process.poll() is not None:
+            _remove_capture_profile(attached_browser.profile_dir)
+
+
+def _remove_capture_profile(profile_dir: Path) -> None:
+    target = profile_dir.resolve()
+    root = (APP_DIR / "cookie-browser-profile").resolve()
+    if not target.is_relative_to(root) or not target.name.startswith("capture-"):
         return
-    except Exception:
-        pass
-    try:
-        subprocess.run(
-            ["taskkill", "/PID", str(process.pid), "/T", "/F"],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            check=False,
-        )
-    except Exception:
-        pass
+    for attempt in range(3):
+        try:
+            shutil.rmtree(target)
+            return
+        except FileNotFoundError:
+            return
+        except OSError:
+            if attempt < 2:
+                time.sleep(0.1)
 
 
 def _load_webdriver_class(module_name: str) -> Any:
@@ -328,10 +358,11 @@ def _wait_for_debugger_port(port: int, timeout_seconds: float = 15.0,
                             cancel_event: threading.Event | None = None) -> bool:
     deadline = time.monotonic() + timeout_seconds
     url = f"http://127.0.0.1:{port}/json/version"
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     while time.monotonic() < deadline:
         _check_cancelled(cancel_event)
         try:
-            with urllib.request.urlopen(url, timeout=0.5) as response:
+            with opener.open(url, timeout=0.5) as response:
                 return response.status == 200
         except Exception:
             if cancel_event is not None:

@@ -6,7 +6,7 @@ if (Test-Path -LiteralPath $artifact) {
   Remove-Item -LiteralPath $artifact -Force
 }
 
-python -c "import _tkinter, PIL, PyInstaller, qrcode, requests, selenium, tkinter, wasmtime; print('Build dependencies OK')"
+python -c "import _tkinter, PIL, PyInstaller, qrcode, requests, selenium, tkinter, wasmtime, websocket; print('Build dependencies OK')"
 if ($LASTEXITCODE -ne 0) {
   throw "Build dependencies are incomplete. Run: python -m pip install -r requirements.txt"
 }

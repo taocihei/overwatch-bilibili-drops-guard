@@ -44,14 +44,14 @@ class AuditRegressionTests(unittest.TestCase):
         cancel = threading.Event()
         driver = MagicMock()
         attached = MagicMock()
-        driver.get.side_effect = lambda _url: cancel.set()
+        driver.call.side_effect = lambda *_a: (cancel.set() or {'cookies': []})
         with (patch.object(cookie_capture, '_launch_browser_for_attach', return_value=attached),
-              patch.object(cookie_capture, '_load_webdriver_class', return_value=MagicMock(return_value=driver)) as factory,
+              patch.object(cookie_capture, '_CookieBrowser', return_value=driver) as factory,
               patch.object(cookie_capture, '_close_attached_browser') as close,
               patch.object(cookie_capture, 'open_bilibili_login_page') as fallback):
             with self.assertRaises(cookie_capture.CaptureCancelled):
                 cookie_capture.capture_bilibili_cookie(cancel_event=cancel)
-        driver.quit.assert_called_once()
+        driver.close.assert_called_once()
         close.assert_called_once_with(attached)
         factory.assert_called_once()
         fallback.assert_not_called()

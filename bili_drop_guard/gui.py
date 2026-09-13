@@ -5002,14 +5002,6 @@ class App(tk.Tk):
         self._log(f"已打开 {browser_name} 登录页。手动模式不会自动读取 Cookie；需要自动读取请点击“自动获取 Cookie”。")
 
     def _capture_cookie_worker(self, origin: dict) -> None:
-        if sys.platform == "win32":
-            try:
-                import ctypes
-                hdesk = ctypes.windll.user32.OpenDesktopW("Default", 0, False, 0x10000000)
-                if hdesk:
-                    ctypes.windll.user32.SetThreadDesktop(hdesk)
-            except Exception:
-                pass
         try:
             result = capture_bilibili_cookie(log=self._thread_log, cancel_event=self._cookie_capture_cancel)
         except CaptureCancelled:
