@@ -53,38 +53,38 @@ SPONSOR_INSTALL_ID_PATH = APP_DIR / "sponsor-install-id"
 SPONSOR_ORDER_CACHE_MAX_BYTES = 1024 * 1024
 SPONSOR_ORDER_CACHE_MAX_ENTRIES = 16
 SPONSOR_ORDER_CACHE_EXPIRY_GUARD_SECONDS = 30
-APP_BG = "#eef3f9"
+APP_BG = "#f5f7fa"
 SURFACE = "#ffffff"
-GLASS = "#fbfdff"
-SOFT_SURFACE = "#f4f7fb"
-BORDER = "#cfd9e6"
-TEXT = "#172033"
-MUTED = "#65748a"
-FAINT = "#95a3b6"
-ACCENT = "#2868e8"
-ACCENT_ACTIVE = "#1f55c8"
-ACCENT_SOFT = "#eaf2ff"
+GLASS = "#ffffff"
+SOFT_SURFACE = "#f8fafc"
+BORDER = "#e2e8f0"
+TEXT = "#0f172a"
+MUTED = "#64748b"
+FAINT = "#94a3b8"
+ACCENT = "#2563eb"
+ACCENT_ACTIVE = "#1d4ed8"
+ACCENT_SOFT = "#eff6ff"
 ACCENT_SOFT_ACTIVE = "#dbeafe"
-ACCENT_BORDER = "#b9d2ff"
+ACCENT_BORDER = "#bfdbfe"
 INFO = "#2563eb"
-SUCCESS = "#22a06b"
-SUCCESS_ACTIVE = "#17885a"
-DANGER = "#c84d44"
-DANGER_BG = "#fff0ef"
-WARNING_BG = "#fffaf0"
-WARNING_BORDER = "#f1d79a"
-PANEL_SHADOW = "#bcc8d8"
-FIELD_BG = "#f6f9fc"
-FIELD_OUTLINE = "#c8d4e3"
-BUTTON_OUTLINE = "#cbd7e5"
-SUBTLE_OUTLINE = "#d3dde9"
-SECONDARY = "#f4f7fb"
-SECONDARY_ACTIVE = "#e8eef6"
-HEADER_BG = "#fbfdff"
-HEADER_MUTED = "#73839a"
-HEADER_INPUT = "#ffffff"
-PRIMARY = "#2467e8"
-PRIMARY_ACTIVE = "#1d55c9"
+SUCCESS = "#10b981"
+SUCCESS_ACTIVE = "#059669"
+DANGER = "#ef4444"
+DANGER_BG = "#fef2f2"
+WARNING_BG = "#fffbeb"
+WARNING_BORDER = "#fde68a"
+PANEL_SHADOW = "#e8edf5"
+FIELD_BG = "#f8fafc"
+FIELD_OUTLINE = "#e2e8f0"
+BUTTON_OUTLINE = "#e2e8f0"
+SUBTLE_OUTLINE = "#eaeff5"
+SECONDARY = "#f1f5f9"
+SECONDARY_ACTIVE = "#e2e8f0"
+HEADER_BG = "#ffffff"
+HEADER_MUTED = "#64748b"
+HEADER_INPUT = "#f8fafc"
+PRIMARY = "#2563eb"
+PRIMARY_ACTIVE = "#1d4ed8"
 
 
 def _backend_network_label(rows: list[WatchWorkerStatus], server_rate: float | None) -> str:
@@ -154,9 +154,11 @@ class RoundedPanel(tk.Canvas):
         radius: int = 10,
         padding: tuple[int, int] = (20, 16),
         min_height: int = 0,
+        width: int = 0,
         outline: str = BORDER,
         shadow: bool = False,
         auto_height: bool = True,
+        auto_width: bool = False,
     ) -> None:
         super().__init__(parent, bg=background, highlightthickness=0, borderwidth=0)
         self.fill = fill
@@ -166,23 +168,31 @@ class RoundedPanel(tk.Canvas):
         self.pad_x, self.pad_y = padding
         self.min_height = min_height
         self.auto_height = auto_height
+        self.auto_width = auto_width
         self._panel_image: object | None = None
         # Canvas 自带一个很大的默认高度；未指定 min_height 的自适应卡片如果沿用它，
         # 会把说明区撑出大片空白，并挤压下面的主要功能区。
         self.configure(height=max(1, min_height))
+        if width > 0:
+            self.configure(width=width)
         self.inner = tk.Frame(self, bg=fill, highlightthickness=0, borderwidth=0)
         self._window = self.create_window(self.pad_x, self.pad_y, anchor="nw", window=self.inner)
         self.bind("<Configure>", self._redraw)
-        self.inner.bind("<Configure>", self._sync_height)
-        if self.auto_height:
-            self.after_idle(self._sync_height)
+        self.inner.bind("<Configure>", self._sync_size)
+        if self.auto_height or self.auto_width:
+            self.after_idle(self._sync_size)
 
-    def _sync_height(self, _event: tk.Event | None = None) -> None:
-        if not self.auto_height:
-            return
-        requested = max(self.inner.winfo_reqheight(), self._children_reqheight()) + self.pad_y * 2
-        if requested > 1:
-            self.configure(height=max(self.min_height, requested))
+    def _sync_size(self, _event: tk.Event | None = None) -> None:
+        if self.auto_height:
+            requested_h = max(self.inner.winfo_reqheight(), self._children_reqheight()) + self.pad_y * 2
+            if requested_h > 1:
+                self.configure(height=max(self.min_height, requested_h))
+        if self.auto_width:
+            requested_w = self.inner.winfo_reqwidth() + self.pad_x * 2
+            if requested_w > 1:
+                self.configure(width=requested_w)
+
+    _sync_height = _sync_size
 
     def _children_reqheight(self) -> int:
         children = [child for child in self.inner.winfo_children() if child.winfo_manager()]
@@ -226,12 +236,15 @@ class RoundedPanel(tk.Canvas):
         self.tag_lower("panel", self._window)
         self.tag_lower("shadow", "panel")
         self.coords(self._window, self.pad_x, self.pad_y)
-        window_options: dict[str, int] = {"width": max(1, width - self.pad_x * 2)}
+        window_options: dict[str, int] = {}
+        if not self.auto_width:
+            window_options["width"] = max(1, width - self.pad_x * 2)
         if not self.auto_height:
             window_options["height"] = max(1, height - self.pad_y * 2)
-        self.itemconfigure(self._window, **window_options)
-        if self.auto_height:
-            self.after_idle(self._sync_height)
+        if window_options:
+            self.itemconfigure(self._window, **window_options)
+        if self.auto_height or self.auto_width:
+            self.after_idle(self._sync_size)
 
     def _rounded_rect(self, x1: int, y1: int, x2: int, y2: int, radius: int, **kwargs: object) -> None:
         points = [
@@ -1520,6 +1533,13 @@ class App(tk.Tk):
         else:
             self.update_idletasks()
             self.deiconify()
+            self.lift()
+            self.focus_force()
+            try:
+                self.attributes("-topmost", True)
+                self.after(200, lambda: self.attributes("-topmost", False))
+            except Exception:
+                pass
             # 先让主界面完成首帧，再进行赞助服务的后台预热。旧逻辑在
             # 控件构建前就启动网络、二维码和缓存写入，会与 Tk 首次绘制
             # 争用 CPU / I/O，造成窗口刚出现时拖动、点击都有顿挫感。
@@ -1636,7 +1656,7 @@ class App(tk.Tk):
         self.columnconfigure(0, weight=1)
         self.rowconfigure(1, weight=1)
 
-        commandbar = tk.Frame(self, bg=HEADER_BG, height=76, highlightthickness=0, borderwidth=0)
+        commandbar = tk.Frame(self, bg=HEADER_BG, height=52, highlightthickness=0, borderwidth=0)
         self.commandbar = commandbar
         commandbar.grid(row=0, column=0, sticky="ew")
         commandbar.grid_propagate(False)
@@ -1652,14 +1672,24 @@ class App(tk.Tk):
         brand = tk.Frame(commandbar, bg=HEADER_BG, highlightthickness=0, borderwidth=0)
         self.brand = brand
         brand.grid(row=0, column=0, sticky="w", padx=20)
-        logo = tk.Canvas(brand, width=34, height=34, bg=HEADER_BG, highlightthickness=0, borderwidth=0)
+        logo = tk.Canvas(brand, width=30, height=30, bg=HEADER_BG, highlightthickness=0, borderwidth=0)
         self.brand_logo = logo
         logo.grid(row=0, column=0, rowspan=2, sticky="w", padx=(0, 10))
         self._draw_brand_logo(logo)
-        tk.Label(brand, text="守望先锋 B站直播挂宝", bg=HEADER_BG, fg=TEXT, font=("Microsoft YaHei UI", 15, "bold")).grid(row=0, column=1, sticky="w")
+        tk.Label(brand, text="守望先锋 B站直播挂宝", bg=HEADER_BG, fg=TEXT, font=("Microsoft YaHei UI", 13, "bold")).grid(row=0, column=1, sticky="w")
         sub = tk.Frame(brand, bg=HEADER_BG, highlightthickness=0, borderwidth=0)
         sub.grid(row=1, column=1, sticky="w")
-        tk.Label(sub, text="Bilibili Drops Helper", bg=HEADER_BG, fg=MUTED, font=("Microsoft YaHei UI", 8)).pack(side="left")
+        tk.Label(sub, text="Bilibili Drops Helper", bg=HEADER_BG, fg=MUTED, font=("Microsoft YaHei UI", 8)).pack(side="left", padx=(0, 6))
+        tk.Label(sub, text=f"v{__version__}", bg=ACCENT_SOFT, fg=ACCENT, font=("Microsoft YaHei UI", 7, "bold"), padx=5, pady=0).pack(side="left")
+
+        cmd_right = tk.Frame(commandbar, bg=HEADER_BG, highlightthickness=0, borderwidth=0)
+        cmd_right.place(relx=1.0, rely=0.5, anchor="e", x=-24)
+        status_pill = RoundedPanel(cmd_right, fill=SOFT_SURFACE, background=HEADER_BG, radius=12, padding=(10, 4), min_height=26, width=88, outline=BORDER, shadow=False, auto_height=False, auto_width=True)
+        status_pill.pack(side="right")
+        self.status_pill = status_pill
+        self.cmd_status_dot = self._status_dot(status_pill.inner, color=SUCCESS if getattr(self, "watcher", None) and self.watcher.running else FAINT, background=SOFT_SURFACE, size=10)
+        self.cmd_status_dot.pack(side="left", padx=(0, 6))
+        tk.Label(status_pill.inner, textvariable=self.status_var, bg=SOFT_SURFACE, fg=MUTED, font=("Microsoft YaHei UI", 8, "bold")).pack(side="left")
 
         body = tk.Frame(self, bg=APP_BG, highlightthickness=0, borderwidth=0)
         body.grid(row=1, column=0, sticky="nsew")
@@ -1669,11 +1699,11 @@ class App(tk.Tk):
         self.body = body
 
         side = tk.Frame(body, bg=APP_BG, highlightthickness=0, borderwidth=0)
-        side.grid(row=0, column=0, sticky="nsew", padx=(18, 8), pady=(0, 14))
+        side.grid(row=0, column=0, sticky="nsew", padx=(16, 8), pady=(12, 12))
         side.columnconfigure(0, weight=1)
 
         work = tk.Frame(body, bg=APP_BG, highlightthickness=0, borderwidth=0)
-        work.grid(row=0, column=1, sticky="nsew", padx=(0, 18), pady=(0, 14))
+        work.grid(row=0, column=1, sticky="nsew", padx=(8, 16), pady=(12, 12))
         work.columnconfigure(0, weight=1)
         work.rowconfigure(0, weight=1)
 
@@ -1719,7 +1749,20 @@ class App(tk.Tk):
         settings_canvas.grid(row=0, column=0, sticky="nsew")
         settings_scrollbar = ttk.Scrollbar(parent, orient="vertical", command=settings_canvas.yview, style="Vertical.TScrollbar")
         settings_scrollbar.grid(row=0, column=1, sticky="ns", padx=(2, 0))
-        settings_canvas.configure(yscrollcommand=settings_scrollbar.set)
+
+        def _on_settings_scroll(first, last):
+            try:
+                first_f, last_f = float(first), float(last)
+            except (ValueError, TypeError):
+                first_f, last_f = 0.0, 1.0
+            settings_scrollbar.set(first, last)
+            if first_f <= 0.001 and last_f >= 0.999:
+                settings_scrollbar.grid_remove()
+            else:
+                settings_scrollbar.grid()
+
+        settings_canvas.configure(yscrollcommand=_on_settings_scroll)
+        settings_scrollbar.grid_remove()
         settings_host = tk.Frame(settings_canvas, bg=APP_BG, highlightthickness=0, borderwidth=0)
         settings_host.columnconfigure(0, weight=1)
         settings_window = settings_canvas.create_window(0, 0, anchor="nw", window=settings_host)
@@ -1734,25 +1777,24 @@ class App(tk.Tk):
         self.settings_canvas = settings_canvas
         self.bind_all("<MouseWheel>", self._scroll_settings_workspace, add="+")
 
-        credential_panel = RoundedPanel(settings_host, fill=GLASS, background=APP_BG, radius=18, padding=(18, 8), min_height=620, outline=SUBTLE_OUTLINE, shadow=True, auto_height=True)
+        credential_panel = RoundedPanel(settings_host, fill=SURFACE, background=APP_BG, radius=12, padding=(16, 14), min_height=600, outline=BORDER, shadow=True, auto_height=True)
         self.credential_panel = credential_panel
         credential_panel.grid(row=0, column=0, sticky="nsew")
         cookie = credential_panel.inner
         cookie.columnconfigure(0, weight=1)
-        cookie.rowconfigure(3, weight=1)
+        cookie.rowconfigure(2, weight=1)
 
-        self._section_title(cookie, "登录凭据", "credential").grid(row=0, column=0, sticky="w")
-        tk.Label(cookie, text="选择账号，获取或粘贴登录 Cookie。", bg=GLASS, fg=MUTED, font=("Microsoft YaHei UI", 9), wraplength=390, justify="left").grid(row=1, column=0, sticky="w", pady=(2, 4))
+        self._section_title(cookie, "账号与凭据", "credential", background=SURFACE).grid(row=0, column=0, sticky="w", pady=(0, 10))
 
-        account_panel = RoundedPanel(cookie, fill=FIELD_BG, background=GLASS, radius=14, padding=(14, 6), min_height=144, outline=SUBTLE_OUTLINE, shadow=False, auto_height=True)
-        account_panel.grid(row=2, column=0, sticky="ew", pady=(0, 6))
+        account_panel = RoundedPanel(cookie, fill=SOFT_SURFACE, background=SURFACE, radius=8, padding=(12, 10), min_height=136, outline=BORDER, shadow=False, auto_height=True)
+        account_panel.grid(row=1, column=0, sticky="ew", pady=(0, 8))
         account = account_panel.inner
         account.columnconfigure(0, weight=1)
 
-        list_header = tk.Frame(account, bg=FIELD_BG, highlightthickness=0, borderwidth=0)
+        list_header = tk.Frame(account, bg=SOFT_SURFACE, highlightthickness=0, borderwidth=0)
         list_header.grid(row=0, column=0, sticky="ew")
         list_header.columnconfigure(0, weight=1)
-        tk.Label(list_header, text="挂机账号", bg=FIELD_BG, fg=TEXT, font=("Microsoft YaHei UI", 11, "bold")).grid(row=0, column=0, sticky="w")
+        tk.Label(list_header, text="挂机账号", bg=SOFT_SURFACE, fg=TEXT, font=("Microsoft YaHei UI", 10, "bold")).grid(row=0, column=0, sticky="w")
         LabelButton(
             list_header,
             "+ 添加账号",
@@ -1760,32 +1802,32 @@ class App(tk.Tk):
             fill=ACCENT_SOFT,
             foreground=ACCENT,
             active_fill=ACCENT_SOFT_ACTIVE,
-            height=26,
-            width=82,
+            height=24,
+            width=78,
             font=("Microsoft YaHei UI", 8, "bold"),
-            radius=9,
+            radius=8,
         ).grid(row=0, column=1, sticky="e")
-        self._account_check_frame = tk.Frame(account, bg=FIELD_BG, highlightthickness=0, borderwidth=0)
-        self._account_check_frame.grid(row=1, column=0, sticky="ew", pady=(5, 0))
+        self._account_check_frame = tk.Frame(account, bg=SOFT_SURFACE, highlightthickness=0, borderwidth=0)
+        self._account_check_frame.grid(row=1, column=0, sticky="ew", pady=(4, 0))
         self._build_account_checklist()
 
-        tk.Frame(account, bg="#e6edf4", height=1, highlightthickness=0, borderwidth=0).grid(row=2, column=0, sticky="ew", pady=(8, 7))
+        tk.Frame(account, bg=BORDER, height=1, highlightthickness=0, borderwidth=0).grid(row=2, column=0, sticky="ew", pady=(6, 5))
 
-        tk.Label(account, text="账号名称", bg=FIELD_BG, fg=MUTED, font=("Microsoft YaHei UI", 9, "bold")).grid(row=3, column=0, sticky="w")
-        account_entry_box = RoundedPanel(account, fill=SURFACE, background=FIELD_BG, radius=10, padding=(12, 6), min_height=34, outline=SUBTLE_OUTLINE, shadow=False, auto_height=False)
-        account_entry_box.grid(row=4, column=0, sticky="ew", pady=(4, 0))
+        tk.Label(account, text="账号名称", bg=SOFT_SURFACE, fg=MUTED, font=("Microsoft YaHei UI", 8, "bold")).grid(row=3, column=0, sticky="w")
+        account_entry_box = RoundedPanel(account, fill=SURFACE, background=SOFT_SURFACE, radius=8, padding=(10, 5), min_height=32, outline=FIELD_OUTLINE, shadow=False, auto_height=False)
+        account_entry_box.grid(row=4, column=0, sticky="ew", pady=(3, 0))
         account_entry_box.inner.columnconfigure(0, weight=1)
-        tk.Entry(account_entry_box.inner, textvariable=self.account_name_var, borderwidth=0, relief="flat", bg=SURFACE, fg=TEXT, insertbackground=TEXT, font=("Microsoft YaHei UI", 10)).grid(row=0, column=0, sticky="ew")
+        tk.Entry(account_entry_box.inner, textvariable=self.account_name_var, borderwidth=0, relief="flat", bg=SURFACE, fg=TEXT, insertbackground=TEXT, font=("Microsoft YaHei UI", 9)).grid(row=0, column=0, sticky="ew")
 
-        tk.Frame(account, bg="#e6edf4", height=1, highlightthickness=0, borderwidth=0).grid(row=5, column=0, sticky="ew", pady=(7, 5))
-        tk.Label(account, text="直播间房号", bg=FIELD_BG, fg=MUTED, font=("Microsoft YaHei UI", 9, "bold")).grid(row=6, column=0, sticky="w")
+        tk.Frame(account, bg=BORDER, height=1, highlightthickness=0, borderwidth=0).grid(row=5, column=0, sticky="ew", pady=(5, 4))
+        tk.Label(account, text="直播间房号", bg=SOFT_SURFACE, fg=MUTED, font=("Microsoft YaHei UI", 8, "bold")).grid(row=6, column=0, sticky="w")
 
-        room_box = RoundedPanel(account, fill=SURFACE, background=FIELD_BG, radius=10, padding=(10, 5), min_height=34, outline=SUBTLE_OUTLINE, shadow=False, auto_height=False)
-        room_box.grid(row=7, column=0, sticky="ew", pady=(4, 0))
+        room_box = RoundedPanel(account, fill=SURFACE, background=SOFT_SURFACE, radius=8, padding=(10, 4), min_height=32, outline=FIELD_OUTLINE, shadow=False, auto_height=False)
+        room_box.grid(row=7, column=0, sticky="ew", pady=(3, 0))
         room_box.inner.columnconfigure(0, weight=1)
-        self.room_entry = tk.Entry(room_box.inner, textvariable=self.room_var, borderwidth=0, relief="flat", bg=SURFACE, fg=TEXT, insertbackground=TEXT, font=("Microsoft YaHei UI", 10))
+        self.room_entry = tk.Entry(room_box.inner, textvariable=self.room_var, borderwidth=0, relief="flat", bg=SURFACE, fg=TEXT, insertbackground=TEXT, font=("Microsoft YaHei UI", 9))
         self.room_entry.grid(row=0, column=0, sticky="ew")
-        self.room_placeholder = tk.Label(room_box.inner, text="填写直播间房号或链接", bg=SURFACE, fg=FAINT, font=("Microsoft YaHei UI", 9))
+        self.room_placeholder = tk.Label(room_box.inner, text="填写直播间房号或链接", bg=SURFACE, fg=FAINT, font=("Microsoft YaHei UI", 8))
         self.room_placeholder.grid(row=0, column=0, sticky="w")
         self.room_placeholder.bind("<Button-1>", lambda _event: self.room_entry.focus_set())
         self.room_entry.bind("<FocusIn>", lambda _event: self._refresh_room_placeholder())
@@ -1799,12 +1841,12 @@ class App(tk.Tk):
             fill=SECONDARY,
             foreground=MUTED,
             active_fill=SECONDARY_ACTIVE,
-            height=24,
-            width=60,
-            font=("Microsoft YaHei UI", 8, "bold"),
-            radius=9,
+            height=22,
+            width=56,
+            font=("Microsoft YaHei UI", 8),
+            radius=7,
         )
-        self.reset_room_button.grid(row=0, column=1, sticky="e", padx=(7, 5))
+        self.reset_room_button.grid(row=0, column=1, sticky="e", padx=(6, 4))
         self.open_room_button = LabelButton(
             room_box.inner,
             "打开B站",
@@ -1812,65 +1854,67 @@ class App(tk.Tk):
             fill=ACCENT_SOFT,
             foreground=ACCENT,
             active_fill=ACCENT_SOFT_ACTIVE,
-            height=24,
-            width=60,
-            font=("Microsoft YaHei UI", 8, "bold"),
-            radius=9,
+            height=22,
+            width=56,
+            font=("Microsoft YaHei UI", 8),
+            radius=7,
         )
         self.open_room_button.grid(row=0, column=2, sticky="e")
 
-        flow = tk.Frame(cookie, bg=GLASS, highlightthickness=0, borderwidth=0)
-        flow.grid(row=3, column=0, sticky="nsew")
+        flow = tk.Frame(cookie, bg=SURFACE, highlightthickness=0, borderwidth=0)
+        flow.grid(row=2, column=0, sticky="nsew")
         flow.columnconfigure(0, weight=1)
-        flow.rowconfigure(11, weight=1)
+        flow.rowconfigure(7, weight=1)
 
-        capture_header = tk.Frame(flow, bg=GLASS, highlightthickness=0, borderwidth=0)
+        capture_header = tk.Frame(flow, bg=SURFACE, highlightthickness=0, borderwidth=0)
         capture_header.grid(row=0, column=0, sticky="ew")
         capture_header.columnconfigure(0, weight=1)
-        tk.Label(capture_header, text="主要操作", bg=GLASS, fg=TEXT, font=("Microsoft YaHei UI", 12, "bold")).grid(row=0, column=0, sticky="w")
-        tk.Label(capture_header, text="推荐", bg=GLASS, fg=ACCENT, font=("Microsoft YaHei UI", 8, "bold")).grid(row=0, column=1, sticky="e")
-        tk.Label(flow, text="打开独立自动获取窗口；登录后会自动写入下方 Cookie。", bg=GLASS, fg=MUTED, font=("Microsoft YaHei UI", 9), wraplength=360, justify="left").grid(row=1, column=0, sticky="w", pady=(2, 5))
-        LabelButton(flow, "自动获取 Cookie", self._capture_cookie, fill=ACCENT, foreground="#ffffff", active_fill=ACCENT_ACTIVE, height=38, font=("Microsoft YaHei UI", 10, "bold"), radius=13, shadow=True).grid(row=2, column=0, sticky="ew")
+        tk.Label(capture_header, text="凭据获取", bg=SURFACE, fg=TEXT, font=("Microsoft YaHei UI", 10, "bold")).grid(row=0, column=0, sticky="w")
+        tk.Label(capture_header, text="推荐方式", bg=SURFACE, fg=ACCENT, font=("Microsoft YaHei UI", 8, "bold")).grid(row=0, column=1, sticky="e")
+        LabelButton(flow, "自动获取 Cookie", self._capture_cookie, fill=PRIMARY, foreground="#ffffff", active_fill=PRIMARY_ACTIVE, height=36, font=("Microsoft YaHei UI", 9, "bold"), radius=8, shadow=False).grid(row=1, column=0, sticky="ew", pady=(4, 0))
+        LabelButton(flow, "只打开登录页（手动）", self._open_cookie_login_page, fill=SECONDARY, foreground=TEXT, active_fill=SECONDARY_ACTIVE, height=30, font=("Microsoft YaHei UI", 8), radius=8, outline=BUTTON_OUTLINE).grid(row=2, column=0, sticky="ew", pady=(4, 0))
 
-        login_header = tk.Frame(flow, bg=GLASS, highlightthickness=0, borderwidth=0)
-        login_header.grid(row=3, column=0, sticky="ew", pady=(7, 0))
-        login_header.columnconfigure(0, weight=1)
-        tk.Label(login_header, text="备用方式", bg=GLASS, fg=MUTED, font=("Microsoft YaHei UI", 9, "bold")).grid(row=0, column=0, sticky="w")
-        LabelButton(flow, "只打开登录页（手动）", self._open_cookie_login_page, fill=SURFACE, foreground=TEXT, active_fill=SECONDARY_ACTIVE, height=32, font=("Microsoft YaHei UI", 9, "bold"), radius=11, outline=BUTTON_OUTLINE).grid(row=4, column=0, sticky="ew", pady=(5, 0))
+        self._soft_divider(flow).grid(row=3, column=0, sticky="ew", pady=5)
 
-        self._soft_divider(flow).grid(row=5, column=0, sticky="ew", pady=6)
-
-        cookie_header = tk.Frame(flow, bg=GLASS, highlightthickness=0, borderwidth=0)
-        cookie_header.grid(row=6, column=0, sticky="ew")
+        cookie_header = tk.Frame(flow, bg=SURFACE, highlightthickness=0, borderwidth=0)
+        cookie_header.grid(row=4, column=0, sticky="ew")
         cookie_header.columnconfigure(0, weight=1)
-        tk.Label(cookie_header, text="Cookie 内容", bg=GLASS, fg=TEXT, font=("Microsoft YaHei UI", 12, "bold")).grid(row=0, column=0, sticky="w")
-        tk.Label(cookie_header, textvariable=self.cookie_validation_var, bg=GLASS, fg=MUTED, font=("Microsoft YaHei UI", 8, "bold")).grid(row=0, column=1, sticky="e")
-        tk.Label(flow, text="读取成功后自动填入，可手动修改。", bg=GLASS, fg=MUTED, font=("Microsoft YaHei UI", 9)).grid(row=7, column=0, sticky="w", pady=(2, 4))
+        tk.Label(cookie_header, text="Cookie 内容", bg=SURFACE, fg=TEXT, font=("Microsoft YaHei UI", 10, "bold")).grid(row=0, column=0, sticky="w")
+        tk.Label(cookie_header, textvariable=self.cookie_validation_var, bg=SURFACE, fg=MUTED, font=("Microsoft YaHei UI", 8, "bold")).grid(row=0, column=1, sticky="e")
 
-        cookie_box = RoundedPanel(flow, fill=FIELD_BG, background=GLASS, radius=14, padding=(5, 5), min_height=92, outline=SUBTLE_OUTLINE, shadow=False, auto_height=False)
+        cookie_box = RoundedPanel(flow, fill=FIELD_BG, background=SURFACE, radius=8, padding=(4, 4), min_height=84, outline=BORDER, shadow=False, auto_height=False)
         self.cookie_box = cookie_box
-        cookie_box.grid(row=8, column=0, sticky="ew")
+        cookie_box.grid(row=5, column=0, sticky="ew", pady=(3, 0))
         cookie_box.inner.columnconfigure(0, weight=1)
         cookie_box.inner.rowconfigure(0, weight=1)
-        self.cookie_text = tk.Text(cookie_box.inner, height=4, wrap="word", undo=True, borderwidth=0, relief="flat", bg=FIELD_BG, fg=TEXT, insertbackground=TEXT, highlightthickness=0, padx=12, pady=8, font=("Consolas", 9))
+        self.cookie_text = tk.Text(cookie_box.inner, height=3, wrap="word", undo=True, borderwidth=0, relief="flat", bg=FIELD_BG, fg=TEXT, insertbackground=TEXT, highlightthickness=0, padx=10, pady=6, font=("Consolas", 9))
         self.cookie_text.grid(row=0, column=0, sticky="nsew")
-        self.cookie_text.insert("1.0", self.cookie_var.get())
-        self.cookie_empty_label = tk.Label(cookie_box.inner, text="等待 Cookie 写入", bg=FIELD_BG, fg=FAINT, font=("Microsoft YaHei UI", 10, "bold"))
-        self.cookie_empty_label.place(relx=0.5, rely=0.5, anchor="center")
+        initial_cookie = self.cookie_var.get()
+        self.cookie_text.insert("1.0", initial_cookie)
+        self.cookie_empty_label = tk.Label(cookie_box.inner, text="等待 Cookie 写入", bg=FIELD_BG, fg=FAINT, font=("Microsoft YaHei UI", 9))
+        if not initial_cookie.strip():
+            self.cookie_empty_label.place(relx=0.5, rely=0.5, anchor="center")
+        self.cookie_empty_label.bind("<Button-1>", lambda _event: (self.cookie_empty_label.place_forget(), self.cookie_text.focus_set()))
         self.cookie_text.bind("<KeyRelease>", lambda _event: self._refresh_cookie_placeholder())
+        self.cookie_text.bind("<FocusIn>", lambda _event: self._refresh_cookie_placeholder())
         self.cookie_text.bind("<FocusOut>", lambda _event: self._refresh_cookie_placeholder())
+        def _on_cookie_modified(_event: tk.Event | None = None) -> None:
+            if self.cookie_text.edit_modified():
+                self.cookie_text.edit_modified(False)
+                self._refresh_cookie_placeholder()
+        self.cookie_text.bind("<<Modified>>", _on_cookie_modified)
         self.after_idle(self._refresh_cookie_placeholder)
 
-        cookie_actions = tk.Frame(flow, bg=GLASS, highlightthickness=0, borderwidth=0)
-        cookie_actions.grid(row=9, column=0, sticky="ew", pady=(7, 0))
+        cookie_actions = tk.Frame(flow, bg=SURFACE, highlightthickness=0, borderwidth=0)
+        cookie_actions.grid(row=6, column=0, sticky="ew", pady=(6, 0))
         cookie_actions.columnconfigure((0, 1), weight=1, uniform="cookie_actions")
         cookie_actions.columnconfigure((2, 3), weight=0)
-        self.save_account_button = LabelButton(cookie_actions, "保存修改", self._save_account, fill=ACCENT, foreground="#ffffff", active_fill=ACCENT_ACTIVE, height=34, font=("Microsoft YaHei UI", 9, "bold"), radius=11, outline="")
-        self.save_account_button.grid(row=0, column=0, sticky="ew", padx=(0, 8))
-        self.cancel_account_button = LabelButton(cookie_actions, "取消修改", self._cancel_account_edit, fill=SECONDARY, foreground=TEXT, active_fill=SECONDARY_ACTIVE, height=34, font=("Microsoft YaHei UI", 9, "bold"), radius=11, outline=SUBTLE_OUTLINE)
-        self.cancel_account_button.grid(row=0, column=1, sticky="ew", padx=(0, 8))
-        LabelButton(cookie_actions, "B站验证", self._validate_cookie_text, fill=GLASS, foreground=MUTED, active_fill=SECONDARY_ACTIVE, height=34, width=70, font=("Microsoft YaHei UI", 8, "bold"), radius=11, outline="").grid(row=0, column=2, sticky="e", padx=(0, 4))
-        LabelButton(cookie_actions, "清空", self._clear_cookie_text, fill=GLASS, foreground=MUTED, active_fill=SECONDARY_ACTIVE, height=34, width=58, font=("Microsoft YaHei UI", 8, "bold"), radius=11, outline="").grid(row=0, column=3, sticky="e")
+        self.save_account_button = LabelButton(cookie_actions, "保存修改", self._save_account, fill=PRIMARY, foreground="#ffffff", active_fill=PRIMARY_ACTIVE, height=32, font=("Microsoft YaHei UI", 8, "bold"), radius=8, outline="")
+        self.save_account_button.grid(row=0, column=0, sticky="ew", padx=(0, 6))
+        self.cancel_account_button = LabelButton(cookie_actions, "取消修改", self._cancel_account_edit, fill=SECONDARY, foreground=TEXT, active_fill=SECONDARY_ACTIVE, height=32, font=("Microsoft YaHei UI", 8), radius=8, outline=BUTTON_OUTLINE)
+        self.cancel_account_button.grid(row=0, column=1, sticky="ew", padx=(0, 6))
+        LabelButton(cookie_actions, "B站验证", self._validate_cookie_text, fill=SECONDARY, foreground=MUTED, active_fill=SECONDARY_ACTIVE, height=32, width=64, font=("Microsoft YaHei UI", 8), radius=8, outline=BUTTON_OUTLINE).grid(row=0, column=2, sticky="e", padx=(0, 4))
+        LabelButton(cookie_actions, "清空", self._clear_cookie_text, fill=SECONDARY, foreground=MUTED, active_fill=SECONDARY_ACTIVE, height=32, width=50, font=("Microsoft YaHei UI", 8), radius=8, outline=BUTTON_OUTLINE).grid(row=0, column=3, sticky="e")
         self._refresh_account_editor_actions()
 
         hidden = tk.Frame(parent, bg=APP_BG, highlightthickness=0, borderwidth=0)
@@ -2413,46 +2457,44 @@ class App(tk.Tk):
     def _build_execution_bar(self, parent: tk.Misc) -> None:
         execution_panel = RoundedPanel(
             parent,
-            fill=GLASS,
+            fill=SURFACE,
             background=APP_BG,
-            radius=18,
-            padding=(16, 10),
+            radius=12,
+            padding=(16, 12),
             min_height=86,
-            outline=SUBTLE_OUTLINE,
+            outline=BORDER,
             shadow=True,
             auto_height=False,
         )
         self.execution_panel = execution_panel
-        execution_panel.grid(row=0, column=0, sticky="ew", pady=(0, 12))
+        execution_panel.grid(row=0, column=0, sticky="ew", pady=(0, 10))
 
         controls = execution_panel.inner
         self.controls = controls
         controls.columnconfigure(0, weight=1, minsize=118)
         controls.columnconfigure(1, weight=0, minsize=128)
         controls.columnconfigure(2, weight=0, minsize=88)
-        # 右侧运行状态已经在下方“运行状态”卡片中完整呈现。执行栏不再重复
-        # 放置“状态 / 未运行”，既减少信息重复，也为默认窗口宽度释放空间。
         controls.columnconfigure(3, weight=1, minsize=216)
         controls.rowconfigure(0, minsize=22)
-        controls.rowconfigure(1, minsize=42)
+        controls.rowconfigure(1, minsize=40)
 
-        intro = tk.Frame(controls, bg=GLASS, highlightthickness=0, borderwidth=0)
+        intro = tk.Frame(controls, bg=SURFACE, highlightthickness=0, borderwidth=0)
         self.execution_intro = intro
         intro.grid(row=0, column=0, rowspan=2, sticky="w", padx=(0, 14))
-        tk.Label(intro, text="执行控制", bg=GLASS, fg=TEXT, font=("Microsoft YaHei UI", 12, "bold")).pack(anchor="w")
-        tk.Label(intro, text="启动、领奖与连接设置", bg=GLASS, fg=MUTED, font=("Microsoft YaHei UI", 8)).pack(anchor="w", pady=(3, 0))
+        tk.Label(intro, text="执行控制", bg=SURFACE, fg=TEXT, font=("Microsoft YaHei UI", 12, "bold")).pack(anchor="w")
+        tk.Label(intro, text="启动、领奖与连接设置", bg=SURFACE, fg=MUTED, font=("Microsoft YaHei UI", 8)).pack(anchor="w", pady=(3, 0))
 
         label_font = ("Microsoft YaHei UI", 8, "bold")
-        tk.Label(controls, text="观看线程", bg=GLASS, fg=MUTED, font=label_font).grid(row=0, column=1, sticky="sw", padx=(0, 12), pady=(0, 4))
-        tk.Label(controls, text="自动领取", bg=GLASS, fg=MUTED, font=label_font).grid(row=0, column=2, sticky="sw", padx=(0, 12), pady=(0, 4))
-        tk.Label(controls, text="操作", bg=GLASS, fg=MUTED, font=label_font).grid(row=0, column=3, sticky="sw", padx=(0, 12), pady=(0, 4))
+        tk.Label(controls, text="观看线程", bg=SURFACE, fg=MUTED, font=label_font).grid(row=0, column=1, sticky="sw", padx=(0, 12), pady=(0, 4))
+        tk.Label(controls, text="自动领取", bg=SURFACE, fg=MUTED, font=label_font).grid(row=0, column=2, sticky="sw", padx=(0, 12), pady=(0, 4))
+        tk.Label(controls, text="操作", bg=SURFACE, fg=MUTED, font=label_font).grid(row=0, column=3, sticky="sw", padx=(0, 12), pady=(0, 4))
 
         NumberInput(
             controls,
             self.watch_threads_var,
             minimum=1,
             maximum=MAX_WATCH_THREADS,
-            background=GLASS,
+            background=SURFACE,
             width=124,
         ).grid(row=1, column=1, sticky="w", padx=(0, 12))
 
@@ -2461,13 +2503,13 @@ class App(tk.Tk):
             "已关闭",
             self._toggle_auto_claim,
             checked=bool(self.auto_claim_var.get()),
-            background=GLASS,
+            background=SURFACE,
             width=82,
-            height=30,
+            height=28,
         )
-        self.auto_claim_button.grid(row=1, column=2, sticky="w", padx=(0, 12), pady=(5, 0))
+        self.auto_claim_button.grid(row=1, column=2, sticky="w", padx=(0, 12), pady=(4, 0))
 
-        actions = tk.Frame(controls, bg=GLASS, highlightthickness=0, borderwidth=0)
+        actions = tk.Frame(controls, bg=SURFACE, highlightthickness=0, borderwidth=0)
         actions.grid(row=1, column=3, sticky="w", padx=(0, 12))
         self.start_button = LabelButton(
             actions,
@@ -2476,11 +2518,11 @@ class App(tk.Tk):
             fill=PRIMARY,
             foreground="#ffffff",
             active_fill=PRIMARY_ACTIVE,
-            height=40,
+            height=36,
             width=104,
             font=("Microsoft YaHei UI", 9, "bold"),
-            radius=12,
-            shadow=True,
+            radius=8,
+            shadow=False,
         )
         self.start_button.pack(side="left", padx=(0, 7))
         LabelButton(
@@ -2490,11 +2532,11 @@ class App(tk.Tk):
             fill=SURFACE,
             foreground=TEXT,
             active_fill=SECONDARY_ACTIVE,
-            height=40,
-            width=100,
+            height=36,
+            width=92,
             font=("Microsoft YaHei UI", 9, "bold"),
-            radius=12,
-            outline=SUBTLE_OUTLINE,
+            radius=8,
+            outline=BUTTON_OUTLINE,
         ).pack(side="left")
 
     def _build_monitor_workspace(self, parent: ttk.Frame) -> None:
@@ -2512,11 +2554,11 @@ class App(tk.Tk):
         self._build_execution_bar(monitor)
 
         top = tk.Frame(monitor, bg=APP_BG, highlightthickness=0, borderwidth=0)
-        top.grid(row=1, column=0, sticky="nsew", pady=(0, 12))
+        top.grid(row=1, column=0, sticky="nsew", pady=(0, 10))
         top.columnconfigure(0, weight=1)
         top.rowconfigure(0, weight=1)
 
-        overview_panel = RoundedPanel(top, fill=GLASS, background=APP_BG, radius=20, padding=(18, 14), min_height=204, outline=SUBTLE_OUTLINE, shadow=True, auto_height=False)
+        overview_panel = RoundedPanel(top, fill=APP_BG, background=APP_BG, radius=0, padding=(0, 0), min_height=176, outline="", shadow=False, auto_height=False)
         self.overview_panel = overview_panel
         overview_panel.grid(row=0, column=0, sticky="nsew")
         overview = overview_panel.inner
@@ -2524,9 +2566,9 @@ class App(tk.Tk):
         overview.columnconfigure((0, 1, 2), weight=1, uniform="overview")
         overview.rowconfigure(0, weight=1)
 
-        progress_cell = RoundedPanel(overview, fill=SURFACE, background=GLASS, radius=16, padding=(14, 14), min_height=176, outline=SUBTLE_OUTLINE, shadow=False, auto_height=False)
+        progress_cell = RoundedPanel(overview, fill=SURFACE, background=APP_BG, radius=12, padding=(14, 14), min_height=176, outline=BORDER, shadow=True, auto_height=False)
         self.progress_cell = progress_cell
-        progress_cell.grid(row=0, column=0, sticky="nsew", padx=(0, 12))
+        progress_cell.grid(row=0, column=0, sticky="nsew", padx=(0, 5))
         progress_pane = progress_cell.inner
         progress_pane.columnconfigure(0, weight=1)
         self._section_title(progress_pane, "观看进度", "progress", background=SURFACE).grid(row=0, column=0, sticky="w")
@@ -2552,9 +2594,9 @@ class App(tk.Tk):
         self.progress_text.grid(row=2, column=0, sticky="ew")
         self._progress_log("等待任务检查。开始挂宝后，这里会显示本次可挂任务、剩余分钟和领取状态。")
 
-        status_cell = RoundedPanel(overview, fill=SURFACE, background=GLASS, radius=16, padding=(14, 14), min_height=176, outline=SUBTLE_OUTLINE, shadow=False, auto_height=False)
+        status_cell = RoundedPanel(overview, fill=SURFACE, background=APP_BG, radius=12, padding=(14, 14), min_height=176, outline=BORDER, shadow=True, auto_height=False)
         self.status_cell = status_cell
-        status_cell.grid(row=0, column=1, sticky="nsew", padx=12)
+        status_cell.grid(row=0, column=1, sticky="nsew", padx=(5, 5))
         status_pane = status_cell.inner
         status_pane.columnconfigure(0, weight=1)
         status_pane.columnconfigure(1, weight=0)
@@ -2570,8 +2612,6 @@ class App(tk.Tk):
             ("next", "下次计时", self.backend_next_var),
             ("network", "网络状态", self.backend_network_var),
         )):
-            # 独立行容器避免 Windows 高 DPI 字体度量变化时，图标列侵入文字列并裁掉首字。
-            # 标签保留固定字符宽度，实时值使用剩余空间并靠右显示。
             metric_row = tk.Frame(status_grid, bg=SURFACE, highlightthickness=0, borderwidth=0)
             metric_row.grid(row=index, column=0, sticky="ew", pady=3)
             metric_row.columnconfigure(1, weight=1, minsize=72)
@@ -2599,7 +2639,6 @@ class App(tk.Tk):
             self.status_metric_rows.append(metric_row)
             self.status_metric_labels.append(metric_label)
         self.watch_status_card = WatchStatusCard(status_pane, background=SURFACE)
-        # 完整连接卡在默认高度会被裁切；主卡只放可达入口，详细状态统一在应用内弹窗显示。
         LabelButton(
             status_pane,
             "连接详情",
@@ -2607,16 +2646,16 @@ class App(tk.Tk):
             fill=SECONDARY,
             foreground=ACCENT,
             active_fill=SECONDARY_ACTIVE,
-            height=26,
-            width=70,
-            font=("Microsoft YaHei UI", 8, "bold"),
-            radius=9,
-            outline=SUBTLE_OUTLINE,
+            height=24,
+            width=68,
+            font=("Microsoft YaHei UI", 8),
+            radius=6,
+            outline=BUTTON_OUTLINE,
         ).grid(row=0, column=1, sticky="e")
 
-        reward_cell = RoundedPanel(overview, fill=SURFACE, background=GLASS, radius=16, padding=(14, 14), min_height=176, outline=SUBTLE_OUTLINE, shadow=False, auto_height=False)
+        reward_cell = RoundedPanel(overview, fill=SURFACE, background=APP_BG, radius=12, padding=(14, 14), min_height=176, outline=BORDER, shadow=True, auto_height=False)
         self.reward_cell = reward_cell
-        reward_cell.grid(row=0, column=2, sticky="nsew", padx=(12, 0))
+        reward_cell.grid(row=0, column=2, sticky="nsew", padx=(5, 0))
         reward = reward_cell.inner
         reward.columnconfigure(0, weight=1)
         self._section_title(reward, "领取结果", "reward", background=SURFACE).grid(row=0, column=0, sticky="w")
@@ -2624,22 +2663,22 @@ class App(tk.Tk):
         self.reward_detail_label = tk.Label(reward, textvariable=self.reward_detail_var, bg=SURFACE, fg=MUTED, font=("Microsoft YaHei UI", 9), wraplength=180, justify="center")
         self.reward_detail_label.grid(row=2, column=0, sticky="ew")
 
-        log_panel = RoundedPanel(monitor, fill=GLASS, background=APP_BG, radius=18, padding=(20, 16), min_height=392, outline=SUBTLE_OUTLINE, shadow=True, auto_height=False)
+        log_panel = RoundedPanel(monitor, fill=SURFACE, background=APP_BG, radius=12, padding=(16, 14), min_height=392, outline=BORDER, shadow=True, auto_height=False)
         self.log_panel = log_panel
         log_panel.grid(row=2, column=0, sticky="nsew")
         log_pane = log_panel.inner
         log_pane.columnconfigure(0, weight=1)
         log_pane.rowconfigure(1, weight=1)
-        log_head = tk.Frame(log_pane, bg=GLASS, highlightthickness=0, borderwidth=0)
+        log_head = tk.Frame(log_pane, bg=SURFACE, highlightthickness=0, borderwidth=0)
         self.log_head = log_head
-        log_head.grid(row=0, column=0, sticky="ew", pady=(0, 18))
+        log_head.grid(row=0, column=0, sticky="ew", pady=(0, 12))
         log_head.columnconfigure(0, weight=1)
-        title_group = tk.Frame(log_head, bg=GLASS, highlightthickness=0, borderwidth=0)
+        title_group = tk.Frame(log_head, bg=SURFACE, highlightthickness=0, borderwidth=0)
         self.log_title_group = title_group
         title_group.grid(row=0, column=0, sticky="w")
-        self._section_title(title_group, "运行日志", "log").grid(row=0, column=0, sticky="w")
-        tk.Label(title_group, text="实时记录程序运行与任务处理情况", bg=GLASS, fg=MUTED, font=("Microsoft YaHei UI", 9)).grid(row=1, column=0, sticky="w", pady=(5, 0))
-        tools = tk.Frame(log_head, bg=GLASS, highlightthickness=0, borderwidth=0)
+        self._section_title(title_group, "运行日志", "log", background=SURFACE).grid(row=0, column=0, sticky="w")
+        tk.Label(title_group, text="实时记录程序运行与任务处理情况", bg=SURFACE, fg=MUTED, font=("Microsoft YaHei UI", 9)).grid(row=1, column=0, sticky="w", pady=(3, 0))
+        tools = tk.Frame(log_head, bg=SURFACE, highlightthickness=0, borderwidth=0)
         self.log_tools = tools
         tools.grid(row=0, column=1, sticky="e")
         self.auto_scroll_button = ToggleSwitch(
@@ -2647,11 +2686,11 @@ class App(tk.Tk):
             "自动滚动",
             self._toggle_auto_scroll,
             checked=bool(self.auto_scroll_var.get()),
-            background=GLASS,
-            width=106,
-            height=30,
+            background=SURFACE,
+            width=100,
+            height=28,
         )
-        self.auto_scroll_button.pack(side="left", padx=(0, 12))
+        self.auto_scroll_button.pack(side="left", padx=(0, 10))
         self.log_view_buttons: dict[str, LabelButton] = {}
         for key, label in (("task", "任务日志"), ("room", "房间日志"), ("all", "全部日志")):
             selected = key == self.log_view_var.get()
@@ -2659,23 +2698,23 @@ class App(tk.Tk):
                 tools,
                 label,
                 lambda _key=key: self._select_log_view(_key),
-                fill=ACCENT if selected else SECONDARY,
-                foreground="#ffffff" if selected else MUTED,
-                active_fill=ACCENT_ACTIVE if selected else SECONDARY_ACTIVE,
-                height=34,
-                width=82,
-                font=("Microsoft YaHei UI", 8, "bold"),
-                radius=11,
-                outline=SUBTLE_OUTLINE,
+                fill=PRIMARY if selected else SECONDARY,
+                foreground="#ffffff" if selected else TEXT,
+                active_fill=PRIMARY_ACTIVE if selected else SECONDARY_ACTIVE,
+                height=30,
+                width=76,
+                font=("Microsoft YaHei UI", 8, "bold" if selected else "normal"),
+                radius=8,
+                outline="" if selected else BUTTON_OUTLINE,
             )
-            button.pack(side="left", padx=(0, 8))
+            button.pack(side="left", padx=(0, 6))
             self.log_view_buttons[key] = button
-        self.clear_log_button = LabelButton(tools, "清空日志", self._clear_log, fill=SECONDARY, foreground=MUTED, active_fill=SECONDARY_ACTIVE, height=34, width=88, font=("Microsoft YaHei UI", 8, "bold"), radius=11, outline=SUBTLE_OUTLINE)
-        self.clear_log_button.pack(side="left", padx=(0, 10))
-        self.copy_log_button = LabelButton(tools, "复制日志", self._copy_log, fill=SECONDARY, foreground=MUTED, active_fill=SECONDARY_ACTIVE, height=34, width=88, font=("Microsoft YaHei UI", 8, "bold"), radius=11, outline=SUBTLE_OUTLINE)
+        self.clear_log_button = LabelButton(tools, "清空日志", self._clear_log, fill=SECONDARY, foreground=MUTED, active_fill=SECONDARY_ACTIVE, height=30, width=76, font=("Microsoft YaHei UI", 8), radius=8, outline=BUTTON_OUTLINE)
+        self.clear_log_button.pack(side="left", padx=(0, 6))
+        self.copy_log_button = LabelButton(tools, "复制日志", self._copy_log, fill=SECONDARY, foreground=MUTED, active_fill=SECONDARY_ACTIVE, height=30, width=76, font=("Microsoft YaHei UI", 8), radius=8, outline=BUTTON_OUTLINE)
         self.copy_log_button.pack(side="left")
 
-        log_wrap = RoundedPanel(log_pane, fill=FIELD_BG, background=GLASS, radius=14, padding=(5, 5), min_height=312, outline=SUBTLE_OUTLINE, shadow=False, auto_height=False)
+        log_wrap = RoundedPanel(log_pane, fill=FIELD_BG, background=SURFACE, radius=8, padding=(4, 4), min_height=312, outline=BORDER, shadow=False, auto_height=False)
         self.log_wrap = log_wrap
         log_wrap.grid(row=1, column=0, sticky="nsew")
         log_wrap.inner.columnconfigure(0, weight=1)
@@ -4963,6 +5002,14 @@ class App(tk.Tk):
         self._log(f"已打开 {browser_name} 登录页。手动模式不会自动读取 Cookie；需要自动读取请点击“自动获取 Cookie”。")
 
     def _capture_cookie_worker(self, origin: dict) -> None:
+        if sys.platform == "win32":
+            try:
+                import ctypes
+                hdesk = ctypes.windll.user32.OpenDesktopW("Default", 0, False, 0x10000000)
+                if hdesk:
+                    ctypes.windll.user32.SetThreadDesktop(hdesk)
+            except Exception:
+                pass
         try:
             result = capture_bilibili_cookie(log=self._thread_log, cancel_event=self._cookie_capture_cancel)
         except CaptureCancelled:
@@ -4992,6 +5039,7 @@ class App(tk.Tk):
                 return
             self.cookie_text.delete("1.0", "end")
             self.cookie_text.insert("1.0", cookie)
+            self._refresh_cookie_placeholder()
             self._save_account()
             return
         accounts = self.config_data.accounts
@@ -5165,11 +5213,18 @@ class App(tk.Tk):
         if self.status_label is not None:
             style = "StatusRunning.TLabel" if message == "运行中" else "Status.TLabel"
             self.status_label.configure(style=style)
+        if hasattr(self, "cmd_status_dot"):
+            self.cmd_status_dot.delete("all")
+            pad = 2
+            size = 10
+            self.cmd_status_dot.create_oval(pad, pad, size - pad, size - pad, fill=SUCCESS if message == "运行中" else FAINT, outline="")
         if hasattr(self, "start_button"):
             if message == "运行中":
-                self.start_button.set_appearance(text="停止挂宝", fill=SURFACE, foreground=DANGER, active_fill=DANGER_BG)
+                self.start_button.set_appearance(text="停止挂宝", fill=DANGER_BG, foreground=DANGER, active_fill="#fee2e2")
             else:
                 self.start_button.set_appearance(text="▶ 开始挂宝", fill=PRIMARY, foreground="#ffffff", active_fill=PRIMARY_ACTIVE)
+        if hasattr(self, "status_pill"):
+            self.status_pill.after_idle(self.status_pill._sync_size)
 
     def _notify_from_message(self, message: str) -> None:
         if not self._is_notification_message(message):
